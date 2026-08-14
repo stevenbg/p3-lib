@@ -1,11 +1,11 @@
 [package]
-name = "mod-res-1600x900"
+name = "mod-high-res-1600x900"
 edition = "2021"
 version.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
-name="res_1600x900"
+name="high_res_1600x900"
 
 [dependencies]
 log = { workspace = true }
