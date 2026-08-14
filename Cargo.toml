@@ -16,6 +16,7 @@ members = [
     "mod-high-res",
     "mod-increase-alderman-found-settlement-mission-limit",
     "mod-new-settlement-more-production",
+    "mod-res-1600x900",
     "mod-scrollmap-render-all-ships",
     "mod-shipyard-details",
     "mod-tavern-show-all-sailors",
