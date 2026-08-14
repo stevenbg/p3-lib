@@ -40,6 +40,8 @@ static DECODE_SUPPORTED_FILES_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::ne
 static LOAD_ACCEL_MAP_INI_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 
 static VOLLANSICHTSKARTE1600: &[u8] = include_bytes!("Vollansichtskarte1600.bmp");
+static HAUPTSCREEN_A_1600: &[u8] = include_bytes!("HauptscreenA1600.bmp");
+static HAUPTSCREEN_E_1600: &[u8] = include_bytes!("HauptscreenE1600.bmp");
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> u32 {
@@ -207,10 +209,19 @@ pub unsafe extern "thiscall" fn maybe_render_all_objects_hook(this: u32, a2: u32
 pub unsafe extern "cdecl" fn ddraw_dll_decode_supported_files_hook(aim_image_inner: u32, file_path: *const u8, mut file_data: u32, mut file_size: u32) -> i32 {
     let orig_address = (*DECODE_SUPPORTED_FILES_HOOK_PTR.load(Ordering::SeqCst)).old_absolute;
 
-    if latin1_ptr_to_string(file_path).ends_with("Vollansichtskarte1280.bmp") {
+    let path = latin1_ptr_to_string(file_path);
+    if path.ends_with("Vollansichtskarte1280.bmp") {
         debug!("ddraw_dll_decode_supported_files_hook replacing Vollansichtskarte1280");
         file_data = VOLLANSICHTSKARTE1600.as_ptr() as _;
         file_size = VOLLANSICHTSKARTE1600.len() as _;
+    } else if path.ends_with("HauptscreenA1280.bmp") {
+        debug!("ddraw_dll_decode_supported_files_hook replacing HauptscreenA1280 (top bar)");
+        file_data = HAUPTSCREEN_A_1600.as_ptr() as _;
+        file_size = HAUPTSCREEN_A_1600.len() as _;
+    } else if path.ends_with("HauptscreenE1280.bmp") {
+        debug!("ddraw_dll_decode_supported_files_hook replacing HauptscreenE1280 (bottom right)");
+        file_data = HAUPTSCREEN_E_1600.as_ptr() as _;
+        file_size = HAUPTSCREEN_E_1600.len() as _;
     }
 
     let orig: extern "cdecl" fn(aim_image_inner: u32, file_path: *const u8, file_data: u32, file_size: u32) -> i32 = unsafe { mem::transmute(orig_address) };
