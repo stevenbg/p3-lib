@@ -1,0 +1,23 @@
+# Reference goods table for `roucli supply`: quantities (in-game units) required to
+# supply `citizens` inhabitants, and the minimum sell prices used for the sell stop.
+# Quantities are scaled linearly with the citizens parameter and rounded up; prices
+# are used as-is.
+citizens = 1000
+
+[goods]
+beer = { amount = 56, price = 35 }
+cloth = { amount = 18, price = 207 }
+fish = { amount = 8, price = 440 }
+grain = { amount = 10, price = 110 }
+honey = { amount = 12, price = 110 }
+"iron goods" = { amount = 32, price = 256 }
+leather = { amount = 12, price = 224 }
+meat = { amount = 4, price = 957 }
+pottery = { amount = 12, price = 171 }
+salt = { amount = 2, price = 28 }
+skins = { amount = 10, price = 677 }
+spices = { amount = 2, price = 280 }
+timber = { amount = 4, price = 55 }
+"whale oil" = { amount = 14, price = 83 }
+wine = { amount = 20, price = 220 }
+wool = { amount = 2, price = 880 }

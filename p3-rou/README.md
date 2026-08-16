@@ -54,3 +54,23 @@ Crossbow, Carbine.
 
 Town indices are savegame-specific (towns founded during a game shift the list). To find the index of a town, save a route
 that stops there in-game and inspect it with `roucli dump`.
+
+## Generate a town supply route
+
+```
+roucli supply --citizens 2500 -o "Save/AutoRoute/supply.rou"
+```
+
+Generates a two-stop template route from a reference goods table: stop 0 loads the goods from the trading office, stop 1
+sells them at minimum prices. Amounts are scaled linearly from the reference citizens count (rounding up), prices are used
+as-is. Both stops use town index 0 — reassign the towns in the in-game route window before activating the route.
+
+The built-in reference table ships in `src/supply_reference.toml`; pass `--reference <file>` to use a custom one:
+
+```toml
+citizens = 1000
+
+[goods]
+beer = { amount = 56, price = 35 }
+grain = { amount = 10, price = 110 }
+```

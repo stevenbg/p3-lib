@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process::exit};
+use std::{collections::BTreeMap, fs, path::PathBuf, process::exit};
 
 use clap::{Parser, Subcommand};
 use log::LevelFilter;
@@ -70,6 +70,20 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Generate a one-stop town supply route: load the reference goods, scaled to a number of citizens
+    Supply {
+        /// Number of citizens to supply
+        #[arg(short, long)]
+        citizens: u32,
+
+        /// Path of the .rou file to write
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Reference goods table TOML; defaults to the built-in table
+        #[arg(short, long)]
+        reference: Option<PathBuf>,
+    },
 }
 
 #[derive(Deserialize, Debug)]
@@ -116,6 +130,23 @@ struct SellConfig {
     min_price: i32,
 }
 
+/// Goods required to supply `citizens` inhabitants, used as the scaling baseline.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct SupplyReference {
+    citizens: u32,
+    goods: BTreeMap<String, SupplyGood>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct SupplyGood {
+    /// Amount in in-game units per `citizens` inhabitants.
+    amount: i32,
+    /// Minimum sell price for the sell stop.
+    price: i32,
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct BuyConfig {
@@ -132,6 +163,7 @@ pub fn main() {
     match args.command {
         Command::Dump { file } => dump(&file),
         Command::Generate { input, output } => generate(&input, &output),
+        Command::Supply { citizens, output, reference } => supply(citizens, &output, reference.as_ref()),
     }
 }
 
@@ -242,7 +274,12 @@ fn generate(input: &PathBuf, output: &PathBuf) {
                 eprintln!("Stop {n}: ware {:?} needs a positive max_price", purchase.ware);
                 exit(1);
             }
-            set_slot(&purchase.ware, -purchase.max_price, scaled_amount(&purchase.ware, purchase.amount, n), &mut occupied);
+            set_slot(
+                &purchase.ware,
+                -purchase.max_price,
+                scaled_amount(&purchase.ware, purchase.amount, n),
+                &mut occupied,
+            );
         }
 
         stops.push(TradeRouteStop {
@@ -260,6 +297,84 @@ fn generate(input: &PathBuf, output: &PathBuf) {
         exit(1);
     });
     println!("Wrote {} stops ({} bytes) to {}", config.stops.len(), data.len(), output.display());
+}
+
+fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>) {
+    let reference_str = match reference {
+        Some(path) => fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("Failed to read {}: {e}", path.display());
+            exit(1);
+        }),
+        None => include_str!("supply_reference.toml").to_string(),
+    };
+    let reference: SupplyReference = toml::from_str(&reference_str).unwrap_or_else(|e| {
+        eprintln!("Failed to parse the reference goods table: {e}");
+        exit(1);
+    });
+    if reference.goods.is_empty() {
+        eprintln!("The reference goods table is empty");
+        exit(1);
+    }
+    if reference.citizens == 0 {
+        eprintln!("The reference citizens count must be positive");
+        exit(1);
+    }
+
+    let mut load_amount = [0i32; 24];
+    let mut sell_price = [0i32; 24];
+    println!("Supplying {citizens} citizens (reference: {}):", reference.citizens);
+    for (ware, good) in &reference.goods {
+        let Some(index) = ware_index(ware) else {
+            eprintln!("Unknown ware {ware:?} in the reference goods table");
+            exit(1);
+        };
+        if good.amount <= 0 {
+            eprintln!("Ware {ware:?} needs a positive amount in the reference goods table");
+            exit(1);
+        }
+        if good.price <= 0 {
+            eprintln!("Ware {ware:?} needs a positive price in the reference goods table");
+            exit(1);
+        }
+        // Scale linearly, rounding up so the supply never undershoots.
+        let units = (good.amount as i64 * citizens as i64 + reference.citizens as i64 - 1) / reference.citizens as i64;
+        let raw = units * WARES[index].1 as i64;
+        let Ok(raw) = i32::try_from(raw) else {
+            eprintln!("Scaled amount of {ware:?} overflows");
+            exit(1);
+        };
+        load_amount[index] = raw;
+        sell_price[index] = good.price;
+        println!("  {:<10} {units:>6} @ min {}", WARES[index].0, good.price);
+    }
+
+    let load_stop = TradeRouteStop {
+        town_index: 0,
+        action: FLAG_X | FIRST_STOP_MARKER,
+        order: DEFAULT_ORDER,
+        price: [0i32; 24],
+        amount: load_amount,
+    };
+    let sell_stop = TradeRouteStop {
+        town_index: 0,
+        action: FLAG_X,
+        order: DEFAULT_ORDER,
+        price: sell_price,
+        amount: load_amount,
+    };
+    let data = TradeRouteFile {
+        stops: vec![load_stop, sell_stop],
+    }
+    .serialize();
+    fs::write(output, &data).unwrap_or_else(|e| {
+        eprintln!("Failed to write {}: {e}", output.display());
+        exit(1);
+    });
+    println!(
+        "Wrote 2 stops ({} bytes) to {}: stop 0 loads from the office, stop 1 sells - change both towns in-game",
+        data.len(),
+        output.display()
+    );
 }
 
 fn scaled_amount(ware: &str, amount: Option<i32>, stop: usize) -> i32 {
