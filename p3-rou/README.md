@@ -63,7 +63,9 @@ roucli supply --citizens 2500 -o "Save/AutoRoute/supply.rou"
 
 Generates a two-stop template route from a reference goods table: stop 0 loads the goods from the trading office, stop 1
 sells them at minimum prices. Amounts are scaled linearly from the reference citizens count (rounding up), prices are used
-as-is. Both stops use town index 0 — reassign the towns in the in-game route window before activating the route.
+as-is. The stops use town indices 0 unless `--load-town`/`--sell-town` are given (savegame-specific, find them with `dump`).
+The load stop must be a town with a trading office — the game treats office transfers in office-less towns as invalid and
+shows them blank.
 
 The built-in reference table ships in `src/supply_reference.toml`; pass `--reference <file>` to use a custom one:
 

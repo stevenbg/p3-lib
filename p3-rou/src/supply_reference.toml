@@ -5,19 +5,19 @@
 citizens = 1000
 
 [goods]
-beer = { amount = 56, price = 35 }
-cloth = { amount = 18, price = 207 }
-fish = { amount = 8, price = 440 }
-grain = { amount = 10, price = 110 }
-honey = { amount = 12, price = 110 }
-"iron goods" = { amount = 32, price = 256 }
-leather = { amount = 12, price = 224 }
-meat = { amount = 4, price = 957 }
-pottery = { amount = 12, price = 171 }
-salt = { amount = 2, price = 28 }
-skins = { amount = 10, price = 677 }
-spices = { amount = 2, price = 280 }
-timber = { amount = 4, price = 55 }
-"whale oil" = { amount = 14, price = 83 }
-wine = { amount = 20, price = 220 }
-wool = { amount = 2, price = 880 }
+beer = { amount = 28, price = 35 }
+cloth = { amount = 9, price = 207 }
+fish = { amount = 4, price = 440 }
+grain = { amount = 5, price = 110 }
+honey = { amount = 6, price = 110 }
+"iron goods" = { amount = 16, price = 256 }
+leather = { amount = 6, price = 224 }
+meat = { amount = 2, price = 957 }
+pottery = { amount = 6, price = 171 }
+salt = { amount = 1, price = 28 }
+skins = { amount = 5, price = 677 }
+spices = { amount = 1, price = 280 }
+timber = { amount = 2, price = 55 }
+"whale oil" = { amount = 7, price = 83 }
+wine = { amount = 10, price = 220 }
+wool = { amount = 1, price = 880 }

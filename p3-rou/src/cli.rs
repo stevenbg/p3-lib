@@ -70,7 +70,7 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Generate a one-stop town supply route: load the reference goods, scaled to a number of citizens
+    /// Generate a two-stop town supply route: load the reference goods from an office, scaled to a number of citizens, and sell them
     Supply {
         /// Number of citizens to supply
         #[arg(short, long)]
@@ -83,6 +83,14 @@ enum Command {
         /// Reference goods table TOML; defaults to the built-in table
         #[arg(short, long)]
         reference: Option<PathBuf>,
+
+        /// Town index of the load stop; must be a town with a trading office, or the game blanks the load orders. Savegame-specific, see `dump`
+        #[arg(long, default_value_t = 0, value_parser = parse_town_index)]
+        load_town: u8,
+
+        /// Town index of the sell stop. Savegame-specific, see `dump`
+        #[arg(long, default_value_t = 0, value_parser = parse_town_index)]
+        sell_town: u8,
     },
 }
 
@@ -163,7 +171,13 @@ pub fn main() {
     match args.command {
         Command::Dump { file } => dump(&file),
         Command::Generate { input, output } => generate(&input, &output),
-        Command::Supply { citizens, output, reference } => supply(citizens, &output, reference.as_ref()),
+        Command::Supply {
+            citizens,
+            output,
+            reference,
+            load_town,
+            sell_town,
+        } => supply(citizens, &output, reference.as_ref(), load_town, sell_town),
     }
 }
 
@@ -299,7 +313,7 @@ fn generate(input: &PathBuf, output: &PathBuf) {
     println!("Wrote {} stops ({} bytes) to {}", config.stops.len(), data.len(), output.display());
 }
 
-fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>) {
+fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>, load_town: u8, sell_town: u8) {
     let reference_str = match reference {
         Some(path) => fs::read_to_string(path).unwrap_or_else(|e| {
             eprintln!("Failed to read {}: {e}", path.display());
@@ -349,14 +363,14 @@ fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>) {
     }
 
     let load_stop = TradeRouteStop {
-        town_index: 0,
+        town_index: load_town,
         action: FLAG_X | FIRST_STOP_MARKER,
         order: DEFAULT_ORDER,
         price: [0i32; 24],
         amount: load_amount,
     };
     let sell_stop = TradeRouteStop {
-        town_index: 0,
+        town_index: sell_town,
         action: FLAG_X,
         order: DEFAULT_ORDER,
         price: sell_price,
@@ -371,7 +385,7 @@ fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>) {
         exit(1);
     });
     println!(
-        "Wrote 2 stops ({} bytes) to {}: stop 0 loads from the office, stop 1 sells - change both towns in-game",
+        "Wrote 2 stops ({} bytes) to {}: stop 0 loads from the office in town {load_town:#04x}, stop 1 sells in town {sell_town:#04x}",
         data.len(),
         output.display()
     );
@@ -396,6 +410,15 @@ fn scaled_amount(ware: &str, amount: Option<i32>, stop: usize) -> i32 {
             exit(1);
         }
     }
+}
+
+/// Parses a town index given as decimal or as hex with a 0x prefix, the way `dump` prints it.
+fn parse_town_index(input: &str) -> Result<u8, String> {
+    let result = match input.strip_prefix("0x").or_else(|| input.strip_prefix("0X")) {
+        Some(hex) => u8::from_str_radix(hex, 16),
+        None => input.parse(),
+    };
+    result.map_err(|e| e.to_string())
 }
 
 fn ware_index(name: &str) -> Option<usize> {
