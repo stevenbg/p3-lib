@@ -8,6 +8,10 @@ use serde::Deserialize;
 const STOP_SIZE: usize = 220;
 /// The game's sentinel for "as much as possible", stored unscaled.
 const MAX_AMOUNT: i32 = 1_000_000_000;
+/// Raw units per in-game unit: wares measured in loads (1 load = 10 barrels).
+const LOAD_SCALING: i32 = 2000;
+/// Raw units per in-game unit: wares measured in barrels.
+const BARREL_SCALING: i32 = 200;
 /// Set on the first stop of every route the game saves.
 const FIRST_STOP_MARKER: u8 = 0x04;
 const FLAG_R: u8 = 0x01;
@@ -70,10 +74,14 @@ enum Command {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Generate a two-stop town supply route: load the reference goods from an office, scaled to a number of citizens, and sell them
-    Supply {
-        /// Number of citizens to supply
-        #[arg(short, long)]
+    /// Write a route of the given type from the reference goods table
+    Write {
+        /// Route layout
+        #[arg(short = 't', long = "type", value_enum)]
+        route_type: RouteType,
+
+        /// Number of citizens to supply; unused by the suck type
+        #[arg(short, long, default_value_t = 1000)]
         citizens: u32,
 
         /// Path of the .rou file to write
@@ -92,6 +100,19 @@ enum Command {
         #[arg(long, default_value_t = 0, value_parser = parse_town_index)]
         sell_town: u8,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum RouteType {
+    /// load, sell max, take everything, put back calculated quantities, return
+    #[value(name = "5stop")]
+    FiveStop,
+    /// like 5stop, but swaps the office stock one unit category at a time to bound the needed ship space
+    #[value(name = "6stop")]
+    SixStop,
+    /// park in the load town: unload everything (with repair), then keep buying all goods at the reference buy prices
+    #[value(name = "suck")]
+    Suck,
 }
 
 #[derive(Deserialize, Debug)]
@@ -138,21 +159,27 @@ struct SellConfig {
     min_price: i32,
 }
 
-/// Goods required to supply `citizens` inhabitants, used as the scaling baseline.
+/// Reference data for all trade wares; `citizens` is the scaling baseline for supply quantities.
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 struct SupplyReference {
     citizens: u32,
-    goods: BTreeMap<String, SupplyGood>,
+    goods: BTreeMap<String, ReferenceGood>,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
-struct SupplyGood {
-    /// Amount in in-game units per `citizens` inhabitants.
-    amount: i32,
-    /// Minimum sell price for the sell stop.
-    price: i32,
+struct ReferenceGood {
+    /// Amount in in-game units per `citizens` inhabitants; absent for goods that are not part of citizens' supply.
+    supply: Option<i32>,
+    /// Minimum sell price used by supply routes.
+    supply_price: i32,
+    /// Maximum price when buying as a trader (future route types).
+    #[allow(dead_code)]
+    buy_price: i32,
+    /// Minimum price when selling as a trader (future route types).
+    #[allow(dead_code)]
+    sell_price: i32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -171,13 +198,14 @@ pub fn main() {
     match args.command {
         Command::Dump { file } => dump(&file),
         Command::Generate { input, output } => generate(&input, &output),
-        Command::Supply {
+        Command::Write {
+            route_type,
             citizens,
             output,
             reference,
             load_town,
             sell_town,
-        } => supply(citizens, &output, reference.as_ref(), load_town, sell_town),
+        } => write_route(route_type, citizens, &output, reference.as_ref(), load_town, sell_town),
     }
 }
 
@@ -200,6 +228,11 @@ fn dump(file: &PathBuf) {
             _ => "?",
         };
         println!("\nstop {n}: town {town:#04x}, flag {flag} (action {action:#04x}{marker})");
+        let order = &stop[4..28];
+        if order != DEFAULT_ORDER {
+            let names: Vec<&str> = order.iter().filter_map(|&w| WARES.get(w as usize).map(|(name, _)| *name)).collect();
+            println!("  instruction order: {}", names.join(", "));
+        }
         println!("  {:<10} {:>10} {:>12} {:>10}  operation", "ware", "price", "amount_raw", "amount");
         for (i, &(name, scaling)) in WARES.iter().enumerate() {
             let price = i32::from_le_bytes(stop[28 + i * 4..][..4].try_into().unwrap());
@@ -214,10 +247,10 @@ fn dump(file: &PathBuf) {
                 (p, a) if p < 0 && a > 0 => format!("buy from town, max price {}", -p),
                 _ => "unknown".to_string(),
             };
-            let display_amount = if amount == MAX_AMOUNT {
-                "max".to_string()
-            } else {
-                format!("{}", amount / scaling)
+            let display_amount = match amount {
+                MAX_AMOUNT => "max".to_string(),
+                a if a == -MAX_AMOUNT => "-max".to_string(),
+                a => format!("{}", a / scaling),
             };
             println!("  {name:<10} {price:>10} {amount:>12} {display_amount:>10}  {operation}");
         }
@@ -313,7 +346,7 @@ fn generate(input: &PathBuf, output: &PathBuf) {
     println!("Wrote {} stops ({} bytes) to {}", config.stops.len(), data.len(), output.display());
 }
 
-fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>, load_town: u8, sell_town: u8) {
+fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference: Option<&PathBuf>, load_town: u8, sell_town: u8) {
     let reference_str = match reference {
         Some(path) => fs::read_to_string(path).unwrap_or_else(|e| {
             eprintln!("Failed to read {}: {e}", path.display());
@@ -334,61 +367,152 @@ fn supply(citizens: u32, output: &PathBuf, reference: Option<&PathBuf>, load_tow
         exit(1);
     }
 
+    let announce_supply = !matches!(route_type, RouteType::Suck);
     let mut load_amount = [0i32; 24];
     let mut sell_price = [0i32; 24];
-    println!("Supplying {citizens} citizens (reference: {}):", reference.citizens);
+    let mut buy_price = [0i32; 24];
+    if announce_supply {
+        println!("Supplying {citizens} citizens (reference: {}):", reference.citizens);
+    }
     for (ware, good) in &reference.goods {
         let Some(index) = ware_index(ware) else {
             eprintln!("Unknown ware {ware:?} in the reference goods table");
             exit(1);
         };
-        if good.amount <= 0 {
-            eprintln!("Ware {ware:?} needs a positive amount in the reference goods table");
+        if good.supply_price <= 0 || good.buy_price <= 0 || good.sell_price <= 0 {
+            eprintln!("Ware {ware:?} needs positive prices in the reference goods table");
             exit(1);
         }
-        if good.price <= 0 {
-            eprintln!("Ware {ware:?} needs a positive price in the reference goods table");
+        buy_price[index] = good.buy_price;
+        // Goods without a supply amount are not part of citizens' supply.
+        let Some(supply) = good.supply else {
+            continue;
+        };
+        if supply <= 0 {
+            eprintln!("Ware {ware:?} needs a positive supply amount in the reference goods table");
             exit(1);
         }
         // Scale linearly, rounding up so the supply never undershoots.
-        let units = (good.amount as i64 * citizens as i64 + reference.citizens as i64 - 1) / reference.citizens as i64;
+        let units = (supply as i64 * citizens as i64 + reference.citizens as i64 - 1) / reference.citizens as i64;
         let raw = units * WARES[index].1 as i64;
         let Ok(raw) = i32::try_from(raw) else {
             eprintln!("Scaled amount of {ware:?} overflows");
             exit(1);
         };
         load_amount[index] = raw;
-        sell_price[index] = good.price;
-        println!("  {:<10} {units:>6} @ min {}", WARES[index].0, good.price);
+        sell_price[index] = good.supply_price;
+        if announce_supply {
+            println!("  {:<10} {units:>6} @ min {}", WARES[index].0, good.supply_price);
+        }
     }
 
-    let load_stop = TradeRouteStop {
-        town_index: load_town,
-        action: FLAG_X | FIRST_STOP_MARKER,
-        order: DEFAULT_ORDER,
-        price: [0i32; 24],
-        amount: load_amount,
-    };
-    let sell_stop = TradeRouteStop {
-        town_index: sell_town,
-        action: FLAG_X,
-        order: DEFAULT_ORDER,
-        price: sell_price,
-        amount: load_amount,
-    };
-    let data = TradeRouteFile {
-        stops: vec![load_stop, sell_stop],
+    // Sell the reference goods without an amount limit, at the reference prices.
+    let mut sell_max = [0i32; 24];
+    // Take back exactly the calculated quantities of the reference goods.
+    let mut unload_calculated = [0i32; 24];
+    for (i, load) in load_amount.iter().enumerate() {
+        if *load != 0 {
+            sell_max[i] = MAX_AMOUNT;
+            unload_calculated[i] = -load;
+        }
     }
-    .serialize();
+
+    let stop = |town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]| TradeRouteStop {
+        town_index,
+        action,
+        order: DEFAULT_ORDER,
+        price,
+        amount,
+    };
+    // The order array is the stop's instruction order; put the unloading wares first so
+    // the ship frees up space before taking new cargo on.
+    let partitioned_order = |unloads_first: [i32; 24]| {
+        let mut order = [0u8; 24];
+        let mut n = 0;
+        for &ware in DEFAULT_ORDER.iter().filter(|&&w| unloads_first[w as usize] < 0) {
+            order[n] = ware;
+            n += 1;
+        }
+        for &ware in DEFAULT_ORDER.iter().filter(|&&w| unloads_first[w as usize] >= 0) {
+            order[n] = ware;
+            n += 1;
+        }
+        order
+    };
+
+    // Every type starts by loading the calculated quantities at the source (repairing there)
+    // and ends by unloading the whole ship back into the source office. The stops in between
+    // reset the target office stock to exactly the calculated quantities and take the surplus
+    // along; the 6stop variant phases this by unit category to bound the required ship space.
+    let stops = match route_type {
+        RouteType::FiveStop => vec![
+            stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
+            stop(sell_town, FLAG_X, sell_price, sell_max),
+            stop(sell_town, FLAG_X, [0i32; 24], [MAX_AMOUNT; 24]),
+            stop(sell_town, FLAG_X, [0i32; 24], unload_calculated),
+            stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
+        ],
+        RouteType::SixStop => {
+            let mut unload_loads_take_barrels = [0i32; 24];
+            let mut unload_barrels_take_loads = [0i32; 24];
+            let mut unload_loads_calculated = [0i32; 24];
+            for (i, &(_, scaling)) in WARES.iter().enumerate() {
+                match scaling {
+                    LOAD_SCALING => {
+                        unload_loads_take_barrels[i] = -MAX_AMOUNT;
+                        unload_barrels_take_loads[i] = MAX_AMOUNT;
+                        unload_loads_calculated[i] = unload_calculated[i];
+                    }
+                    BARREL_SCALING => {
+                        unload_loads_take_barrels[i] = MAX_AMOUNT;
+                        unload_barrels_take_loads[i] = unload_calculated[i];
+                    }
+                    _ => {} // weapons take part only in the initial load, the sale, and the final unload
+                }
+            }
+            let mut swap_barrels_stop = stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels);
+            swap_barrels_stop.order = partitioned_order(unload_loads_take_barrels);
+            let mut swap_loads_stop = stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads);
+            swap_loads_stop.order = partitioned_order(unload_barrels_take_loads);
+            vec![
+                stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
+                stop(sell_town, FLAG_X, sell_price, sell_max),
+                swap_barrels_stop,
+                swap_loads_stop,
+                stop(sell_town, FLAG_X, [0i32; 24], unload_loads_calculated),
+                stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
+            ]
+        }
+        RouteType::Suck => {
+            let mut buy_prices = [0i32; 24];
+            let mut buy_max = [0i32; 24];
+            for (i, &price) in buy_price.iter().enumerate() {
+                if price > 0 {
+                    buy_prices[i] = -price;
+                    buy_max[i] = MAX_AMOUNT;
+                }
+            }
+            let mut stops = vec![stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], [-MAX_AMOUNT; 24])];
+            for _ in 0..5 {
+                stops.push(stop(load_town, FLAG_X, buy_prices, buy_max));
+            }
+            stops
+        }
+    };
+
+    let stop_count = stops.len();
+    let data = TradeRouteFile { stops }.serialize();
     fs::write(output, &data).unwrap_or_else(|e| {
         eprintln!("Failed to write {}: {e}", output.display());
         exit(1);
     });
-    println!(
-        "Wrote 2 stops ({} bytes) to {}: stop 0 loads from the office in town {load_town:#04x}, stop 1 sells in town {sell_town:#04x}",
-        data.len(),
-        output.display()
-    );
+    let description = match route_type {
+        RouteType::FiveStop | RouteType::SixStop => {
+            format!("load in town {load_town:#04x}, sell and restock in town {sell_town:#04x}, unload everything back in town {load_town:#04x}")
+        }
+        RouteType::Suck => format!("unload everything (with repair) and buy all goods at the reference buy prices, all in town {load_town:#04x}"),
+    };
+    println!("Wrote {stop_count} stops ({} bytes) to {}: {description}", data.len(), output.display());
 }
 
 fn scaled_amount(ware: &str, amount: Option<i32>, stop: usize) -> i32 {
@@ -421,7 +545,7 @@ fn parse_town_index(input: &str) -> Result<u8, String> {
     result.map_err(|e| e.to_string())
 }
 
+/// Looks up a ware by its exact `WareId` identifier (e.g. "PigIron").
 fn ware_index(name: &str) -> Option<usize> {
-    let normalized: String = name.chars().filter(|c| !c.is_whitespace() && *c != '_').collect::<String>().to_lowercase();
-    WARES.iter().position(|(ware, _)| ware.to_lowercase() == normalized)
+    WARES.iter().position(|(ware, _)| *ware == name)
 }

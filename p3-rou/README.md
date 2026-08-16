@@ -28,51 +28,65 @@ town = 0x0a  # town index within the savegame's town list, see below
 flag = "R"   # optional stop flag as shown in the route window: "R" (repair), "X" (default), or "-"
 
 [[stops.load]] # transfer from trading office onto the ship
-ware = "fish"
+ware = "Fish"
 amount = 2     # in-game units (Last/barrels/pieces); omit for "as much as possible"
 
 [[stops]]
 town = 0x11
 
 [[stops.sell]] # sell to the town
-ware = "fish"
+ware = "Fish"
 amount = 2
 min_price = 700
 
 [[stops.unload]] # transfer from the ship into the trading office
-ware = "fish"
+ware = "Fish"
 
 [[stops.buy]] # buy from the town
-ware = "beer"
+ware = "Beer"
 amount = 20
 max_price = 43
 ```
 
-Ware names follow the `WareId` enum of `p3-api` (case-insensitive, spaces ignored): Grain, Meat, Fish, Beer, Salt, Honey,
+Ware names are the exact `WareId` identifiers of `p3-api`: Grain, Meat, Fish, Beer, Salt, Honey,
 Spices, Wine, Cloth, Skins, WhaleOil, Timber, IronGoods, Leather, Wool, Pitch, PigIron, Hemp, Pottery, Bricks, Sword, Bow,
 Crossbow, Carbine.
 
 Town indices are savegame-specific (towns founded during a game shift the list). To find the index of a town, save a route
 that stops there in-game and inspect it with `roucli dump`.
 
-## Generate a town supply route
+## Write a route from the reference goods table
 
 ```
-roucli supply --citizens 2500 -o "Save/AutoRoute/supply.rou"
+roucli write --type 5stop --citizens 2500 --load-town 0x0a --sell-town 0x11 -o "Save/AutoRoute/supply.rou"
 ```
 
-Generates a two-stop template route from a reference goods table: stop 0 loads the goods from the trading office, stop 1
-sells them at minimum prices. Amounts are scaled linearly from the reference citizens count (rounding up), prices are used
-as-is. The stops use town indices 0 unless `--load-town`/`--sell-town` are given (savegame-specific, find them with `dump`).
-The load stop must be a town with a trading office — the game treats office transfers in office-less towns as invalid and
-shows them blank.
+Generates a supply route from a reference goods table. Quantities are scaled linearly from the reference citizens count
+(rounding up), prices are used as-is. Every type loads the calculated quantities at the source town (with the repair flag
+set), sells the reference goods at the given minimum prices in the target town, resets the target office stock to exactly
+the calculated quantities, and unloads the whole ship back into the source office.
 
-The built-in reference table ships in `src/supply_reference.toml`; pass `--reference <file>` to use a custom one:
+- `--type 5stop`: source load → sell max → take the entire target office stock → put back the calculated quantities →
+  unload everything at the source.
+- `--type 6stop`: like 5stop, but swaps the target office stock one unit category at a time (unload loads-goods + take
+  barrels, then unload barrel quantities + take loads-goods, then unload loads quantities), which bounds how much ship
+  space the shuffle needs.
+- `--type suck`: parks in the load town (`--sell-town` and `--citizens` are unused): one stop unloading everything into
+  the office (with the repair flag), then five stops buying all goods at the reference `buy_price` limits.
+
+The stops use town indices 0 unless `--load-town`/`--sell-town` are given (savegame-specific, find them with `dump`).
+Towns of load/unload stops need a trading office — the game wipes office transfers in office-less towns at route load
+time.
+
+The built-in reference table ships in `src/supply_reference.toml`; pass `--reference <file>` to use a custom one. It holds
+data for all trade wares: `supply` (quantity per `citizens` inhabitants; goods without it are not part of citizens'
+supply), `supply_price` (minimum sell price used by supply routes), and `buy_price`/`sell_price` (trading price limits,
+reserved for future route types):
 
 ```toml
 citizens = 1000
 
 [goods]
-beer = { amount = 56, price = 35 }
-grain = { amount = 10, price = 110 }
+beer = { supply = 28, supply_price = 49, buy_price = 49, sell_price = 49 }
+bricks = { supply_price = 120, buy_price = 120, sell_price = 120 }
 ```
