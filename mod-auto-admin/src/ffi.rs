@@ -252,7 +252,9 @@ unsafe fn on_setup_hotkey() {
     refresh_administrator_view();
 }
 
-/// Re-selects the administrator page, which rebuilds the widgets from the office data.
+/// Re-selects the administrator page, which rebuilds the direction arrows and prices.
+/// The displayed amounts are cached in widget objects that only a full window reopen
+/// rebuilds - known cosmetic limitation, the office data itself is correct.
 unsafe fn refresh_administrator_view() {
     UITradingOfficeWindowPtr::new().select_new_page(ADMINISTRATOR_PAGE);
 }
