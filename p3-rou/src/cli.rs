@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, fs, path::PathBuf, process::exit};
 
 use clap::{Parser, Subcommand};
 use log::LevelFilter;
-use p3_rou::builder::{self, ware_index, DEFAULT_ORDER, FIRST_STOP_MARKER, FLAG_NONE, FLAG_R, FLAG_X, MAX_AMOUNT, WARES};
+use num_traits::FromPrimitive;
+use p3_api::data::enums::WareId;
+use p3_rou::builder::{self, ware_index, ware_scaling, DEFAULT_ORDER, FIRST_STOP_MARKER, FLAG_NONE, FLAG_R, FLAG_X, MAX_AMOUNT};
 use p3_rou::{decompress::decompress_file, TradeRouteFile};
 use serde::Deserialize;
 
@@ -183,11 +185,13 @@ fn dump(file: &PathBuf) {
         println!("\nstop {n}: town {town:#04x}, flag {flag} (action {action:#04x}{marker})");
         let order = &stop[4..28];
         if order != DEFAULT_ORDER {
-            let names: Vec<&str> = order.iter().filter_map(|&w| WARES.get(w as usize).map(|(name, _)| *name)).collect();
+            let names: Vec<String> = order.iter().filter_map(|&w| WareId::from_u8(w).map(|ware| format!("{ware:?}"))).collect();
             println!("  instruction order: {}", names.join(", "));
         }
         println!("  {:<10} {:>10} {:>12} {:>10}  operation", "ware", "price", "amount_raw", "amount");
-        for (i, &(name, scaling)) in WARES.iter().enumerate() {
+        for i in 0..24usize {
+            let name = format!("{:?}", WareId::from_usize(i).unwrap());
+            let scaling = ware_scaling(i);
             let price = i32::from_le_bytes(stop[28 + i * 4..][..4].try_into().unwrap());
             let amount = i32::from_le_bytes(stop[124 + i * 4..][..4].try_into().unwrap());
             if amount == 0 {
@@ -341,7 +345,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
         }
         // Scale linearly, rounding up so the supply never undershoots.
         let units = (supply as i64 * citizens as i64 + reference.citizens as i64 - 1) / reference.citizens as i64;
-        let raw = units * WARES[index].1 as i64;
+        let raw = units * ware_scaling(index) as i64;
         let Ok(raw) = i32::try_from(raw) else {
             eprintln!("Scaled amount of {ware:?} overflows");
             exit(1);
@@ -349,7 +353,11 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
         load_amount[index] = raw;
         sell_prices[index] = good.sell_price;
         if announce_supply {
-            println!("  {:<10} {units:>6} @ min {}", WARES[index].0, good.sell_price);
+            println!(
+                "  {:<10} {units:>6} @ min {}",
+                format!("{:?}", WareId::from_usize(index).unwrap()),
+                good.sell_price
+            );
         }
     }
 
@@ -386,7 +394,7 @@ fn scaled_amount(ware: &str, amount: Option<i32>, stop: usize) -> i32 {
         eprintln!("Stop {stop}: ware {ware:?} needs a positive amount");
         exit(1);
     }
-    match amount.checked_mul(WARES[index].1) {
+    match amount.checked_mul(ware_scaling(index)) {
         Some(scaled) => scaled,
         None => {
             eprintln!("Stop {stop}: amount {amount} of {ware:?} overflows");

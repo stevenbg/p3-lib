@@ -12,6 +12,11 @@
 //! - The per-stop order array is the instruction order; [partitioned_order] puts
 //!   unloading wares first so the ship frees space before taking new cargo on.
 
+use std::str::FromStr;
+
+use num_traits::FromPrimitive;
+use p3_api::data::enums::WareId;
+
 use crate::TradeRouteStop;
 
 /// The game's sentinel for "as much as possible", stored unscaled.
@@ -32,37 +37,14 @@ pub const DEFAULT_ORDER: [u8; 24] = [
     0x03, 0x13, 0x08, 0x02, 0x00, 0x11, 0x05, 0x0c, 0x0d, 0x01, 0x10, 0x0f, 0x12, 0x04, 0x09, 0x06, 0x0b, 0x0a, 0x07, 0x0e, 0x15, 0x17, 0x16, 0x14,
 ];
 
-/// Ware names (the p3-api WareId identifiers) and their raw-unit scaling, indexed by ware id.
-pub const WARES: [(&str, i32); 24] = [
-    ("Grain", 2000),
-    ("Meat", 2000),
-    ("Fish", 2000),
-    ("Beer", 200),
-    ("Salt", 200),
-    ("Honey", 200),
-    ("Spices", 200),
-    ("Wine", 200),
-    ("Cloth", 200),
-    ("Skins", 200),
-    ("WhaleOil", 200),
-    ("Timber", 2000),
-    ("IronGoods", 200),
-    ("Leather", 200),
-    ("Wool", 2000),
-    ("Pitch", 200),
-    ("PigIron", 2000),
-    ("Hemp", 2000),
-    ("Pottery", 200),
-    ("Bricks", 2000),
-    ("Sword", 10),
-    ("Bow", 10),
-    ("Crossbow", 10),
-    ("Carbine", 10),
-];
-
 /// Looks up a ware by its exact `WareId` identifier (e.g. "PigIron").
 pub fn ware_index(name: &str) -> Option<usize> {
-    WARES.iter().position(|(ware, _)| *ware == name)
+    WareId::from_str(name).ok().map(|ware| ware as usize)
+}
+
+/// The ware's raw-unit scaling (raw units per in-game unit), from p3-api.
+pub fn ware_scaling(index: usize) -> i32 {
+    WareId::from_usize(index).map(|ware| ware.get_scaling()).unwrap_or(1)
 }
 
 /// A stop in the default instruction order.
@@ -130,8 +112,8 @@ pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell
     let mut unload_loads_take_barrels = [0i32; 24];
     let mut unload_barrels_take_loads = [0i32; 24];
     let mut unload_loads_calculated = [0i32; 24];
-    for (i, &(_, scaling)) in WARES.iter().enumerate() {
-        match scaling {
+    for i in 0..24 {
+        match ware_scaling(i) {
             LOAD_SCALING => {
                 unload_loads_take_barrels[i] = -MAX_AMOUNT;
                 unload_barrels_take_loads[i] = MAX_AMOUNT;
