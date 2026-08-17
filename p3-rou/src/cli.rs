@@ -2,54 +2,11 @@ use std::{collections::BTreeMap, fs, path::PathBuf, process::exit};
 
 use clap::{Parser, Subcommand};
 use log::LevelFilter;
-use p3_rou::{decompress::decompress_file, TradeRouteFile, TradeRouteStop};
+use p3_rou::builder::{self, ware_index, DEFAULT_ORDER, FIRST_STOP_MARKER, FLAG_NONE, FLAG_R, FLAG_X, MAX_AMOUNT, WARES};
+use p3_rou::{decompress::decompress_file, TradeRouteFile};
 use serde::Deserialize;
 
 const STOP_SIZE: usize = 220;
-/// The game's sentinel for "as much as possible", stored unscaled.
-const MAX_AMOUNT: i32 = 1_000_000_000;
-/// Raw units per in-game unit: wares measured in loads (1 load = 10 barrels).
-const LOAD_SCALING: i32 = 2000;
-/// Raw units per in-game unit: wares measured in barrels.
-const BARREL_SCALING: i32 = 200;
-/// Set on the first stop of every route the game saves.
-const FIRST_STOP_MARKER: u8 = 0x04;
-const FLAG_R: u8 = 0x01;
-const FLAG_X: u8 = 0x00;
-const FLAG_NONE: u8 = 0x09;
-
-/// The ware display order the game writes into every saved route.
-const DEFAULT_ORDER: [u8; 24] = [
-    0x03, 0x13, 0x08, 0x02, 0x00, 0x11, 0x05, 0x0c, 0x0d, 0x01, 0x10, 0x0f, 0x12, 0x04, 0x09, 0x06, 0x0b, 0x0a, 0x07, 0x0e, 0x15, 0x17, 0x16, 0x14,
-];
-
-/// Ware names and their raw-unit scaling, indexed by ware id.
-const WARES: [(&str, i32); 24] = [
-    ("Grain", 2000),
-    ("Meat", 2000),
-    ("Fish", 2000),
-    ("Beer", 200),
-    ("Salt", 200),
-    ("Honey", 200),
-    ("Spices", 200),
-    ("Wine", 200),
-    ("Cloth", 200),
-    ("Skins", 200),
-    ("WhaleOil", 200),
-    ("Timber", 2000),
-    ("IronGoods", 200),
-    ("Leather", 200),
-    ("Wool", 2000),
-    ("Pitch", 200),
-    ("PigIron", 2000),
-    ("Hemp", 2000),
-    ("Pottery", 200),
-    ("Bricks", 2000),
-    ("Sword", 10),
-    ("Bow", 10),
-    ("Crossbow", 10),
-    ("Carbine", 10),
-];
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -325,13 +282,7 @@ fn generate(input: &PathBuf, output: &PathBuf) {
             );
         }
 
-        stops.push(TradeRouteStop {
-            town_index: stop.town,
-            action,
-            order: DEFAULT_ORDER,
-            price,
-            amount,
-        });
+        stops.push(builder::stop(stop.town, action, price, amount));
     }
 
     let data = TradeRouteFile { stops }.serialize();
@@ -402,98 +353,10 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
         }
     }
 
-    // Sell the reference goods without an amount limit, at the reference prices.
-    let mut sell_max = [0i32; 24];
-    // Take back exactly the calculated quantities of the reference goods.
-    let mut unload_calculated = [0i32; 24];
-    for (i, load) in load_amount.iter().enumerate() {
-        if *load != 0 {
-            sell_max[i] = MAX_AMOUNT;
-            unload_calculated[i] = -load;
-        }
-    }
-
-    let stop = |town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]| TradeRouteStop {
-        town_index,
-        action,
-        order: DEFAULT_ORDER,
-        price,
-        amount,
-    };
-    // The order array is the stop's instruction order; put the unloading wares first so
-    // the ship frees up space before taking new cargo on.
-    let partitioned_order = |unloads_first: [i32; 24]| {
-        let mut order = [0u8; 24];
-        let mut n = 0;
-        for &ware in DEFAULT_ORDER.iter().filter(|&&w| unloads_first[w as usize] < 0) {
-            order[n] = ware;
-            n += 1;
-        }
-        for &ware in DEFAULT_ORDER.iter().filter(|&&w| unloads_first[w as usize] >= 0) {
-            order[n] = ware;
-            n += 1;
-        }
-        order
-    };
-
-    // Every type starts by loading the calculated quantities at the source (repairing there)
-    // and ends by unloading the whole ship back into the source office. The stops in between
-    // reset the target office stock to exactly the calculated quantities and take the surplus
-    // along; the 6stop variant phases this by unit category to bound the required ship space.
     let stops = match route_type {
-        RouteType::FiveStop => vec![
-            stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
-            stop(sell_town, FLAG_X, sell_prices, sell_max),
-            stop(sell_town, FLAG_X, [0i32; 24], [MAX_AMOUNT; 24]),
-            stop(sell_town, FLAG_X, [0i32; 24], unload_calculated),
-            stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
-        ],
-        RouteType::SixStop => {
-            let mut unload_loads_take_barrels = [0i32; 24];
-            let mut unload_barrels_take_loads = [0i32; 24];
-            let mut unload_loads_calculated = [0i32; 24];
-            for (i, &(_, scaling)) in WARES.iter().enumerate() {
-                match scaling {
-                    LOAD_SCALING => {
-                        unload_loads_take_barrels[i] = -MAX_AMOUNT;
-                        unload_barrels_take_loads[i] = MAX_AMOUNT;
-                        unload_loads_calculated[i] = unload_calculated[i];
-                    }
-                    BARREL_SCALING => {
-                        unload_loads_take_barrels[i] = MAX_AMOUNT;
-                        unload_barrels_take_loads[i] = unload_calculated[i];
-                    }
-                    _ => {} // weapons take part only in the initial load, the sale, and the final unload
-                }
-            }
-            let mut swap_barrels_stop = stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels);
-            swap_barrels_stop.order = partitioned_order(unload_loads_take_barrels);
-            let mut swap_loads_stop = stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads);
-            swap_loads_stop.order = partitioned_order(unload_barrels_take_loads);
-            vec![
-                stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
-                stop(sell_town, FLAG_X, sell_prices, sell_max),
-                swap_barrels_stop,
-                swap_loads_stop,
-                stop(sell_town, FLAG_X, [0i32; 24], unload_loads_calculated),
-                stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
-            ]
-        }
-        RouteType::Suck => {
-            let mut buy_prices = [0i32; 24];
-            let mut buy_max = [0i32; 24];
-            for (i, &price) in buy_price.iter().enumerate() {
-                if price > 0 {
-                    buy_prices[i] = -price;
-                    buy_max[i] = MAX_AMOUNT;
-                }
-            }
-            let mut stops = vec![stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], [-MAX_AMOUNT; 24])];
-            for _ in 0..5 {
-                stops.push(stop(load_town, FLAG_X, buy_prices, buy_max));
-            }
-            stops
-        }
+        RouteType::FiveStop => builder::five_stop_route(load_town, sell_town, load_amount, sell_prices),
+        RouteType::SixStop => builder::six_stop_route(load_town, sell_town, load_amount, sell_prices),
+        RouteType::Suck => builder::suck_route(load_town, buy_price),
     };
 
     let stop_count = stops.len();
@@ -539,9 +402,4 @@ fn parse_town_index(input: &str) -> Result<u8, String> {
         None => input.parse(),
     };
     result.map_err(|e| e.to_string())
-}
-
-/// Looks up a ware by its exact `WareId` identifier (e.g. "PigIron").
-fn ware_index(name: &str) -> Option<usize> {
-    WARES.iter().position(|(ware, _)| *ware == name)
 }

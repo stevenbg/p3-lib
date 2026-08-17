@@ -2,6 +2,12 @@
 
 Library and CLI for Patrician 3 trade route files (`.rou`, stored in `Save/AutoRoute`).
 
+The library covers the file format (stop serialization, decompression) and route
+construction: the `builder` module holds the verified format semantics (operation sign
+encodings, flag bytes, the first-stop marker, the instruction-order array, the MAX
+sentinel) and assembles the route types below, so mods can build routes in-game from
+the same code the CLI uses.
+
 The game saves routes compressed. The compression algorithm has not been reverse engineered, so generated files are written
 uncompressed (negative length header). The vanilla game fails to load uncompressed routes — the
 `mod-fix-uncompressed-trade-route-loading` mod fixes that and must be installed to use generated files.
