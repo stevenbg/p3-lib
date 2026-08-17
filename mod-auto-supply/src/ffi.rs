@@ -312,7 +312,10 @@ unsafe fn on_debug_hotkey() {
     let thresholds = GAME_WORLD_PTR.get_town(town_index as u8).get_price_thresholds();
     let production = GAME_WORLD_PTR.get_town(town_index as u8).get_production_values();
 
-    ods(&format!("debug dump for {town_name} (difficulty constant {}):", crate::prices::DIFFICULTY_D));
+    ods(&format!(
+        "debug dump for {town_name} (live trade difficulty {}):",
+        crate::prices::difficulty_d()
+    ));
     let mut csv = String::from(
         "ware,base/unit,sell@t0,sell@mid_0_t0,sell@mid_t0_t1,sell@t1,buy@mid_t0_t1,buy@2weeks,buy@t1,buy@mid_t1_t2,buy@t2,prod/day,(t2-t1)/10,t0 units,t1 units,t2 units,t3 units\n",
     );

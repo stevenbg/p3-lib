@@ -16,10 +16,17 @@
 use num_traits::FromPrimitive;
 use p3_api::{data::enums::WareId, town::WARE_BASE_PRICES};
 
-/// The selling curve's factor at stock 0, set by the trade difficulty: 2.2 low,
-/// 2.0 normal, 1.8 high. The actual difficulty is unknown; it only affects
-/// [SellLevel::MidZeroT0] and the chunk correction of [SellLevel::AtT0].
-pub const DIFFICULTY_D: f32 = 2.0;
+/// The selling curve's factor at stock 0, read live from the game's settings object
+/// (2.2 low, 2.0 normal, 1.8 high). Falls back to normal if the value looks corrupt.
+/// Affects [SellLevel::MidZeroT0] and the chunk correction of [SellLevel::AtT0].
+pub unsafe fn difficulty_d() -> f32 {
+    let d = *p3_api::TRADE_DIFFICULTY_ADDRESS;
+    if (1.0..=3.0).contains(&d) {
+        d
+    } else {
+        2.0
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum SellLevel {
@@ -77,17 +84,17 @@ pub unsafe fn sell_price(ware_index: u16, thresholds: &[[i32; 4]; 24], level: Se
     let factor = match level {
         SellLevel::AtT0 => {
             // 1.4 at the anchor, plus the averaging over the last traded unit (the
-            // segment below t0 runs from DIFFICULTY_D down to 1.4 over t0 raw units),
+            // segment below t0 runs from the difficulty factor down to 1.4 over t0 raw units),
             // which matters for low-volume wares.
             let scaling = WareId::from_u16(ware_index).unwrap().get_scaling() as f32;
             let t0 = thresholds[ware_index as usize][0] as f32;
             if t0 > 0.0 {
-                1.4 + ((DIFFICULTY_D - 1.4) / 2.0) * (scaling / t0)
+                1.4 + ((difficulty_d() - 1.4) / 2.0) * (scaling / t0)
             } else {
                 1.4
             }
         }
-        SellLevel::MidZeroT0 => (DIFFICULTY_D + 1.4) / 2.0,
+        SellLevel::MidZeroT0 => (difficulty_d() + 1.4) / 2.0,
         SellLevel::MidT0T1 => 1.2,
         SellLevel::AtT1 => 1.0,
     };

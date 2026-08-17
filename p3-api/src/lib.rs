@@ -17,6 +17,11 @@ pub mod ships;
 pub mod town;
 pub mod ui;
 
+/// The mapped trade difficulty (2.2 low, 2.0 normal, 1.8 high): the selling price
+/// curve's factor at market stock 0. Field +0x64 of the static class at 0x006DE3D8
+/// that every get_sell_price (0x0052E1D0) caller passes as `this`.
+pub const TRADE_DIFFICULTY_ADDRESS: *const f32 = 0x006DE43C as _;
+
 #[derive(Clone, Debug)]
 #[repr(C)]
 pub struct Point<T> {
