@@ -1,0 +1,26 @@
+# Reference goods table. Ware keys are the exact WareId identifiers from p3-api.
+# `buy_price`/`sell_price` are the trading limits used by the hotkeys; `supply` and
+# `supply_price` are carried for compatibility with the roucli reference format.
+citizens = 1000
+
+[goods]
+Beer = { supply = 28, supply_price = 49, buy_price = 38, sell_price = 49 }
+Bricks = { supply_price = 120, buy_price = 77, sell_price = 120 }
+Cloth = { supply = 9, supply_price = 295, buy_price = 227, sell_price = 295 }
+Fish = { supply = 4, supply_price = 600, buy_price = 462, sell_price = 600 }
+Grain = { supply = 5, supply_price = 150, buy_price = 115, sell_price = 150 }
+Hemp = { supply_price = 750, buy_price = 577, sell_price = 750 }
+Honey = { supply = 6, supply_price = 150, buy_price = 115, sell_price = 150 }
+IronGoods = { supply = 16, supply_price = 380, buy_price = 292, sell_price = 380 }
+Leather = { supply = 6, supply_price = 310, buy_price = 238, sell_price = 310 }
+Meat = { supply = 2, supply_price = 1450, buy_price = 1115, sell_price = 1450 }
+PigIron = { supply_price = 1300, buy_price = 1000, sell_price = 1300 }
+Pitch = { supply_price = 100, buy_price = 77, sell_price = 100 }
+Pottery = { supply = 6, supply_price = 235, buy_price = 181, sell_price = 235 }
+Salt = { supply = 1, supply_price = 39, buy_price = 30, sell_price = 39 }
+Skins = { supply = 5, supply_price = 950, buy_price = 731, sell_price = 950 }
+Spices = { supply = 1, supply_price = 450, buy_price = 346, sell_price = 450 }
+Timber = { supply = 2, supply_price = 95, buy_price = 73, sell_price = 95 }
+WhaleOil = { supply = 7, supply_price = 115, buy_price = 88, sell_price = 115 }
+Wine = { supply = 10, supply_price = 305, buy_price = 235, sell_price = 305 }
+Wool = { supply = 1, supply_price = 1400, buy_price = 1077, sell_price = 1400 }

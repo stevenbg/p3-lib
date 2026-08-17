@@ -44,6 +44,10 @@ impl OfficePtr {
         self.get(0x354)
     }
 
+    pub unsafe fn set_administrator_trade_stock(&self, stock: [i32; 20]) {
+        self.set(0x354, &stock)
+    }
+
     pub unsafe fn get_administrator_trade_lock_bitmap(&self) -> u32 {
         self.get(0x3b4)
     }
