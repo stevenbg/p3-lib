@@ -173,13 +173,9 @@ struct ReferenceGood {
     /// Amount in in-game units per `citizens` inhabitants; absent for goods that are not part of citizens' supply.
     supply: Option<i32>,
     /// Minimum sell price used by supply routes.
-    supply_price: i32,
-    /// Maximum price when buying as a trader (future route types).
-    #[allow(dead_code)]
-    buy_price: i32,
-    /// Minimum price when selling as a trader (future route types).
-    #[allow(dead_code)]
     sell_price: i32,
+    /// Maximum buy price, used by the suck route type.
+    buy_price: i32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -369,7 +365,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
 
     let announce_supply = !matches!(route_type, RouteType::Suck);
     let mut load_amount = [0i32; 24];
-    let mut sell_price = [0i32; 24];
+    let mut sell_prices = [0i32; 24];
     let mut buy_price = [0i32; 24];
     if announce_supply {
         println!("Supplying {citizens} citizens (reference: {}):", reference.citizens);
@@ -379,7 +375,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
             eprintln!("Unknown ware {ware:?} in the reference goods table");
             exit(1);
         };
-        if good.supply_price <= 0 || good.buy_price <= 0 || good.sell_price <= 0 {
+        if good.sell_price <= 0 || good.buy_price <= 0 {
             eprintln!("Ware {ware:?} needs positive prices in the reference goods table");
             exit(1);
         }
@@ -400,9 +396,9 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
             exit(1);
         };
         load_amount[index] = raw;
-        sell_price[index] = good.supply_price;
+        sell_prices[index] = good.sell_price;
         if announce_supply {
-            println!("  {:<10} {units:>6} @ min {}", WARES[index].0, good.supply_price);
+            println!("  {:<10} {units:>6} @ min {}", WARES[index].0, good.sell_price);
         }
     }
 
@@ -447,7 +443,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
     let stops = match route_type {
         RouteType::FiveStop => vec![
             stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
-            stop(sell_town, FLAG_X, sell_price, sell_max),
+            stop(sell_town, FLAG_X, sell_prices, sell_max),
             stop(sell_town, FLAG_X, [0i32; 24], [MAX_AMOUNT; 24]),
             stop(sell_town, FLAG_X, [0i32; 24], unload_calculated),
             stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
@@ -476,7 +472,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
             swap_loads_stop.order = partitioned_order(unload_barrels_take_loads);
             vec![
                 stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
-                stop(sell_town, FLAG_X, sell_price, sell_max),
+                stop(sell_town, FLAG_X, sell_prices, sell_max),
                 swap_barrels_stop,
                 swap_loads_stop,
                 stop(sell_town, FLAG_X, [0i32; 24], unload_loads_calculated),
