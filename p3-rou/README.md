@@ -78,15 +78,15 @@ The stops use town indices 0 unless `--load-town`/`--sell-town` are given (saveg
 Towns of load/unload stops need a trading office — the game wipes office transfers in office-less towns at route load
 time.
 
-The built-in reference table ships in `src/supply_reference.toml`; pass `--reference <file>` to use a custom one. It holds
-data for all trade wares: `supply` (quantity per `citizens` inhabitants; goods without it are not part of citizens'
-supply), `supply_price` (minimum sell price used by supply routes), and `buy_price`/`sell_price` (trading price limits,
-reserved for future route types):
+The built-in reference table ships in `src/supply_reference.toml`; pass `--reference <file>` to use a custom one, and
+`--citizens` defaults to 1000. The table holds data for all trade wares: `supply` (quantity per `citizens` inhabitants;
+goods without it are not part of citizens' supply), `sell_price` (minimum sell price used by supply routes) and
+`buy_price` (maximum buy price, used by the suck type). Ware keys are the exact `WareId` identifiers:
 
 ```toml
 citizens = 1000
 
 [goods]
-beer = { supply = 28, supply_price = 49, buy_price = 49, sell_price = 49 }
-bricks = { supply_price = 120, buy_price = 120, sell_price = 120 }
+Beer = { supply = 28, sell_price = 49, buy_price = 38 }
+Bricks = { sell_price = 120, buy_price = 77 }
 ```
