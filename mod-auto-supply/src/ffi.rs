@@ -18,7 +18,7 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F11, VK_F2, VK_F3, VK_F4, VK_MENU, VK_SHIFT},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F2, VK_F3, VK_F4, VK_MENU, VK_SHIFT},
         WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, WH_KEYBOARD},
     },
 };
@@ -36,6 +36,8 @@ const BUY_PRICES_KEY: usize = VK_F3.0 as usize;
 const SELL_PRICES_KEY: usize = VK_F4.0 as usize;
 /// F11: dump thresholds, base prices and the price levels to the log and a CSV.
 const DEBUG_KEY: usize = VK_F11.0 as usize;
+/// F10: dump every ship's applied route chain from the route stop pool.
+const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
 /// Amount set for buy orders whose current amount is 0, in in-game units.
 const BUY_AMOUNT: i32 = 9999;
 /// The administrator view of the trading office window ("Trading Office" side button, pages 0-6).
@@ -175,6 +177,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     apply_prices(Some(level), None);
                 }
                 w if w == DEBUG_KEY => on_debug_hotkey(),
+                w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
                 _ => {}
             }
         }
@@ -355,5 +358,62 @@ unsafe fn on_debug_hotkey() {
     match std::fs::write(&file_name, csv) {
         Ok(()) => ods(&format!("wrote {file_name} to the game directory")),
         Err(e) => ods(&format!("failed to write {file_name}: {e}")),
+    }
+}
+
+/// Global pool of applied route stops (VERIFIED in-game): 220-byte records in the .rou
+/// stop layout, the first u16 is the next-stop index, the chain is circular. The
+/// (lead) ship's ship+0x132 is the CURRENT stop pointer (advances as the route runs);
+/// the stop carrying the 0x04 action marker is the route's logical first stop. A head
+/// of 0 is ambiguous (pool[0] is a valid index), so empty ship slots also "dump".
+const ROUTE_STOP_POOL_COUNT: *const u16 = 0x006dd72a as _;
+const ROUTE_STOP_POOL: *const u32 = 0x006dd72c as _;
+const ROUTE_STOP_SIZE: u32 = 220;
+const SHIP_ROUTE_HEAD_OFFSET: u32 = 0x132;
+
+/// F10: walk every ship's route chain and dump the stops.
+unsafe fn dump_ship_routes() {
+    let pool = *ROUTE_STOP_POOL;
+    let pool_count = *ROUTE_STOP_POOL_COUNT;
+    ods(&format!("route stop pool at {pool:#010x}, {pool_count} entries"));
+    if pool == 0 {
+        return;
+    }
+
+    let ships = p3_api::ships::ShipsPtr::new();
+    for ship_id in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(ship_id) else {
+            continue;
+        };
+        let head = *((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16);
+        if head >= pool_count {
+            continue;
+        }
+        ods(&format!("ship {ship_id} {:?}: route head {head}", ship.get_name()));
+
+        let mut index = head;
+        for n in 0..32 {
+            let stop = pool + index as u32 * ROUTE_STOP_SIZE;
+            let next = *(stop as *const u16);
+            let town_index = *((stop + 2) as *const u8);
+            let action = *((stop + 3) as *const u8);
+            let town = get_town_name(town_index).unwrap_or_else(|| format!("<{town_index:#04x}>"));
+            let mut ops = Vec::new();
+            for i in 0..24usize {
+                let price = *((stop + 28 + i as u32 * 4) as *const i32);
+                let amount = *((stop + 124 + i as u32 * 4) as *const i32);
+                if price != 0 || amount != 0 {
+                    ops.push(format!("{:?} p{price} a{amount}", WareId::from_usize(i).unwrap()));
+                }
+            }
+            ods(&format!(
+                "  stop {n}: pool[{index}] town {town}, action {action:#04x}, next {next}, ops [{}]",
+                ops.join(", ")
+            ));
+            index = next;
+            if index == head || index >= pool_count {
+                break;
+            }
+        }
     }
 }
