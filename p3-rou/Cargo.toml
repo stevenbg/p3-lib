@@ -9,5 +9,8 @@ path = "src/cli.rs"
 [dependencies]
 bitvec = "1"
 byteorder = "1.5.0"
+clap = { workspace = true }
 log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
 simple_logger = "4.1"
+toml = "0.7"
