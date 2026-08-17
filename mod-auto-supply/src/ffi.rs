@@ -66,7 +66,7 @@ struct ReferenceGood {
 /// Logs unconditionally via OutputDebugString: the shared DEBUGGER_LOGGER drops all
 /// messages unless a real debugger is attached, which hides them from DebugView.
 fn ods(message: &str) {
-    win_dbg_logger::output_debug_string(&format!("auto_admin: {message}\r\n"));
+    win_dbg_logger::output_debug_string(&format!("auto_supply: {message}\r\n"));
 }
 
 /// Sets the PEB BeingDebugged flag so IsDebuggerPresent() returns true, unlocking the

@@ -1,11 +1,11 @@
 [package]
-name = "mod-auto-admin"
+name = "mod-auto-supply"
 edition = "2021"
 version.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
-name = "auto_admin"
+name = "auto_supply"
 
 [dependencies]
 log = { workspace = true }
