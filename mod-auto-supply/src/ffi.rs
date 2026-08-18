@@ -59,11 +59,12 @@ const STOP_SELL_LEVEL: PriceLevel = PriceLevel::LowerMid;
 /// justify the cargo space early on (grain, hemp and timber are bulky loads goods), so
 /// they stay in the town. Ctrl+F4 buys them too.
 const NO_BUY_WARES: [WareId; 6] = [WareId::Pitch, WareId::Timber, WareId::Salt, WareId::Bricks, WareId::Grain, WareId::Hemp];
-/// Wares the F3 routes never supply: their t0 threshold is a fixed building-material
-/// base rather than a week of demand (bricks alone are 40 loads, 400 barrels of hold), so
-/// shipping it in would swamp the route. Whatever accumulates in the target office is
-/// still hauled home.
-const NO_SUPPLY_WARES: [WareId; 2] = [WareId::Bricks, WareId::Timber];
+/// Wares the F3 routes never supply. For bricks and timber the t0 threshold is a fixed
+/// building-material base rather than a week of demand (bricks alone are 40 loads, 400
+/// barrels of hold); pig iron, pitch and hemp are industry inputs whose t0 is usually the
+/// minimum floor rather than real demand. Shipping any of them in would swamp the route
+/// for little gain. Whatever accumulates in the target office is still hauled home.
+const NO_SUPPLY_WARES: [WareId; 5] = [WareId::Bricks, WareId::Timber, WareId::PigIron, WareId::Pitch, WareId::Hemp];
 
 /// The game's route file loader: thiscall(this, base_name) -> decompressed buffer. It
 /// forms the path "save\AutoRoute\<name>.rou" itself, so we write the file there and
