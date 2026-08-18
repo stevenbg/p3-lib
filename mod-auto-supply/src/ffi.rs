@@ -17,7 +17,7 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F4, VK_F9, VK_MENU},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU},
         WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
     },
 };
@@ -49,6 +49,8 @@ const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
 /// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
 /// does the same but also buys the [NO_BUY_WARES].
 const ADD_STOP_KEY: usize = VK_F4.0 as usize;
+/// F3 sets a whole route template: plain 5stop, alt 6stop, ctrl suck.
+const ROUTE_KEY: usize = VK_F3.0 as usize;
 /// The stop buys what the town produces at this level (the Ctrl+Y price).
 const STOP_BUY_LEVEL: PriceLevel = PriceLevel::LowerMid;
 /// The stop sells everything else at this level (the Alt+Y price).
@@ -68,6 +70,9 @@ const OPERATIONS_ROUTE_BUFFER: *mut u32 = 0x006dfc20 as _;
 const OPERATIONS_ROUTE_SHIP: *mut u32 = 0x006dfc24 as _;
 const ROUTE_BASE_NAME: &str = "_autosupply";
 const ROUTE_FILE_PATH: &str = "save/AutoRoute/_autosupply.rou";
+/// The ship's route as it was before a key changed it, so it can be loaded back through
+/// the route window's File button.
+const ROUTE_BACKUP_PATH: &str = "save/AutoRoute/_backup.rou";
 const FIRST_STOP_MARKER: u8 = 0x04;
 
 /// The loader takes a pointer to an MFC-style string object: a single pointer to char
@@ -235,6 +240,13 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
                 // Alt+F4 is left to Windows.
                 w if w == ADD_STOP_KEY && !alt => on_add_stop_hotkey(!ctrl),
+                w if w == ROUTE_KEY => on_route_hotkey(if ctrl {
+                    RouteKind::Suck
+                } else if alt {
+                    RouteKind::SixStop
+                } else {
+                    RouteKind::FiveStop
+                }),
                 _ if !office_open => {}
                 w if w == SETUP_KEY => on_setup_hotkey(),
                 w if w == DEBUG_KEY => on_debug_hotkey(),
@@ -400,26 +412,66 @@ unsafe fn apply_route_file(ship_index: u16) -> bool {
     true
 }
 
+/// The context every route key needs: the selected ship (which must be the player's) and
+/// the town whose view is open. Logs why not when it cannot be resolved.
+unsafe fn route_context(what: &str) -> Option<(u16, String, u8)> {
+    let Some(ship_index) = selected_ship_index() else {
+        ods(&format!("{what}: no ship selected"));
+        return None;
+    };
+    if !is_player_ship(ship_index) {
+        ods(&format!("{what}: the selected ship is not yours"));
+        return None;
+    }
+    let scene = *TOWN_SCENE_PTR;
+    if scene == 0 {
+        ods(&format!("{what}: not in a town"));
+        return None;
+    }
+    let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
+    let ships = p3_api::ships::ShipsPtr::new();
+    let ship_name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
+    Some((ship_index, ship_name, town_index))
+}
+
+/// True if the player has a trading office in the town. Route stops that transfer wares
+/// to or from an office are wiped at load time in towns where there is none.
+unsafe fn has_player_office(town_index: u8) -> bool {
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    GAME_WORLD_PTR.get_office_in_of(town_index as _, merchant_index as _).is_some()
+}
+
+/// Write the stops as the route file and apply them to the ship, normalising the
+/// logical-first marker onto the first stop. Returns false and logs on failure.
+unsafe fn write_and_apply_route(ship_index: u16, mut stops: Vec<TradeRouteStop>) -> bool {
+    for (i, stop) in stops.iter_mut().enumerate() {
+        if i == 0 {
+            stop.action |= FIRST_STOP_MARKER;
+        } else {
+            stop.action &= !FIRST_STOP_MARKER;
+        }
+    }
+    let data = p3_rou::TradeRouteFile { stops }.serialize();
+    if let Err(e) = std::fs::write(ROUTE_FILE_PATH, &data) {
+        ods(&format!("route: failed to write {ROUTE_FILE_PATH}: {e}"));
+        return false;
+    }
+    if !apply_route_file(ship_index) {
+        ods("route: loader failed (is fix_uncompressed_trade_route_loading.dll installed?)");
+        return false;
+    }
+    true
+}
+
 /// Append a trade stop for the current town to the selected ship's route: buy the wares
 /// the town produces at the STOP_BUY_LEVEL price, sell all others at the STOP_SELL_LEVEL
 /// price, with the sell instructions listed above the buys. With `skip_no_buy_wares` the
 /// [NO_BUY_WARES] get no order at all where the town produces them. The whole route is
 /// then re-applied through the game's loader + transfer.
 unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
-    let Some(ship_index) = selected_ship_index() else {
-        ods("add stop: no ship selected");
+    let Some((ship_index, name, town_index)) = route_context("add stop") else {
         return;
     };
-    if !is_player_ship(ship_index) {
-        ods("add stop: the selected ship is not yours");
-        return;
-    }
-    let scene = *TOWN_SCENE_PTR;
-    if scene == 0 {
-        ods("add stop: not in a town");
-        return;
-    }
-    let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
     let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
     let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
 
@@ -451,25 +503,9 @@ unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
     // barrel goods before the bulky loads goods.
     let mut stops = read_ship_route(ship_index);
     stops.push(builder::stop(town_index, 0x00, price, amount));
-
-    // Exactly the first stop carries the logical-first marker.
-    for (i, stop) in stops.iter_mut().enumerate() {
-        if i == 0 {
-            stop.action |= FIRST_STOP_MARKER;
-        } else {
-            stop.action &= !FIRST_STOP_MARKER;
-        }
-    }
-
     let stop_count = stops.len();
-    let data = p3_rou::TradeRouteFile { stops }.serialize();
-    if let Err(e) = std::fs::write(ROUTE_FILE_PATH, &data) {
-        ods(&format!("add stop: failed to write {ROUTE_FILE_PATH}: {e}"));
-        return;
-    }
-    let ships = p3_api::ships::ShipsPtr::new();
-    let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
-    if apply_route_file(ship_index) {
+
+    if write_and_apply_route(ship_index, stops) {
         let skipped = if skipped.is_empty() {
             String::new()
         } else {
@@ -479,8 +515,89 @@ unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
             "add stop in {town} on {name:?}: buying [{}]{skipped}, selling {sold} others (route now {stop_count} stops)",
             bought.join(", ")
         ));
-    } else {
-        ods("add stop: loader failed (is fix_uncompressed_trade_route_loading.dll installed?)");
+    }
+}
+
+/// The route templates F3 can set, from `p3_rou::builder`.
+#[derive(Clone, Copy, Debug)]
+enum RouteKind {
+    FiveStop,
+    SixStop,
+    Suck,
+}
+
+/// F3: replace the selected ship's route with a supply route template: load one week of
+/// the current town's demand at the home office, sell it there, reset that office's stock
+/// and haul the surplus home. Ctrl+F3 instead parks in the current town buying everything
+/// up. Quantities come from the town's t0 thresholds (a week of citizen and business
+/// demand, in raw units) and prices from the R levels; wares the town produces itself are
+/// not supplied to it.
+unsafe fn on_route_hotkey(kind: RouteKind) {
+    let Some((ship_index, name, sell_town)) = route_context("route") else {
+        return;
+    };
+    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
+    let load_town = merchant.get_hometown_index();
+    let sell_town_name = get_town_name(sell_town).unwrap_or_else(|| "<unknown>".into());
+    let load_town_name = get_town_name(load_town).unwrap_or_else(|| "<unknown>".into());
+
+    let town = GAME_WORLD_PTR.get_town(sell_town);
+    let thresholds = town.get_price_thresholds();
+    let production = town.get_production_values();
+
+    let mut load_amount = [0i32; 24];
+    let mut sell_prices = [0i32; 24];
+    let mut buy_prices = [0i32; 24];
+    let mut supplied = 0;
+    for ware_index in TRADE_WARES {
+        let i = ware_index as usize;
+        buy_prices[i] = buy_price(ware_index, PriceLevel::Center);
+        if production[i] > 0 {
+            continue; // the town makes it: do not supply it
+        }
+        // t0 is one week of the town's demand, already in raw units.
+        load_amount[i] = thresholds[i][0];
+        sell_prices[i] = sell_price(ware_index, PriceLevel::Center);
+        supplied += 1;
+    }
+
+    // These templates replace the whole route, so keep the old one loadable from the
+    // route window's File button ("_backup") in case this was a mistake.
+    let previous = read_ship_route(ship_index);
+    if !previous.is_empty() {
+        let count = previous.len();
+        let backup = p3_rou::TradeRouteFile { stops: previous }.serialize();
+        match std::fs::write(ROUTE_BACKUP_PATH, &backup) {
+            Ok(()) => ods(&format!("route: saved the previous {count} stops to {ROUTE_BACKUP_PATH}")),
+            Err(e) => ods(&format!("route: failed to back up the previous route: {e}")),
+        }
+    }
+
+    let stops = match kind {
+        RouteKind::FiveStop => builder::five_stop_route(load_town, sell_town, load_amount, sell_prices),
+        RouteKind::SixStop => builder::six_stop_route(load_town, sell_town, load_amount, sell_prices),
+        RouteKind::Suck => builder::suck_route(sell_town, buy_prices),
+    };
+    let stop_count = stops.len();
+
+    // Every template transfers wares to or from an office in the current town, and the
+    // game wipes those instructions at load time where there is no office. The load town
+    // is the home office, so only the current town can be missing one.
+    if !has_player_office(sell_town) {
+        ods(&format!(
+            "route: no office in {sell_town_name} - the game will wipe this route's office transfers there"
+        ));
+    }
+
+    if write_and_apply_route(ship_index, stops) {
+        match kind {
+            RouteKind::Suck => ods(&format!(
+                "route {kind:?} on {name:?}: parked in {sell_town_name} buying everything at the R prices ({stop_count} stops)"
+            )),
+            _ => ods(&format!(
+                "route {kind:?} on {name:?}: load in {load_town_name}, supply {supplied} wares to {sell_town_name} ({stop_count} stops)"
+            )),
+        }
     }
 }
 

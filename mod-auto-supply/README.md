@@ -19,6 +19,7 @@ Office keys act only while a trading office window is open, on its administrator
 | Ctrl + Q W E R T Y | Set the BUY price of every ware that has a buy order, to that price level (see below) |
 | Alt + Q W E R T Y | Set the SELL price of every ware that has a sell order |
 | F11 | Dump thresholds, base prices and all price levels to the log and to `<TownName>.csv` in the game directory |
+| F3 | Replace the selected ship's route with a 5stop supply route: load a week of the current town's demand at the home office, sell it there, reset that office's stock to the same amounts and haul the surplus home. Alt+F3 uses the 6stop variant, Ctrl+F3 a suck route parked in the current town. The previous route is saved to `_backup.rou` first |
 | F4 | Append a trade stop for the current town to the selected ship's route: buy what the town produces at the Ctrl+Y price, sell everything else at the Alt+Y price, sells listed above the buys. Pitch, timber, salt, bricks, grain and hemp are never bought - their margin does not pay for the cargo space early on |
 | Ctrl + F4 | The same stop, but buying every ware the town produces |
 | F9 | Log the current town and the selected ship |
@@ -26,6 +27,13 @@ Office keys act only while a trading office window is open, on its administrator
 
 Directions and amounts are never changed by the price keys; F1 is the only key that
 creates orders.
+
+The route keys take the town whose view is open as the target and the merchant's home
+town (the home office) as the source. Route quantities come from the target town's t0
+thresholds - one week of its citizen and business demand, straight from the game - and
+prices from the R levels. Wares the town produces itself are not supplied to it. Route
+stops that transfer wares to or from an office are wiped by the game in towns where
+there is no player office, and the keys warn when that applies.
 
 ## Price levels
 
