@@ -251,6 +251,10 @@ fn generate(input: &PathBuf, output: &PathBuf) {
                 eprintln!("Stop {n}: unknown ware {ware:?}");
                 exit(1);
             });
+            if index >= builder::TRADE_WARE_COUNT {
+                eprintln!("Stop {n}: {ware:?} cannot carry a route order - the route window has no weapons");
+                exit(1);
+            }
             if occupied[index] {
                 eprintln!("Stop {n}: ware {ware:?} is configured more than once");
                 exit(1);
@@ -330,6 +334,10 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
             eprintln!("Unknown ware {ware:?} in the reference goods table");
             exit(1);
         };
+        if index >= builder::TRADE_WARE_COUNT {
+            eprintln!("Ware {ware:?} in the reference goods table cannot carry a route order - the route window has no weapons");
+            exit(1);
+        }
         if good.sell_price <= 0 || good.buy_price <= 0 {
             eprintln!("Ware {ware:?} needs positive prices in the reference goods table");
             exit(1);

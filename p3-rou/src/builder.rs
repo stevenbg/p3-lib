@@ -9,9 +9,10 @@
 //!   barrels 200, weapons 10). [MAX_AMOUNT] means "as much as possible", unscaled.
 //! - The action byte carries the repair flag ([FLAG_R]/[FLAG_X]/[FLAG_NONE]) and
 //!   [FIRST_STOP_MARKER] on the route's first stop.
-//! - The auto trade only handles the 20 trade wares (the route window's goods list has
-//!   no weapons, although ships can carry them), so instruction entries for the four
-//!   weapons - which take-max/unload-all stops do write - are inert.
+//! - The auto trade only handles the 20 trade wares: the route window's goods list has
+//!   no weapons, although ships can carry them. The builder keeps the four weapon slots
+//!   of every amount array zero, so generated files stay within what the game itself
+//!   can produce (the game filters weapon entries, but they would be illegal).
 //! - The per-stop order array is the instruction order; [partitioned_order] puts
 //!   unloading wares first so the ship frees space before taking new cargo on.
 
@@ -24,6 +25,9 @@ use crate::TradeRouteStop;
 
 /// The game's sentinel for "as much as possible", stored unscaled.
 pub const MAX_AMOUNT: i32 = 1_000_000_000;
+/// Route instructions exist only for the first 20 wares - the route window has no
+/// weapons - so the weapon slots of every amount array must stay zero.
+pub const TRADE_WARE_COUNT: usize = 20;
 /// Raw units per in-game unit: wares measured in loads (1 load = 10 barrels).
 pub const LOAD_SCALING: i32 = 2000;
 /// Raw units per in-game unit: wares measured in barrels.
@@ -137,6 +141,13 @@ pub fn ordered_by(first: impl Fn(u8) -> bool) -> [u8; 24] {
     ordered_by_key(|ware| if first(ware) { 0 } else { 1 })
 }
 
+/// An amount array with every trade ware set to `amount` and the weapon slots zero.
+fn all_trade_wares(amount: i32) -> [i32; 24] {
+    let mut amounts = [0i32; 24];
+    amounts[..TRADE_WARE_COUNT].fill(amount);
+    amounts
+}
+
 /// Sell without an amount limit at the given minimum prices, and take back exactly the
 /// given amounts, for every ware with a nonzero load amount.
 fn sell_max_and_unload(load_amount: &[i32; 24]) -> ([i32; 24], [i32; 24]) {
@@ -164,7 +175,7 @@ pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sel
     let (sell_max, unload_calculated) = sell_max_and_unload(&load_amount);
     let mut take_supplied = [0i32; 24];
     let mut put_back_and_collect = unload_calculated;
-    for i in 0..24 {
+    for i in 0..TRADE_WARE_COUNT {
         if load_amount[i] != 0 {
             take_supplied[i] = MAX_AMOUNT;
         } else {
@@ -176,7 +187,7 @@ pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sel
         stop(sell_town, FLAG_X, sell_prices, sell_max),
         stop(sell_town, FLAG_X, [0i32; 24], take_supplied),
         stop(sell_town, FLAG_X, [0i32; 24], put_back_and_collect),
-        stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
+        stop(load_town, FLAG_X, [0i32; 24], all_trade_wares(-MAX_AMOUNT)),
     ]
 }
 
@@ -190,7 +201,7 @@ pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell
     let mut unload_loads_take_barrels = [0i32; 24];
     let mut unload_barrels_take_loads = [0i32; 24];
     let mut put_back_loads_and_collect = [0i32; 24];
-    for i in 0..24 {
+    for i in 0..TRADE_WARE_COUNT {
         let supplied = load_amount[i] != 0;
         match ware_scaling(i) {
             LOAD_SCALING => {
@@ -217,7 +228,7 @@ pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell
         stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels),
         stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads),
         stop(sell_town, FLAG_X, [0i32; 24], put_back_loads_and_collect),
-        stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
+        stop(load_town, FLAG_X, [0i32; 24], all_trade_wares(-MAX_AMOUNT)),
     ]
 }
 
@@ -227,13 +238,13 @@ pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell
 pub fn suck_route(town: u8, buy_prices: [i32; 24]) -> Vec<TradeRouteStop> {
     let mut prices = [0i32; 24];
     let mut buy_max = [0i32; 24];
-    for (i, &price) in buy_prices.iter().enumerate() {
+    for (i, &price) in buy_prices.iter().enumerate().take(TRADE_WARE_COUNT) {
         if price > 0 {
             prices[i] = -price;
             buy_max[i] = MAX_AMOUNT;
         }
     }
-    let mut stops = vec![stop(town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], [-MAX_AMOUNT; 24])];
+    let mut stops = vec![stop(town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], all_trade_wares(-MAX_AMOUNT))];
     for _ in 0..5 {
         stops.push(stop(town, FLAG_X, prices, buy_max));
     }
