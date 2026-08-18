@@ -20,14 +20,18 @@ visited).
 | F1 | Setup: every ware without an order becomes BUY if the town produces it, SELL otherwise, at the R price levels (buy par, sell supply price). Existing orders are untouched; a buy's amount is set to 9999 only if it is currently 0. |
 | Ctrl + F1 | Provision the celebration goods (beer, wine, fish, meat, grain, honey - a celebration needs them in stock): raise their amounts to a week of the town's citizen consumption - never lowering - and lock their quantities ("Lock min. store quantity for auto trade ships"), so route ships cannot take the stock. Directions and prices untouched. |
 | Alt + F1 | Provision the building materials, enough for any building or ship (cloth 10, hemp 8, pitch 50, bricks 80, timber 50, iron goods 50): raise the amounts to those - never lowering - and lock the quantities, like Ctrl+F1. |
-| Ctrl + Q W E R T Y | Set the BUY price of every ware that has a buy order, to that price level (see below) |
-| Alt + Q W E R T Y | Set the SELL price of every ware that has a sell order |
+| Ctrl + Q W E R T Y | Set the BUY prices to that price level (see below): in the route window's goods dialog ("Automatic maritime trading"), every buy order of the stop being edited; otherwise every buy order of the administrator view |
+| Alt + Q W E R T Y | The same for SELL prices |
 | F11 | Dump thresholds, base prices, all price levels and the weekly citizen/business consumptions to the log and to `<TownName>.csv` in the game directory |
 | F3 | Replace the selected ship's route with a 5stop supply route: load a week of the current town's demand at the home office, sell it there, reset that office's stock to the same amounts and haul the surplus home. Alt+F3 uses the 6stop variant, Ctrl+F3 a suck route parked in the current town. The previous route is saved to `_backup.rou` first |
 | F4 | Append a trade stop for the current town to the selected ship's route: buy what the town produces at the Ctrl+Y price, sell everything else at the Alt+Y price, sells listed above the buys. Pitch, timber, salt, bricks, grain and hemp are never bought - their margin does not pay for the cargo space early on |
 | Ctrl + F4 | The same stop, but buying every ware the town produces |
-| F9 | Log the current town and the selected ship |
+| F9 | Throwaway diagnostics for whatever is being reverse engineered right now |
 | F10 | Dump every ship's applied route chain from the route stop pool |
+
+In the goods dialog the price keys refresh the display the way the dialog's own stop
+arrows do, which starts a new Undo session: Undo covers changes made since - the same
+as after a stop switch (the game resets its Undo baseline on every stop display).
 
 Directions and amounts are never changed by the price keys; F1 is the only key that
 creates orders.
