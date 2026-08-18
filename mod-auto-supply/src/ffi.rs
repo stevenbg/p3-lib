@@ -555,7 +555,7 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
     let load_town_name = get_town_name(load_town).unwrap_or_else(|| "<unknown>".into());
 
     let town = GAME_WORLD_PTR.get_town(sell_town);
-    let thresholds = town.get_price_thresholds();
+    let consumption = town.get_daily_consumptions_citizens();
     let production = town.get_production_values();
 
     let mut load_amount = [0i32; 24];
@@ -572,8 +572,14 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
         if production[i] > 0 || NO_SUPPLY_WARES.contains(&ware_id) {
             continue;
         }
-        // t0 is one week of the town's demand, already in raw units.
-        load_amount[i] = thresholds[i][0];
+        // A week of what the town's citizens actually consume, in raw units. Not the t0
+        // threshold: that is a comfortable stock level, inflated by minimum floors (meat
+        // 5 units where 3 are eaten) and by construction reserves (timber 31 loads where
+        // 11 are used), so it would have us ferrying goods that never disappear.
+        load_amount[i] = consumption[i].saturating_mul(7);
+        if load_amount[i] == 0 {
+            continue; // the town does not consume it
+        }
         sell_prices[i] = sell_price(ware_index, PriceLevel::Center);
         supplied += 1;
     }
