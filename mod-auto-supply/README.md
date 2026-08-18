@@ -34,9 +34,8 @@ The route keys take the town whose view is open as the target and the merchant's
 town (the home office) as the source. Route quantities come from the target town's t0
 thresholds - one week of its citizen and business demand, straight from the game - and
 prices from the R levels. Wares the town produces itself are not supplied to it, and
-neither are bricks, timber, pig iron, pitch and hemp, whose t0 is a fixed
-building-material base or a minimum floor rather than a week of demand; whatever the
-target office holds of them is still hauled home. Route
+neither are bricks, pig iron, pitch and hemp - low-value industry inputs not worth the
+hold space; whatever the target office holds of them is still hauled home. Route
 stops that transfer wares to or from an office are wiped by the game in towns where
 there is no player office, and the keys warn when that applies.
 

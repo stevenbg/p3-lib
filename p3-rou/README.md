@@ -11,7 +11,8 @@ the same code the CLI uses.
 Every stop the builder makes carries its instructions in cargo order: everything that
 frees hold space (selling to the town, unloading into the office) before anything that
 fills it (buying, loading), and the filling instructions take the barrel goods before
-the bulky loads goods, since one load is ten barrels of hold space.
+the bulky loads goods, since one load is ten barrels of hold space. Timber, the least
+valuable ware per unit of hold space, fills last of all.
 
 The game saves routes compressed. The compression algorithm has not been reverse engineered, so generated files are written
 uncompressed (negative length header). The vanilla game fails to load uncompressed routes — the

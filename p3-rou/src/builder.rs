@@ -61,7 +61,8 @@ pub fn stop(town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]) -> 
 
 /// The instruction order for generated routes: everything that frees cargo space runs
 /// before anything that fills it, and the filling instructions take the barrel goods
-/// before the bulky loads goods (1 load = 10 barrels of hold space).
+/// before the bulky loads goods (1 load = 10 barrels of hold space), with timber - the
+/// least valuable per unit of hold space - last of all.
 ///
 /// Freeing space: selling to the town (positive price) and unloading into the office
 /// (negative amount). Filling it: buying from the town (negative price) and loading from
@@ -70,15 +71,18 @@ pub fn cargo_order(price: &[i32; 24], amount: &[i32; 24]) -> [u8; 24] {
     ordered_by_key(|ware| {
         let i = ware as usize;
         if amount[i] == 0 {
-            return 3; // no instruction for this ware
+            return 4; // no instruction for this ware
         }
         if amount[i] < 0 || price[i] > 0 {
             return 0; // unload into the office, or sell to the town
         }
-        // Buy from the town or load from the office: barrels before loads goods. Keyed
-        // off the scaling because WareId::is_barrel_ware panics on the weapons, which
-        // occupy slots in the order array even though they never carry route orders.
-        if ware_scaling(i) == BARREL_SCALING {
+        // Buy from the town or load from the office: barrels before loads goods, timber
+        // last. Keyed off the scaling because WareId::is_barrel_ware panics on the
+        // weapons, which occupy slots in the order array even though they never carry
+        // route orders.
+        if ware == WareId::Timber as u8 {
+            3
+        } else if ware_scaling(i) == BARREL_SCALING {
             1
         } else {
             2
