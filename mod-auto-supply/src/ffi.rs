@@ -1,13 +1,11 @@
-use std::{
-    mem, panic,
-    sync::atomic::{AtomicIsize, AtomicPtr, Ordering},
-};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
+use std::{mem, panic};
 
 use hooklet::windows::x86::{hook_function_pointer, FunctionPointerHook};
 use log::error;
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::enums::WareId,
+    data::{enums::WareId, p3_ptr::P3Pointer},
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
@@ -18,8 +16,8 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F2, VK_F3, VK_F4, VK_MENU, VK_SHIFT},
-        WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, WH_KEYBOARD},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F2, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
+        WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
     },
 };
 
@@ -38,20 +36,57 @@ const SELL_PRICES_KEY: usize = VK_F4.0 as usize;
 const DEBUG_KEY: usize = VK_F11.0 as usize;
 /// F10: dump every ship's applied route chain from the route stop pool.
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
+/// F9: log the current town (probe for the current-town global).
+const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
 /// Amount set for buy orders whose current amount is 0, in in-game units.
 const BUY_AMOUNT: i32 = 9999;
 /// The administrator view of the trading office window ("Trading Office" side button, pages 0-6).
 const ADMINISTRATOR_PAGE: i32 = 4;
 /// The trade wares (weapons are not administrator-tradeable).
 const TRADE_WARES: std::ops::Range<u16> = 0..20;
+/// The town-scene object pointer; its +0xc324 field is the current town index.
+const TOWN_SCENE_PTR: *const u32 = 0x006e51ac as _;
+const TOWN_SCENE_CURRENT_TOWN_OFFSET: u32 = 0xc324;
 /// The window classes share their vtable layout: +0x118 is close, +0x120 is open.
 const OFFICE_WINDOW_OPEN_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x120;
 const OFFICE_WINDOW_CLOSE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x118;
 
+/// Raw HHOOK of the keyboard hook (installed once at load, always active).
+static KEYBOARD_HOOK: AtomicIsize = AtomicIsize::new(0);
+/// True while a trading office window is open; gates the office keys (F1-F4, F11).
+static OFFICE_WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
-/// Raw HHOOK of the keyboard hook; 0 while the office window is closed.
-static KEYBOARD_HOOK: AtomicIsize = AtomicIsize::new(0);
+
+/// The route-panel update method (thiscall, this=panel) is a vtable-dispatched virtual
+/// at 0x0048b3e0; the panel object has no plain static, so we hook its vtable slot to
+/// capture `this`. The panel's +0xa0 points to a struct whose first word is the
+/// selected ship index (used by the panel at 0x48c363, the Load handler at 0x48c92e).
+static PANEL_METHOD_ADDRESS: u32 = 0x0048b3e0;
+/// Module-relative offset of the vtable slot holding PANEL_METHOD_ADDRESS (abs 0x66f44c).
+const PANEL_METHOD_VTABLE_OFFSET: u32 = 0x0026f44c;
+const PANEL_SELECTION_OFFSET: u32 = 0xa0;
+/// The captured panel object pointer (set by panel_capture_hook on every panel update).
+static CACHED_PANEL: AtomicU32 = AtomicU32::new(0);
+static PANEL_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+
+extern "C" {
+    static panel_capture_hook: core::ffi::c_void;
+}
+
+// Save the panel object pointer (ecx = this) on every call, then run the real method.
+// The jump target static holds PANEL_METHOD_ADDRESS so the vtable-installed hook runs
+// the original method with the stack and registers untouched.
+std::arch::global_asm!("
+.global {hook}
+{hook}:
+mov dword ptr [{cached}], ecx
+jmp [{method}]
+",
+    hook = sym panel_capture_hook,
+    cached = sym CACHED_PANEL,
+    method = sym PANEL_METHOD_ADDRESS,
+);
 
 /// Logs unconditionally via OutputDebugString: the shared DEBUGGER_LOGGER drops all
 /// messages unless a real debugger is attached, which hides them from DebugView.
@@ -84,56 +119,59 @@ pub unsafe extern "C" fn start() -> u32 {
 
     fake_being_debugged();
 
-    match hook_function_pointer(OFFICE_WINDOW_OPEN_POINTER_OFFSET, office_window_open_hook as usize as u32) {
-        Ok(hook) => {
-            OPEN_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-        }
+    // start() runs on the game's main thread (the modloader calls it from its WinMain
+    // hook), which then pumps the message loop - so a thread-scoped keyboard hook
+    // installed here fires on key events at any game speed, for the process lifetime.
+    match SetWindowsHookExW(WH_KEYBOARD, Some(keyboard_hook), None, GetCurrentThreadId()) {
+        Ok(hook) => KEYBOARD_HOOK.store(hook.0, Ordering::SeqCst),
         Err(_) => {
-            ods("failed to hook office window open");
+            ods("installing the keyboard hook failed");
             return 1;
         }
     }
 
-    match hook_function_pointer(OFFICE_WINDOW_CLOSE_POINTER_OFFSET, office_window_close_hook as usize as u32) {
-        Ok(hook) => {
-            CLOSE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-        }
+    // Track whether a trading office window is open, to gate the office-only keys. The
+    // OS keyboard hook is all-or-nothing per thread, so the scoping is done in code.
+    match hook_function_pointer(OFFICE_WINDOW_OPEN_POINTER_OFFSET, office_window_open_hook as usize as u32) {
+        Ok(hook) => OPEN_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {
-            ods("failed to hook office window close");
+            ods("failed to hook office window open");
             return 2;
         }
     }
+    match hook_function_pointer(OFFICE_WINDOW_CLOSE_POINTER_OFFSET, office_window_close_hook as usize as u32) {
+        Ok(hook) => CLOSE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            ods("failed to hook office window close");
+            return 3;
+        }
+    }
 
-    ods("loaded, F1 setup, F2 sell+buy prices, F3 buy prices, F4 sell prices (with ctrl/alt/shift levels), F11 debug");
+    // Capture the route-panel object (for reading the selected ship) via its vtable slot.
+    match hook_function_pointer(PANEL_METHOD_VTABLE_OFFSET, &panel_capture_hook as *const _ as u32) {
+        Ok(hook) => PANEL_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            ods("failed to hook the route panel method");
+            return 4;
+        }
+    }
+
+    ods("loaded, F1/F2/F3/F4/F11 in the office, F9 current town, F10 route dump (global)");
     0
 }
 
 #[no_mangle]
 unsafe extern "thiscall" fn office_window_open_hook(window_address: u32) {
-    let orig_address = (*OPEN_HOOK_PTR.load(Ordering::SeqCst)).old_absolute;
-    let orig: extern "thiscall" fn(window_address: u32) = mem::transmute(orig_address);
+    let orig: extern "thiscall" fn(u32) = mem::transmute((*OPEN_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
-
-    // The open hook runs on the game's main thread, which also pumps the messages, so
-    // the thread-scoped keyboard hook fires on key events at any game speed.
-    if KEYBOARD_HOOK.load(Ordering::SeqCst) == 0 {
-        match SetWindowsHookExW(WH_KEYBOARD, Some(keyboard_hook), None, GetCurrentThreadId()) {
-            Ok(hook) => KEYBOARD_HOOK.store(hook.0, Ordering::SeqCst),
-            Err(_) => ods("installing the keyboard hook failed"),
-        }
-    }
+    OFFICE_WINDOW_OPEN.store(true, Ordering::SeqCst);
 }
 
 #[no_mangle]
 unsafe extern "thiscall" fn office_window_close_hook(window_address: u32) {
-    let orig_address = (*CLOSE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute;
-    let orig: extern "thiscall" fn(window_address: u32) = mem::transmute(orig_address);
+    let orig: extern "thiscall" fn(u32) = mem::transmute((*CLOSE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
-
-    let hook = KEYBOARD_HOOK.swap(0, Ordering::SeqCst);
-    if hook != 0 {
-        let _ = UnhookWindowsHookEx(HHOOK(hook));
-    }
+    OFFICE_WINDOW_OPEN.store(false, Ordering::SeqCst);
 }
 
 fn key_down(key: VIRTUAL_KEY) -> bool {
@@ -149,7 +187,13 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             let ctrl = key_down(VK_CONTROL);
             let alt = key_down(VK_MENU);
             let shift = key_down(VK_SHIFT);
+            // The office keys act only while a trading office window is open; the town
+            // and route probes are global.
+            let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
             match wparam.0 {
+                w if w == CURRENT_TOWN_KEY => on_current_town_hotkey(),
+                w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
+                _ if !office_open => {}
                 w if w == SETUP_KEY => on_setup_hotkey(),
                 w if w == BOTH_PRICES_KEY => apply_prices(Some(SellLevel::AtT0), Some(BuyLevel::AtT1)),
                 w if w == BUY_PRICES_KEY => {
@@ -177,7 +221,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     apply_prices(Some(level), None);
                 }
                 w if w == DEBUG_KEY => on_debug_hotkey(),
-                w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
                 _ => {}
             }
         }
@@ -185,9 +228,44 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
 }
 
+/// F9: log the current town and the selected ship (diagnostics for the route feature).
+unsafe fn on_current_town_hotkey() {
+    let scene = *TOWN_SCENE_PTR;
+    if scene != 0 {
+        let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
+        let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+        ods(&format!("current town: {town} ({town_index:#04x})"));
+    }
+    probe_selected_ship();
+}
+
+/// Read the selected ship via the captured panel object and log it.
+unsafe fn probe_selected_ship() {
+    let panel = CACHED_PANEL.load(Ordering::Relaxed);
+    if panel == 0 {
+        ods("selected ship: panel not captured yet (open a ship's route panel once)");
+        return;
+    }
+    let selection = *((panel + PANEL_SELECTION_OFFSET) as *const u32);
+    if !(0x0010_0000..0x7f00_0000).contains(&selection) {
+        ods(&format!("selected ship: panel {panel:#010x} +0xa0 = {selection:#010x} (nothing selected?)"));
+        return;
+    }
+    let ship_index = *(selection as *const u16);
+    let ships = p3_api::ships::ShipsPtr::new();
+    match ships.get_ship(ship_index) {
+        Some(ship) => ods(&format!("selected ship: {ship_index} {:?}", ship.get_name())),
+        None => ods(&format!("selected ship: index {ship_index} out of range")),
+    }
+}
+
 /// Returns the administrator view's office and its index, or logs why not.
 unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, String)> {
     let window = UITradingOfficeWindowPtr::new();
+    if window.get_address() == 0 {
+        ods("hotkey: no trading office window (open one on the Trading Office view)");
+        return None;
+    }
     let town_index = window.get_town_index();
     let town = get_town_name(town_index as u8).unwrap_or_else(|| "<unknown>".into());
 
@@ -389,7 +467,10 @@ unsafe fn dump_ship_routes() {
         if head >= pool_count {
             continue;
         }
-        ods(&format!("ship {ship_id} {:?}: route head {head}", ship.get_name()));
+        // The ship struct address is a candidate value for the map-selection global, if
+        // the selection is stored as a pointer (scan for it in Cheat Engine, 4-byte hex,
+        // while switching selected ships).
+        ods(&format!("ship {ship_id} at {:#010x} {:?}: route head {head}", ship.address, ship.get_name()));
 
         let mut index = head;
         for n in 0..32 {
