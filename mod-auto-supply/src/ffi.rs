@@ -440,13 +440,10 @@ unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
         }
         amount[i] = builder::MAX_AMOUNT;
     }
-    let mut stop = builder::stop(town_index, 0x00, price, amount);
-    // Sell instructions (positive price) above the buys, so the ship unloads its supplies
-    // before spending the freed space and money on the town's produce.
-    stop.order = builder::ordered_by(|ware| price[ware as usize] > 0);
-
+    // builder::stop orders the instructions: the sells first, then the buys with the
+    // barrel goods before the bulky loads goods.
     let mut stops = read_ship_route(ship_index);
-    stops.push(stop);
+    stops.push(builder::stop(town_index, 0x00, price, amount));
 
     // Exactly the first stop carries the logical-first marker.
     for (i, stop) in stops.iter_mut().enumerate() {

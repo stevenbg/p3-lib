@@ -47,36 +47,57 @@ pub fn ware_scaling(index: usize) -> i32 {
     WareId::from_usize(index).map(|ware| ware.get_scaling()).unwrap_or(1)
 }
 
-/// A stop in the default instruction order.
+/// A stop with its instructions in [cargo_order]. Construct [TradeRouteStop] directly to
+/// keep the game's default display order instead.
 pub fn stop(town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]) -> TradeRouteStop {
     TradeRouteStop {
         town_index,
         action,
-        order: DEFAULT_ORDER,
+        order: cargo_order(&price, &amount),
         price,
         amount,
     }
 }
 
-/// The order array is the stop's instruction order: the wares for which `first` holds
-/// are listed before the rest, each group keeping the game's default display order.
-pub fn ordered_by(first: impl Fn(u8) -> bool) -> [u8; 24] {
-    let mut order = [0u8; 24];
-    let mut n = 0;
-    for &ware in DEFAULT_ORDER.iter().filter(|&&w| first(w)) {
-        order[n] = ware;
-        n += 1;
-    }
-    for &ware in DEFAULT_ORDER.iter().filter(|&&w| !first(w)) {
-        order[n] = ware;
-        n += 1;
-    }
+/// The instruction order for generated routes: everything that frees cargo space runs
+/// before anything that fills it, and the filling instructions take the barrel goods
+/// before the bulky loads goods (1 load = 10 barrels of hold space).
+///
+/// Freeing space: selling to the town (positive price) and unloading into the office
+/// (negative amount). Filling it: buying from the town (negative price) and loading from
+/// the office (zero price, positive amount).
+pub fn cargo_order(price: &[i32; 24], amount: &[i32; 24]) -> [u8; 24] {
+    ordered_by_key(|ware| {
+        let i = ware as usize;
+        if amount[i] == 0 {
+            return 3; // no instruction for this ware
+        }
+        if amount[i] < 0 || price[i] > 0 {
+            return 0; // unload into the office, or sell to the town
+        }
+        // Buy from the town or load from the office: barrels before loads goods. Keyed
+        // off the scaling because WareId::is_barrel_ware panics on the weapons, which
+        // occupy slots in the order array even though they never carry route orders.
+        if ware_scaling(i) == BARREL_SCALING {
+            1
+        } else {
+            2
+        }
+    })
+}
+
+/// The order array is the stop's instruction order: wares are grouped by `key`, groups
+/// in ascending order, each group keeping the game's default display order.
+pub fn ordered_by_key(key: impl Fn(u8) -> u8) -> [u8; 24] {
+    let mut order = DEFAULT_ORDER;
+    // A stable sort keeps the default display order within each group.
+    order.sort_by_key(|&ware| key(ware));
     order
 }
 
-/// Put the unloading wares first so the ship frees up space before taking new cargo on.
-pub fn partitioned_order(unloads_first: [i32; 24]) -> [u8; 24] {
-    ordered_by(|w| unloads_first[w as usize] < 0)
+/// The wares for which `first` holds are listed before the rest.
+pub fn ordered_by(first: impl Fn(u8) -> bool) -> [u8; 24] {
+    ordered_by_key(|ware| if first(ware) { 0 } else { 1 })
 }
 
 /// Sell without an amount limit at the given minimum prices, and take back exactly the
@@ -131,15 +152,12 @@ pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell
             _ => {}
         }
     }
-    let mut swap_barrels_stop = stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels);
-    swap_barrels_stop.order = partitioned_order(unload_loads_take_barrels);
-    let mut swap_loads_stop = stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads);
-    swap_loads_stop.order = partitioned_order(unload_barrels_take_loads);
+    // The unloads-before-loads ordering of the two swap stops comes from [cargo_order].
     vec![
         stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
         stop(sell_town, FLAG_X, sell_prices, sell_max),
-        swap_barrels_stop,
-        swap_loads_stop,
+        stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels),
+        stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads),
         stop(sell_town, FLAG_X, [0i32; 24], unload_loads_calculated),
         stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
     ]

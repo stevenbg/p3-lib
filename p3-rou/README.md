@@ -8,6 +8,11 @@ encodings, flag bytes, the first-stop marker, the instruction-order array, the M
 sentinel) and assembles the route types below, so mods can build routes in-game from
 the same code the CLI uses.
 
+Every stop the builder makes carries its instructions in cargo order: everything that
+frees hold space (selling to the town, unloading into the office) before anything that
+fills it (buying, loading), and the filling instructions take the barrel goods before
+the bulky loads goods, since one load is ten barrels of hold space.
+
 The game saves routes compressed. The compression algorithm has not been reverse engineered, so generated files are written
 uncompressed (negative length header). The vanilla game fails to load uncompressed routes — the
 `mod-fix-uncompressed-trade-route-loading` mod fixes that and must be installed to use generated files.
