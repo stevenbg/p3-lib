@@ -17,22 +17,29 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F2, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F9, VK_MENU},
         WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
     },
 };
 
-use crate::prices::{buy_price, sell_price, BuyLevel, SellLevel};
+use crate::prices::{buy_price, sell_price, PriceLevel};
 
 /// F1: set every ware without an order to BUY (produced by the town) or SELL (rest),
-/// at the F2 price levels.
+/// at the Center price levels (buy t1, sell t0).
 const SETUP_KEY: usize = VK_F1.0 as usize;
-/// F2: set both directions' prices: sells at t0 (the supply price), buys at t1.
-const BOTH_PRICES_KEY: usize = VK_F2.0 as usize;
-/// F3: set only buy prices. Plain: t1; ctrl: halfway t0..t1; alt: halfway t1..t2; shift: t2.
-const BUY_PRICES_KEY: usize = VK_F3.0 as usize;
-/// F4: set only sell prices. Plain: t0; ctrl: halfway 0..t0; alt: halfway t0..t1; shift: t1.
-const SELL_PRICES_KEY: usize = VK_F4.0 as usize;
+
+/// The six price levels, on Q W E R T Y in ASCENDING price order: ctrl sets buy prices,
+/// alt sets sell prices. Pressed without a modifier (or with both) they do nothing.
+/// Buying gets more aggressive towards Y (drains the town deeper), selling gets more
+/// restrained (only sells into scarcity); R is the natural pair, buy par / sell supply.
+const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
+    (0x51, PriceLevel::Upper),    // Q: buy t2          / sell t1
+    (0x57, PriceLevel::UpperMid), // W: buy mid t1..t2  / sell mid t0..t1
+    (0x45, PriceLevel::Upper30),  // E: buy 30% t1->t2  / sell 30% t0->t1
+    (0x52, PriceLevel::Center),   // R: buy t1 (par)    / sell t0 (the supply price)
+    (0x54, PriceLevel::Lower70),  // T: buy 70% t0->t1  / sell 70% 0->t0
+    (0x59, PriceLevel::LowerMid), // Y: buy mid t0..t1  / sell mid 0..t0
+];
 /// F11: dump thresholds, base prices and the price levels to the log and a CSV.
 const DEBUG_KEY: usize = VK_F11.0 as usize;
 /// F10: dump every ship's applied route chain from the route stop pool.
@@ -180,7 +187,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    ods("loaded, F1/F2/F3/F4/F11 in the office, F9 current town, F10 route dump (global)");
+    ods("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F9 town+ship, F10 routes, ctrl+Z add stop");
     0
 }
 
@@ -210,7 +217,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
         if flags & 0xC000_0000 == 0 {
             let ctrl = key_down(VK_CONTROL);
             let alt = key_down(VK_MENU);
-            let shift = key_down(VK_SHIFT);
             // The office keys act only while a trading office window is open; the town
             // and route probes are global.
             let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
@@ -220,32 +226,17 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 w if w == ADD_STOP_KEY && ctrl => on_add_stop_hotkey(),
                 _ if !office_open => {}
                 w if w == SETUP_KEY => on_setup_hotkey(),
-                w if w == BOTH_PRICES_KEY => apply_prices(Some(SellLevel::AtT0), Some(BuyLevel::AtT1)),
-                w if w == BUY_PRICES_KEY => {
-                    let level = if ctrl {
-                        BuyLevel::MidT0T1
-                    } else if alt {
-                        BuyLevel::MidT1T2
-                    } else if shift {
-                        BuyLevel::AtT2
-                    } else {
-                        BuyLevel::AtT1
-                    };
-                    apply_prices(None, Some(level));
-                }
-                w if w == SELL_PRICES_KEY => {
-                    let level = if ctrl {
-                        SellLevel::MidZeroT0
-                    } else if alt {
-                        SellLevel::MidT0T1
-                    } else if shift {
-                        SellLevel::AtT1
-                    } else {
-                        SellLevel::AtT0
-                    };
-                    apply_prices(Some(level), None);
-                }
                 w if w == DEBUG_KEY => on_debug_hotkey(),
+                // Exactly one of ctrl (buy) / alt (sell) picks the direction.
+                w if ctrl != alt => {
+                    if let Some(&(_, level)) = LEVEL_KEYS.iter().find(|(key, _)| *key == w) {
+                        if ctrl {
+                            apply_prices(None, Some(level));
+                        } else {
+                            apply_prices(Some(level), None);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -468,17 +459,16 @@ unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, Stri
     Some((office, office_index, town))
 }
 
-/// F1: for every ware whose current order is "do nothing", set BUY (at the F2 buy
-/// level) if the town produces the ware, otherwise SELL (at the F2 sell level). Wares
-/// that already have an order are left untouched; a buy's amount is set to BUY_AMOUNT
-/// only if the current amount is 0.
+/// F1: for every ware whose current order is "do nothing", set BUY (at the Center buy
+/// level, t1) if the town produces the ware, otherwise SELL (at the Center sell level,
+/// t0 - the supply price). Wares that already have an order are left untouched; a buy's
+/// amount is set to BUY_AMOUNT only if the current amount is 0.
 unsafe fn on_setup_hotkey() {
     let Some((office, office_index, town)) = resolve_office() else {
         return;
     };
     let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
     let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
-    let thresholds = GAME_WORLD_PTR.get_town(town_index).get_price_thresholds();
     let current_prices = office.get_administrator_trade_prices();
     let stocks = office.get_administrator_trade_stock();
 
@@ -499,10 +489,10 @@ unsafe fn on_setup_hotkey() {
             } else {
                 stocks[i]
             };
-            (-buy_price(ware_index, &thresholds, BuyLevel::AtT1), stock)
+            (-buy_price(ware_index, PriceLevel::Center), stock)
         } else {
             sold += 1;
-            (sell_price(ware_index, &thresholds, SellLevel::AtT0), stocks[i])
+            (sell_price(ware_index, PriceLevel::Center), stocks[i])
         };
         // Executed directly (not enqueued) so the view refresh below sees the new values.
         execute_operation(&Operation::OfficeAutotradeSettingChange {
@@ -522,13 +512,10 @@ unsafe fn on_setup_hotkey() {
 /// Sets the price of every ware that has an order, keeping its direction and amount:
 /// sells get the sell level's price, buys the buy level's. A None level leaves that
 /// direction untouched.
-unsafe fn apply_prices(sell: Option<SellLevel>, buy: Option<BuyLevel>) {
+unsafe fn apply_prices(sell: Option<PriceLevel>, buy: Option<PriceLevel>) {
     let Some((office, office_index, town)) = resolve_office() else {
         return;
     };
-    let thresholds = GAME_WORLD_PTR
-        .get_town(UITradingOfficeWindowPtr::new().get_town_index() as u8)
-        .get_price_thresholds();
     let current_prices = office.get_administrator_trade_prices();
     let stocks = office.get_administrator_trade_stock();
 
@@ -538,11 +525,11 @@ unsafe fn apply_prices(sell: Option<SellLevel>, buy: Option<BuyLevel>) {
         let price = match current_prices[i] {
             0 => continue,
             p if p < 0 => match buy {
-                Some(level) => -buy_price(ware_index, &thresholds, level),
+                Some(level) => -buy_price(ware_index, level),
                 None => continue,
             },
             _ => match sell {
-                Some(level) => sell_price(ware_index, &thresholds, level),
+                Some(level) => sell_price(ware_index, level),
                 None => continue,
             },
         };
@@ -581,8 +568,13 @@ unsafe fn on_debug_hotkey() {
         "debug dump for {town_name} (live trade difficulty {}):",
         crate::prices::difficulty_d()
     ));
+    // The price columns follow the hotkeys Q W E R T Y (ascending price), sells (alt)
+    // then buys (ctrl).
     let mut csv = String::from(
-        "ware,base/unit,sell@t0,sell@mid_0_t0,sell@mid_t0_t1,sell@t1,buy@mid_t0_t1,buy@2weeks,buy@t1,buy@mid_t1_t2,buy@t2,prod/day,(t2-t1)/10,t0 units,t1 units,t2 units,t3 units\n",
+        "ware,base/unit,\
+         sell_Q_t1,sell_W_mid_t0_t1,sell_E_30_t0_t1,sell_R_t0,sell_T_70_0_t0,sell_Y_mid_0_t0,\
+         buy_Q_t2,buy_W_mid_t1_t2,buy_E_30_t1_t2,buy_R_t1,buy_T_70_t0_t1,buy_Y_mid_t0_t1,\
+         prod/day,(t2-t1)/10,t0 units,t1 units,t2 units,t3 units\n",
     );
     for ware_index in TRADE_WARES {
         let i = ware_index as usize;
@@ -591,22 +583,18 @@ unsafe fn on_debug_hotkey() {
         let base_per_unit = crate::prices::base_price_per_unit(ware_index);
         let [t0, t1, t2, t3] = thresholds[i];
         ods(&format!(
-            "{ware_id:?}: t=[{t0}, {t1}, {t2}, {t3}] raw ({} units of week supply), base {base_per_unit:.1}/unit, sell {}, buy {}",
+            "{ware_id:?}: t=[{t0}, {t1}, {t2}, {t3}] raw ({} units of week supply), base {base_per_unit:.1}/unit, sell@t0 {}, buy@t1 {}",
             t0 / scaling,
-            sell_price(ware_index, &thresholds, SellLevel::AtT0),
-            buy_price(ware_index, &thresholds, BuyLevel::AtT1),
+            sell_price(ware_index, PriceLevel::Center),
+            buy_price(ware_index, PriceLevel::Center),
         ));
+        let levels = LEVEL_KEYS.map(|(_, level)| level);
+        let sells: Vec<String> = levels.iter().map(|&l| sell_price(ware_index, l).to_string()).collect();
+        let buys: Vec<String> = levels.iter().map(|&l| buy_price(ware_index, l).to_string()).collect();
         csv.push_str(&format!(
-            "{ware_id:?},{base_per_unit:.1},{},{},{},{},{},{},{},{},{},{:.1},{:.1},{},{},{},{}\n",
-            sell_price(ware_index, &thresholds, SellLevel::AtT0),
-            sell_price(ware_index, &thresholds, SellLevel::MidZeroT0),
-            sell_price(ware_index, &thresholds, SellLevel::MidT0T1),
-            sell_price(ware_index, &thresholds, SellLevel::AtT1),
-            buy_price(ware_index, &thresholds, BuyLevel::MidT0T1),
-            buy_price(ware_index, &thresholds, BuyLevel::TwoWeeksSupply),
-            buy_price(ware_index, &thresholds, BuyLevel::AtT1),
-            buy_price(ware_index, &thresholds, BuyLevel::MidT1T2),
-            buy_price(ware_index, &thresholds, BuyLevel::AtT2),
+            "{ware_id:?},{base_per_unit:.1},{},{},{:.1},{:.1},{},{},{},{}\n",
+            sells.join(","),
+            buys.join(","),
             production[i] as f32 / scaling as f32,
             (t2 - t1) as f32 / 10.0 / scaling as f32,
             t0 / scaling,
