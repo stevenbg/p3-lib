@@ -40,8 +40,9 @@ const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
     (0x54, PriceLevel::Lower70),  // T: buy 70% t0->t1  / sell 70% 0->t0
     (0x59, PriceLevel::LowerMid), // Y: buy mid t0..t1  / sell mid 0..t0
 ];
-/// F11: dump thresholds, base prices and the price levels to the log and a CSV.
-const DEBUG_KEY: usize = VK_F11.0 as usize;
+/// F11: dump the current town's thresholds, base prices and price levels to the log and
+/// to a CSV.
+const TOWN_DUMP_KEY: usize = VK_F11.0 as usize;
 /// F10: dump every ship's applied route chain from the route stop pool.
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
 /// F9: log the current town (probe for the current-town global).
@@ -104,7 +105,7 @@ const OFFICE_WINDOW_CLOSE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE
 
 /// Raw HHOOK of the keyboard hook (installed once at load, always active).
 static KEYBOARD_HOOK: AtomicIsize = AtomicIsize::new(0);
-/// True while a trading office window is open; gates the office keys (F1-F4, F11).
+/// True while a trading office window is open; gates F1 and the price level keys.
 static OFFICE_WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
@@ -243,7 +244,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             match wparam.0 {
                 w if w == CURRENT_TOWN_KEY => on_current_town_hotkey(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
-                w if w == DEBUG_KEY => on_debug_hotkey(),
+                w if w == TOWN_DUMP_KEY => on_town_dump_hotkey(),
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
                 // Alt+F4 is left to Windows.
                 w if w == ADD_STOP_KEY && !alt => on_add_stop_hotkey(!ctrl),
@@ -740,7 +741,7 @@ unsafe fn refresh_administrator_view() {
 
 /// F11: dump thresholds, base prices and all price levels for the open town to the log
 /// and to <TownName>.csv in the game directory.
-unsafe fn on_debug_hotkey() {
+unsafe fn on_town_dump_hotkey() {
     let Some(town_index) = current_town_index() else {
         ods("debug dump: not in a town");
         return;
