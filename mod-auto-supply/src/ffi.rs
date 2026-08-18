@@ -578,10 +578,15 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
         // minimum floors (meat 5 units where 3 are eaten) and by construction reserves
         // (timber 31 loads where 11 are used), so it would have us ferrying goods that
         // never disappear.
-        load_amount[i] = (citizens[i] + businesses[i]).saturating_mul(7);
-        if load_amount[i] == 0 {
+        let weekly = (citizens[i] + businesses[i]).saturating_mul(7);
+        if weekly == 0 {
             continue; // the town does not consume it
         }
+        // Rounded UP to whole in-game units: undersupply empties the office before the
+        // ship returns, while the surplus just rides home; and game-saved routes only
+        // ever carry whole-unit amounts, so we stay within the format's known ground.
+        let scaling = ware_id.get_scaling();
+        load_amount[i] = (weekly + scaling - 1) / scaling * scaling;
         sell_prices[i] = sell_price(ware_index, PriceLevel::Center);
         supplied += 1;
     }
