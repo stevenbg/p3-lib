@@ -59,7 +59,7 @@ const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
 const TOWN_DUMP_KEY: usize = VK_F11.0 as usize;
 /// F10: dump every ship's applied route chain from the route stop pool.
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
-/// F9: log the current town (probe for the current-town global).
+/// F9: throwaway debug logic for the current RE task (see on_current_town_hotkey).
 const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
 /// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
 /// does the same but also buys the [NO_BUY_WARES].
@@ -268,20 +268,22 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 } else {
                     RouteKind::FiveStop
                 }),
+                // Exactly one of ctrl (buy) / alt (sell) picks the direction. The keys
+                // target the goods dialog's stop when it is open, otherwise the office
+                // administrator view.
+                w if ctrl != alt && LEVEL_KEYS.iter().any(|&(key, _)| key == w) => {
+                    let level = LEVEL_KEYS.iter().find(|&&(key, _)| key == w).unwrap().1;
+                    let (sell, buy) = if ctrl { (None, Some(level)) } else { (Some(level), None) };
+                    if let Some((dialog, stop_index)) = goods_dialog_stop() {
+                        reprice_dialog_stop(dialog, stop_index, sell, buy);
+                    } else if office_open {
+                        apply_prices(sell, buy);
+                    }
+                }
                 _ if !office_open => {}
                 w if w == SETUP_KEY && ctrl => on_lock_staples_hotkey(),
                 w if w == SETUP_KEY && alt => on_lock_building_materials_hotkey(),
                 w if w == SETUP_KEY => on_setup_hotkey(),
-                // Exactly one of ctrl (buy) / alt (sell) picks the direction.
-                w if ctrl != alt => {
-                    if let Some(&(_, level)) = LEVEL_KEYS.iter().find(|(key, _)| *key == w) {
-                        if ctrl {
-                            apply_prices(None, Some(level));
-                        } else {
-                            apply_prices(Some(level), None);
-                        }
-                    }
-                }
                 _ => {}
             }
         }
@@ -299,20 +301,64 @@ unsafe fn current_town_index() -> Option<u8> {
     Some(*((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8)
 }
 
-/// F9: log the current town, the player's home town and the selected ship (diagnostics
-/// for the route feature).
-unsafe fn on_current_town_hotkey() {
-    if let Some(town_index) = current_town_index() {
-        let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
-        ods(&format!("current town: {town} ({town_index:#04x})"));
+/// THROWAWAY (auto-trade dialog hunt): the window statics cluster. Each is written
+/// exactly once, by its window class ctor. Identified neighbors: 0x6e5500 town hall
+/// sidemenu, 0x6e557c trading office, 0x6e558c town hall, 0x6e55c0 shipyard.
+const WINDOW_STATICS_CLUSTER: [u32; 22] = [
+    0x6e551c, 0x6e5524, 0x6e5528, 0x6e552c, 0x6e5530, 0x6e5534, 0x6e5538, 0x6e553c, 0x6e5544, 0x6e5548, 0x6e5550, 0x6e5558, 0x6e5564, 0x6e556c, 0x6e5574,
+    0x6e5584, 0x6e5588, 0x6e55a0, 0x6e55a8, 0x6e55b0, 0x6e55b4, 0x6e55b8,
+];
+
+/// The "Automatic maritime trading" (goods) dialog object, constructed at startup
+/// (ctor 0x403020, vtable 0x66a7f0, allocated by the mass-constructor at 0x424eb0).
+/// Its +0xa4 holds the POOL INDEX of the displayed stop - its arrows walk the pool
+/// chain through it - and the close method (vtable+0x118 = 0x4066f0) sets it to -1,
+/// so one field carries both "is open" and "which stop".
+const DIALOG_PTR: *const u32 = 0x006cba74 as _;
+const DIALOG_STOP_INDEX_OFFSET: u32 = 0xa4;
+const DIALOG_SHIP_INDEX_OFFSET: u32 = 0xa8;
+const DIALOG_FLAG_OFFSET: u32 = 0x547c;
+/// thiscall(this, stop_pool_index, ship_index, flag): populate the dialog's widgets
+/// (direction arrows, amount and price texts) from the stop record. Called by the
+/// dialog's own arrows and by the panel's Goods button (0x48c432).
+const DIALOG_POPULATE: u32 = 0x00405a20;
+
+/// The goods dialog and the pool index of the stop it displays, if it is open.
+unsafe fn goods_dialog_stop() -> Option<(u32, u32)> {
+    let dialog = *DIALOG_PTR;
+    if dialog == 0 {
+        return None;
     }
+    let stop_index = *((dialog + DIALOG_STOP_INDEX_OFFSET) as *const i32);
+    if stop_index < 0 || stop_index as u16 >= *ROUTE_STOP_POOL_COUNT {
+        return None;
+    }
+    Some((dialog, stop_index as u32))
+}
 
-    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
-    let home_index = merchant.get_hometown_index();
-    let home = get_town_name(home_index).unwrap_or_else(|| "<unknown>".into());
-    ods(&format!("home town: {home} ({home_index:#04x})"));
+/// Repopulate the goods dialog from its stop record, the way its own arrows do. The
+/// displayed texts are sprintf-cached in the dialog object, so in-place pool writes
+/// stay invisible without this.
+unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
+    let populate: extern "thiscall" fn(u32, u32, u32, u32) = mem::transmute(DIALOG_POPULATE);
+    let ship_index = *((dialog + DIALOG_SHIP_INDEX_OFFSET) as *const u32);
+    let flag = *((dialog + DIALOG_FLAG_OFFSET) as *const u8) as u32;
+    populate(dialog, stop_index, ship_index, flag);
+}
 
-    probe_selected_ship();
+/// F9 (THROWAWAY): report the goods dialog state, to validate the object fields.
+unsafe fn on_current_town_hotkey() {
+    let dialog = *DIALOG_PTR;
+    if dialog == 0 {
+        ods("goods dialog: object not constructed");
+        return;
+    }
+    let stop_index = *((dialog + DIALOG_STOP_INDEX_OFFSET) as *const i32);
+    let ship_index = *((dialog + DIALOG_SHIP_INDEX_OFFSET) as *const u32);
+    let flag = *((dialog + DIALOG_FLAG_OFFSET) as *const u8);
+    ods(&format!(
+        "goods dialog {dialog:#010x}: stop pool index {stop_index}, ship {ship_index}, flag {flag}"
+    ));
 }
 
 /// The ship currently shown in the route panel (map/panel selection), via the captured
@@ -327,18 +373,6 @@ unsafe fn selected_ship_index() -> Option<u16> {
         return None;
     }
     Some(*(selection as *const u16))
-}
-
-/// Read the selected ship via the captured panel object and log it.
-unsafe fn probe_selected_ship() {
-    let ships = p3_api::ships::ShipsPtr::new();
-    match selected_ship_index() {
-        Some(index) => {
-            let name = ships.get_ship(index).map(|s| s.get_name()).unwrap_or_default();
-            ods(&format!("selected ship: {index} {name:?}"));
-        }
-        None => ods("selected ship: none captured (select a ship)"),
-    }
 }
 
 /// True if `ship_index` belongs to the player (walk the player merchant's ship chain).
@@ -381,7 +415,9 @@ unsafe fn read_pool_stop(record: u32) -> TradeRouteStop {
 
 /// Read a ship's current route by walking the pool chain, rotated so the logical first
 /// stop (the one carrying the 0x04 marker) is first. Empty if the ship has no route.
-unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
+/// The pool record addresses of a ship's route, rotated so the logical first stop (the
+/// one carrying the 0x04 marker) is first - the order the route window displays.
+unsafe fn route_stop_records(ship_index: u16) -> Vec<u32> {
     let ships = p3_api::ships::ShipsPtr::new();
     let Some(ship) = ships.get_ship(ship_index) else {
         return Vec::new();
@@ -392,11 +428,11 @@ unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
     if pool == 0 || head >= pool_count {
         return Vec::new();
     }
-    let mut stops = Vec::new();
+    let mut records = Vec::new();
     let mut idx = head;
     for _ in 0..64 {
         let record = pool + idx as u32 * ROUTE_STOP_SIZE;
-        stops.push(read_pool_stop(record));
+        records.push(record);
         let next = *(record as *const u16);
         if next == idx || next >= pool_count {
             break;
@@ -406,10 +442,50 @@ unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
             break;
         }
     }
-    if let Some(pos) = stops.iter().position(|s| s.action & FIRST_STOP_MARKER != 0) {
-        stops.rotate_left(pos);
+    if let Some(pos) = records.iter().position(|&r| *((r + 3) as *const u8) & FIRST_STOP_MARKER != 0) {
+        records.rotate_left(pos);
     }
-    stops
+    records
+}
+
+unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
+    route_stop_records(ship_index).into_iter().map(|record| read_pool_stop(record)).collect()
+}
+
+/// Ctrl/Alt+QWERTY while the goods dialog is open: reprice the stop being edited, in
+/// place. The dialog edits the applied route's pool record directly (verified: its +/-
+/// buttons change the pool), so we write the level prices into the same record: sells
+/// (positive price) get the sell level, buys (negated max price) the buy level.
+/// Directions and amounts stay untouched.
+unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Option<PriceLevel>, buy: Option<PriceLevel>) {
+    let record = *ROUTE_STOP_POOL + stop_index * ROUTE_STOP_SIZE;
+    let town = get_town_name(*((record + 2) as *const u8)).unwrap_or_else(|| "<unknown>".into());
+
+    let mut updated = 0;
+    for ware_index in TRADE_WARES {
+        let price = (record + 28 + ware_index as u32 * 4) as *mut i32;
+        let new = match *price {
+            0 => continue,
+            p if p < 0 => match buy {
+                Some(level) => -buy_price(ware_index, level),
+                None => continue,
+            },
+            _ => match sell {
+                Some(level) => sell_price(ware_index, level),
+                None => continue,
+            },
+        };
+        if new != *price {
+            *price = new;
+            updated += 1;
+        }
+    }
+    if updated > 0 {
+        refresh_goods_dialog(dialog, stop_index);
+    }
+    ods(&format!(
+        "dialog prices (sell {sell:?}, buy {buy:?}): updated {updated} wares of the {town} stop"
+    ));
 }
 
 /// Apply a route file (written to ROUTE_FILE_PATH) to a ship, mimicking the game's own
