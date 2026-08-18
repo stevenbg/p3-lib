@@ -346,18 +346,23 @@ unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
     populate(dialog, stop_index, ship_index, flag);
 }
 
-/// F9 (THROWAWAY): report the goods dialog state, to validate the object fields.
+/// F9 (THROWAWAY): print the undo-validity marker candidates - the undo handler checks
+/// dwords at dialog+ware*0x190+0x8e0 against -1 and only restores wares whose marker is
+/// not -1. Press right after a + click (undo works: some marker set) and again after an
+/// arrow away and back (undo dead: markers should read -1).
 unsafe fn on_current_town_hotkey() {
     let dialog = *DIALOG_PTR;
     if dialog == 0 {
-        ods("goods dialog: object not constructed");
+        ods("dialog probe: object not constructed");
         return;
     }
-    let stop_index = *((dialog + DIALOG_STOP_INDEX_OFFSET) as *const i32);
-    let ship_index = *((dialog + DIALOG_SHIP_INDEX_OFFSET) as *const u32);
-    let flag = *((dialog + DIALOG_FLAG_OFFSET) as *const u8);
+    let markers: Vec<String> = (0..24u32).map(|i| format!("{}", *((dialog + 0x8e0 + i * 0x190) as *const i32))).collect();
+    ods(&format!("dialog probe: [+0x8e0+i*0x190] = {}", markers.join(",")));
     ods(&format!(
-        "goods dialog {dialog:#010x}: stop pool index {stop_index}, ship {ship_index}, flag {flag}"
+        "dialog probe: current(+0x4120)={} b1(+0x29b0)={} b2(+0x3630)={}",
+        *((dialog + 0x4120) as *const i32),
+        *((dialog + 0x29b0) as *const i32),
+        *((dialog + 0x3630) as *const i32),
     ));
 }
 
