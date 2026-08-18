@@ -104,8 +104,6 @@ Details: https://p3modding.github.io/towns/ware-prices.html
 
 ## Known limitations
 
-- The administrator view's displayed amounts refresh only when the window is reopened;
-  the underlying office data is always correct (directions and prices refresh live).
 - The game prices a transaction as the average of the curve over the amount traded, not
   the marginal price at the end point, so a limit set exactly at a level lets the last
   transaction overshoot that stock point by up to one transaction chunk. Correcting for

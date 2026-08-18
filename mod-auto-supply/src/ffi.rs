@@ -346,17 +346,46 @@ unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
     populate(dialog, stop_index, ship_index, flag);
 }
 
-/// F9 (THROWAWAY): the scratch key for whatever is being reverse engineered; currently
-/// just reports the goods dialog state.
+/// F9's snapshot of the trading office window object, for the amount-widget hunt.
+const WINDOW_SNAPSHOT_SIZE: usize = 0xf000;
+static WINDOW_SNAPSHOT: std::sync::Mutex<Option<Box<[u8; WINDOW_SNAPSHOT_SIZE]>>> = std::sync::Mutex::new(None);
+
+/// F9 (THROWAWAY): diff the trading office window object between presses, hunting the
+/// administrator amount row widgets. Sequence: administrator view open, F9 (baseline),
+/// click + once on ONE ware's amount, F9 - the changed fields identify the row struct
+/// the widget setter 0x45c930 needs.
 unsafe fn on_current_town_hotkey() {
-    let dialog = *DIALOG_PTR;
-    if dialog == 0 {
-        ods("goods dialog: object not constructed");
+    let window = UITradingOfficeWindowPtr::new();
+    if window.get_address() == 0 {
+        ods("window diff: no trading office window");
         return;
     }
-    let stop_index = *((dialog + DIALOG_STOP_INDEX_OFFSET) as *const i32);
-    let ship_index = *((dialog + DIALOG_SHIP_INDEX_OFFSET) as *const u32);
-    ods(&format!("goods dialog {dialog:#010x}: stop pool index {stop_index}, ship {ship_index}"));
+    let current: Box<[u8; WINDOW_SNAPSHOT_SIZE]> = Box::new(*(window.get_address() as *const [u8; WINDOW_SNAPSHOT_SIZE]));
+    let mut guard = WINDOW_SNAPSHOT.lock().unwrap();
+    match guard.take() {
+        None => ods(&format!("window diff: baseline of {:#010x} taken", window.get_address())),
+        Some(previous) => {
+            let mut ranges: Vec<(usize, usize)> = Vec::new();
+            for offset in 0..WINDOW_SNAPSHOT_SIZE {
+                if previous[offset] != current[offset] {
+                    match ranges.last_mut() {
+                        Some((_, end)) if *end + 1 == offset => *end = offset,
+                        _ => ranges.push((offset, offset)),
+                    }
+                }
+            }
+            ods(&format!("window diff: {} changed ranges", ranges.len()));
+            for &(start, end) in ranges.iter().take(40) {
+                let old: Vec<String> = previous[start..=end].iter().map(|b| format!("{b:02x}")).collect();
+                let new: Vec<String> = current[start..=end].iter().map(|b| format!("{b:02x}")).collect();
+                ods(&format!("window diff: +{start:#x}..{end:#x}: {} -> {}", old.join(""), new.join("")));
+            }
+            if ranges.len() > 40 {
+                ods("window diff: ... more ranges elided");
+            }
+        }
+    }
+    *guard = Some(current);
 }
 
 /// The ship currently shown in the route panel (map/panel selection), via the captured
@@ -889,11 +918,43 @@ unsafe fn apply_prices(sell: Option<PriceLevel>, buy: Option<PriceLevel>) {
     refresh_administrator_view();
 }
 
-/// Re-selects the administrator page, which rebuilds the direction arrows and prices.
-/// The displayed amounts are cached in widget objects that only a full window reopen
-/// rebuilds - known cosmetic limitation, the office data itself is correct.
+/// The administrator view's amount rows: widget structs at window+0x9840 + row*0x190,
+/// rows in the game's ware display order (the table at 0x698538, sorted at runtime by
+/// localized name - the open method's populate loop at 0x5d8f40 reads it the same way).
+/// The number widget setter 0x45c930 clamps to [row+0x180]..[row+0x184], stores the
+/// value at row+0x188 and refreshes the label text.
+const OFFICE_ROW_BASE: u32 = 0x9840;
+const OFFICE_ROW_STRIDE: u32 = 0x190;
+const WARE_DISPLAY_ORDER: *const u8 = 0x00698538 as _;
+const WIDGET_SET_VALUE: u32 = 0x0045c930;
+
+/// Re-selects the administrator page (rebuilds the direction arrows and prices) and
+/// pushes the office's amounts into the row widgets the way the window's own open
+/// method does - the amounts are populated only there, which is why they never
+/// refreshed before. (Cycling the window's close+open repopulates too, but detaches
+/// the side menu: the game's real open path goes through a view controller.)
 unsafe fn refresh_administrator_view() {
-    UITradingOfficeWindowPtr::new().select_new_page(ADMINISTRATOR_PAGE);
+    let window = UITradingOfficeWindowPtr::new();
+    if window.get_address() == 0 {
+        return;
+    }
+    window.select_new_page(ADMINISTRATOR_PAGE);
+
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    let Some(office) = GAME_WORLD_PTR.get_office_in_of(window.get_town_index() as _, merchant_index as _) else {
+        return;
+    };
+    let stocks = office.get_administrator_trade_stock();
+    let set_value: extern "thiscall" fn(u32, i32) = mem::transmute(WIDGET_SET_VALUE);
+    for row in 0..TRADE_WARES.end as u32 {
+        let ware = *WARE_DISPLAY_ORDER.add(row as usize) as usize;
+        if ware >= TRADE_WARES.end as usize {
+            continue;
+        }
+        let scaling = WareId::from_usize(ware).unwrap().get_scaling();
+        let value = (stocks[ware] / scaling).clamp(0, 9999);
+        set_value(window.get_address() + OFFICE_ROW_BASE + row * OFFICE_ROW_STRIDE, value);
+    }
 }
 
 /// F11: dump thresholds, base prices and all price levels for the open town to the log
