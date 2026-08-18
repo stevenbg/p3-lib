@@ -9,6 +9,9 @@
 //!   barrels 200, weapons 10). [MAX_AMOUNT] means "as much as possible", unscaled.
 //! - The action byte carries the repair flag ([FLAG_R]/[FLAG_X]/[FLAG_NONE]) and
 //!   [FIRST_STOP_MARKER] on the route's first stop.
+//! - The auto trade only handles the 20 trade wares (the route window's goods list has
+//!   no weapons, although ships can carry them), so instruction entries for the four
+//!   weapons - which take-max/unload-all stops do write - are inert.
 //! - The per-stop order array is the instruction order; [partitioned_order] puts
 //!   unloading wares first so the ship frees space before taking new cargo on.
 
