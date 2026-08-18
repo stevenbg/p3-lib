@@ -82,9 +82,10 @@ the calculated quantities, and unloads the whole ship back into the source offic
 - `--type 5stop`: source load → sell max → take the target office's stock of the supplied wares → put back the
   calculated quantities while collecting every other ware from that office → unload everything at the source. Taking
   only the supplied wares bounds the hold space the office reset needs.
-- `--type 6stop`: like 5stop, but swaps the target office stock one unit category at a time (unload loads-goods + take
-  barrels, then unload barrel quantities + take loads-goods, then unload loads quantities), which bounds how much ship
-  space the shuffle needs.
+- `--type 6stop`: like 5stop, but swaps the target office's stock of the supplied wares one unit category at a time
+  (unload loads-goods + take the supplied barrels, then put back the barrel quantities + take the supplied loads-goods,
+  then put back the loads quantities + collect every non-supplied ware), which bounds how much ship space the shuffle
+  needs.
 - `--type suck`: parks in the load town (`--sell-town` and `--citizens` are unused): one stop unloading everything into
   the office (with the repair flag), then five stops buying all goods at the reference `buy_price` limits.
 

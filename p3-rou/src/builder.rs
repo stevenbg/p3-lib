@@ -177,36 +177,43 @@ pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sel
     ]
 }
 
-/// Like [five_stop_route], but swaps the target office stock one unit category at a
-/// time (unload loads-goods + take barrels, then unload barrel amounts + take
-/// loads-goods, then unload loads amounts), which bounds the ship space the shuffle
-/// needs. Weapons take part only in the initial load, the sale, and the final unload.
+/// Like [five_stop_route], but swaps the target office's stock of the supplied wares
+/// one unit category at a time (unload the loads goods + take the supplied barrels,
+/// then put back the barrel amounts + take the supplied loads goods, then put back the
+/// loads amounts + collect every ware the route does not supply), which bounds the ship
+/// space the shuffle needs.
 pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24]) -> Vec<TradeRouteStop> {
     let (sell_max, unload_calculated) = sell_max_and_unload(&load_amount);
     let mut unload_loads_take_barrels = [0i32; 24];
     let mut unload_barrels_take_loads = [0i32; 24];
-    let mut unload_loads_calculated = [0i32; 24];
+    let mut put_back_loads_and_collect = [0i32; 24];
     for i in 0..24 {
+        let supplied = load_amount[i] != 0;
         match ware_scaling(i) {
             LOAD_SCALING => {
                 unload_loads_take_barrels[i] = -MAX_AMOUNT;
-                unload_barrels_take_loads[i] = MAX_AMOUNT;
-                unload_loads_calculated[i] = unload_calculated[i];
+                if supplied {
+                    unload_barrels_take_loads[i] = MAX_AMOUNT;
+                    put_back_loads_and_collect[i] = unload_calculated[i];
+                }
             }
-            BARREL_SCALING => {
+            BARREL_SCALING if supplied => {
                 unload_loads_take_barrels[i] = MAX_AMOUNT;
                 unload_barrels_take_loads[i] = unload_calculated[i];
             }
             _ => {}
         }
+        if !supplied {
+            put_back_loads_and_collect[i] = MAX_AMOUNT;
+        }
     }
-    // The unloads-before-loads ordering of the two swap stops comes from [cargo_order].
+    // The unloads-before-loads ordering of the swap stops comes from [cargo_order].
     vec![
         stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
         stop(sell_town, FLAG_X, sell_prices, sell_max),
         stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels),
         stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads),
-        stop(sell_town, FLAG_X, [0i32; 24], unload_loads_calculated),
+        stop(sell_town, FLAG_X, [0i32; 24], put_back_loads_and_collect),
         stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
     ]
 }
