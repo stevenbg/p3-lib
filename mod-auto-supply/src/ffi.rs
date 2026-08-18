@@ -12,6 +12,7 @@ use p3_api::{
     town::get_town_name,
     ui::ui_trading_office_window::UITradingOfficeWindowPtr,
 };
+use p3_rou::{builder, TradeRouteStop};
 use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
@@ -38,6 +39,29 @@ const DEBUG_KEY: usize = VK_F11.0 as usize;
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
 /// F9: log the current town (probe for the current-town global).
 const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
+/// Ctrl+Z: add a "buy 10 beer at 50" stop for the current town to the selected ship's route.
+const ADD_STOP_KEY: usize = 0x5a; // 'Z'
+
+/// The game's route file loader: thiscall(this, base_name) -> decompressed buffer. It
+/// forms the path "save\AutoRoute\<name>.rou" itself, so we write the file there and
+/// pass the base name.
+const ROUTE_LOADER_ADDRESS: u32 = 0x004d5ee0;
+const ROUTE_LOADER_THIS: u32 = 0x006dd728;
+/// operations struct (0x6df2f0): +0x930 = route buffer pointer, +0x934 = target ship.
+const OPERATIONS_ROUTE_BUFFER: *mut u32 = 0x006dfc20 as _;
+const OPERATIONS_ROUTE_SHIP: *mut u32 = 0x006dfc24 as _;
+const ROUTE_BASE_NAME: &str = "_autosupply";
+const ROUTE_FILE_PATH: &str = "save/AutoRoute/_autosupply.rou";
+const FIRST_STOP_MARKER: u8 = 0x04;
+
+/// The loader takes a pointer to an MFC-style string object: a single pointer to char
+/// data, with refcount/alloc/length in the 0xc bytes before it. [0x6c7cd0] holds the
+/// shared empty-string header, which is what a default-constructed object points past.
+const STRING_EMPTY_HEADER_PTR: *const u32 = 0x006c7cd0 as _;
+/// thiscall(this, *const u8) -> this: construct/assign from a C string.
+const STRING_CTOR_FROM_CSTR: u32 = 0x0064f390;
+/// thiscall(this): release the string data.
+const STRING_DTOR: u32 = 0x0064f253;
 /// Amount set for buy orders whose current amount is 0, in in-game units.
 const BUY_AMOUNT: i32 = 9999;
 /// The administrator view of the trading office window ("Trading Office" side button, pages 0-6).
@@ -193,6 +217,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             match wparam.0 {
                 w if w == CURRENT_TOWN_KEY => on_current_town_hotkey(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
+                w if w == ADD_STOP_KEY && ctrl => on_add_stop_hotkey(),
                 _ if !office_open => {}
                 w if w == SETUP_KEY => on_setup_hotkey(),
                 w if w == BOTH_PRICES_KEY => apply_prices(Some(SellLevel::AtT0), Some(BuyLevel::AtT1)),
@@ -239,23 +264,182 @@ unsafe fn on_current_town_hotkey() {
     probe_selected_ship();
 }
 
-/// Read the selected ship via the captured panel object and log it.
-unsafe fn probe_selected_ship() {
+/// The ship currently shown in the route panel (map/panel selection), via the captured
+/// panel object: panel+0xa0 points to a selection struct whose first word is the index.
+unsafe fn selected_ship_index() -> Option<u16> {
     let panel = CACHED_PANEL.load(Ordering::Relaxed);
     if panel == 0 {
-        ods("selected ship: panel not captured yet (open a ship's route panel once)");
-        return;
+        return None;
     }
     let selection = *((panel + PANEL_SELECTION_OFFSET) as *const u32);
     if !(0x0010_0000..0x7f00_0000).contains(&selection) {
-        ods(&format!("selected ship: panel {panel:#010x} +0xa0 = {selection:#010x} (nothing selected?)"));
+        return None;
+    }
+    Some(*(selection as *const u16))
+}
+
+/// Read the selected ship via the captured panel object and log it.
+unsafe fn probe_selected_ship() {
+    let ships = p3_api::ships::ShipsPtr::new();
+    match selected_ship_index() {
+        Some(index) => {
+            let name = ships.get_ship(index).map(|s| s.get_name()).unwrap_or_default();
+            ods(&format!("selected ship: {index} {name:?}"));
+        }
+        None => ods("selected ship: none captured (select a ship)"),
+    }
+}
+
+/// True if `ship_index` belongs to the player (walk the player merchant's ship chain).
+unsafe fn is_player_ship(ship_index: u16) -> bool {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let ships_size = ships.get_ships_size();
+    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
+    let mut idx = merchant.get_first_ship_index();
+    for _ in 0..2000 {
+        if idx >= ships_size {
+            break;
+        }
+        if idx == ship_index {
+            return true;
+        }
+        let Some(ship) = ships.get_ship(idx) else { break };
+        idx = ship.get_next_ship_index_of_merchant();
+    }
+    false
+}
+
+/// Read a 220-byte pool record into a TradeRouteStop (the file layout, head field dropped).
+unsafe fn read_pool_stop(record: u32) -> TradeRouteStop {
+    let mut order = [0u8; 24];
+    core::ptr::copy_nonoverlapping((record + 4) as *const u8, order.as_mut_ptr(), 24);
+    let mut price = [0i32; 24];
+    let mut amount = [0i32; 24];
+    for i in 0..24u32 {
+        price[i as usize] = *((record + 28 + i * 4) as *const i32);
+        amount[i as usize] = *((record + 124 + i * 4) as *const i32);
+    }
+    TradeRouteStop {
+        town_index: *((record + 2) as *const u8),
+        action: *((record + 3) as *const u8),
+        order,
+        price,
+        amount,
+    }
+}
+
+/// Read a ship's current route by walking the pool chain, rotated so the logical first
+/// stop (the one carrying the 0x04 marker) is first. Empty if the ship has no route.
+unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let Some(ship) = ships.get_ship(ship_index) else {
+        return Vec::new();
+    };
+    let pool = *ROUTE_STOP_POOL;
+    let pool_count = *ROUTE_STOP_POOL_COUNT;
+    let head = *((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16);
+    if pool == 0 || head >= pool_count {
+        return Vec::new();
+    }
+    let mut stops = Vec::new();
+    let mut idx = head;
+    for _ in 0..64 {
+        let record = pool + idx as u32 * ROUTE_STOP_SIZE;
+        stops.push(read_pool_stop(record));
+        let next = *(record as *const u16);
+        if next == idx || next >= pool_count {
+            break;
+        }
+        idx = next;
+        if idx == head {
+            break;
+        }
+    }
+    if let Some(pos) = stops.iter().position(|s| s.action & FIRST_STOP_MARKER != 0) {
+        stops.rotate_left(pos);
+    }
+    stops
+}
+
+/// Apply a route file (written to ROUTE_FILE_PATH) to a ship, mimicking the game's own
+/// route Load: build the base-name string object, set the target ship, call the loader,
+/// hand the resulting buffer to transfer (which frees it).
+unsafe fn apply_route_file(ship_index: u16) -> bool {
+    let mut name: Vec<u8> = ROUTE_BASE_NAME.bytes().collect();
+    name.push(0);
+
+    // Start from the empty-string sentinel, like a default-constructed object, so the
+    // constructor's "release the old data" path is a no-op instead of a wild free.
+    let mut string_object: u32 = *STRING_EMPTY_HEADER_PTR + 0xc;
+    let ctor: extern "thiscall" fn(*mut u32, *const u8) -> *mut u32 = mem::transmute(STRING_CTOR_FROM_CSTR);
+    ctor(&mut string_object, name.as_ptr());
+    ods("add stop: name string built");
+
+    *OPERATIONS_ROUTE_SHIP = ship_index as u32;
+    let loader: extern "thiscall" fn(u32, *const u32) -> u32 = mem::transmute(ROUTE_LOADER_ADDRESS);
+    let buffer = loader(ROUTE_LOADER_THIS, &string_object);
+    ods(&format!("add stop: loader returned buffer {buffer:#010x}"));
+
+    let dtor: extern "thiscall" fn(*mut u32) = mem::transmute(STRING_DTOR);
+    dtor(&mut string_object);
+
+    if buffer == 0 {
+        return false;
+    }
+    *OPERATIONS_ROUTE_BUFFER = buffer;
+    OPERATIONS_PTR.transfer_loaded_traderoute();
+    true
+}
+
+/// F8: append a "buy 10 beer at max price 50" stop for the current town to the selected
+/// ship's route, then re-apply the whole route through the game's loader + transfer.
+unsafe fn on_add_stop_hotkey() {
+    let Some(ship_index) = selected_ship_index() else {
+        ods("add stop: no ship selected");
+        return;
+    };
+    if !is_player_ship(ship_index) {
+        ods("add stop: the selected ship is not yours");
         return;
     }
-    let ship_index = *(selection as *const u16);
+    let scene = *TOWN_SCENE_PTR;
+    if scene == 0 {
+        ods("add stop: not in a town");
+        return;
+    }
+    let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
+
+    let mut stops = read_ship_route(ship_index);
+    let beer = WareId::Beer;
+    let mut price = [0i32; 24];
+    let mut amount = [0i32; 24];
+    price[beer as usize] = -50; // buy: negated max price
+    amount[beer as usize] = 10 * beer.get_scaling(); // 10 barrels in raw units
+    stops.push(builder::stop(town_index, 0x00, price, amount));
+
+    // Exactly the first stop carries the logical-first marker.
+    for (i, stop) in stops.iter_mut().enumerate() {
+        if i == 0 {
+            stop.action |= FIRST_STOP_MARKER;
+        } else {
+            stop.action &= !FIRST_STOP_MARKER;
+        }
+    }
+
+    let stop_count = stops.len();
+    let data = p3_rou::TradeRouteFile { stops }.serialize();
+    if let Err(e) = std::fs::write(ROUTE_FILE_PATH, &data) {
+        ods(&format!("add stop: failed to write {ROUTE_FILE_PATH}: {e}"));
+        return;
+    }
+    ods(&format!("add stop: wrote {stop_count} stops ({} bytes)", data.len()));
     let ships = p3_api::ships::ShipsPtr::new();
-    match ships.get_ship(ship_index) {
-        Some(ship) => ods(&format!("selected ship: {ship_index} {:?}", ship.get_name())),
-        None => ods(&format!("selected ship: index {ship_index} out of range")),
+    let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
+    if apply_route_file(ship_index) {
+        let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+        ods(&format!("add stop: buy 10 beer @ 50 in {town} on {name:?} (route now {stop_count} stops)"));
+    } else {
+        ods("add stop: loader failed (is fix_uncompressed_trade_route_loading.dll installed?)");
     }
 }
 
