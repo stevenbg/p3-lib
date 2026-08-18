@@ -59,6 +59,11 @@ const STOP_SELL_LEVEL: PriceLevel = PriceLevel::LowerMid;
 /// justify the cargo space early on (grain, hemp and timber are bulky loads goods), so
 /// they stay in the town. Ctrl+F4 buys them too.
 const NO_BUY_WARES: [WareId; 6] = [WareId::Pitch, WareId::Timber, WareId::Salt, WareId::Bricks, WareId::Grain, WareId::Hemp];
+/// Wares the F3 routes never supply: their t0 threshold is a fixed building-material
+/// base rather than a week of demand (bricks alone are 40 loads, 400 barrels of hold), so
+/// shipping it in would swamp the route. Whatever accumulates in the target office is
+/// still hauled home.
+const NO_SUPPLY_WARES: [WareId; 2] = [WareId::Bricks, WareId::Timber];
 
 /// The game's route file loader: thiscall(this, base_name) -> decompressed buffer. It
 /// forms the path "save\AutoRoute\<name>.rou" itself, so we write the file there and
@@ -551,9 +556,13 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
     let mut supplied = 0;
     for ware_index in TRADE_WARES {
         let i = ware_index as usize;
+        let ware_id = WareId::from_u16(ware_index).unwrap();
         buy_prices[i] = buy_price(ware_index, PriceLevel::Center);
-        if production[i] > 0 {
-            continue; // the town makes it: do not supply it
+        // A zero load amount is how the route templates express "do not supply this":
+        // the ware is neither loaded nor sold nor put back, but whatever the target
+        // office holds is still collected.
+        if production[i] > 0 || NO_SUPPLY_WARES.contains(&ware_id) {
+            continue;
         }
         // t0 is one week of the town's demand, already in raw units.
         load_amount[i] = thresholds[i][0];
