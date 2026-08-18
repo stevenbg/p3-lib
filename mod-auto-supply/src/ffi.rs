@@ -25,8 +25,12 @@ use windows::Win32::{
 use crate::prices::{buy_price, sell_price, PriceLevel};
 
 /// F1: set every ware without an order to BUY (produced by the town) or SELL (rest),
-/// at the Center price levels (buy t1, sell t0).
+/// at the Center price levels (buy t1, sell t0). Ctrl+F1: raise the staple amounts to a
+/// week of citizen consumption and lock them.
 const SETUP_KEY: usize = VK_F1.0 as usize;
+/// The wares Ctrl+F1 provisions and locks in the office: what a celebration needs in
+/// stock.
+const LOCKED_STAPLES: [WareId; 6] = [WareId::Beer, WareId::Wine, WareId::Fish, WareId::Meat, WareId::Grain, WareId::Honey];
 
 /// The six price levels, on Q W E R T Y in ASCENDING price order: ctrl sets buy prices,
 /// alt sets sell prices. Pressed without a modifier (or with both) they do nothing.
@@ -255,6 +259,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     RouteKind::FiveStop
                 }),
                 _ if !office_open => {}
+                w if w == SETUP_KEY && ctrl => on_lock_staples_hotkey(),
                 w if w == SETUP_KEY => on_setup_hotkey(),
                 // Exactly one of ctrl (buy) / alt (sell) picks the direction.
                 w if ctrl != alt => {
@@ -701,6 +706,50 @@ unsafe fn on_setup_hotkey() {
     ods(&format!(
         "setup in {town}: buying produced wares [{}], selling {sold} others, {untouched} existing orders untouched",
         bought.join(", ")
+    ));
+    refresh_administrator_view();
+}
+
+/// Ctrl+F1: raise the administrator amounts of the [LOCKED_STAPLES] to a week of the
+/// town's citizen consumption - never lowering an amount - and lock their quantities
+/// (the "Lock min. store quantity for auto trade ships" checkbox), so route ships
+/// cannot take the office below the week's buffer. Directions and prices are untouched.
+unsafe fn on_lock_staples_hotkey() {
+    let Some((office, office_index, town)) = resolve_office() else {
+        return;
+    };
+    let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
+    let citizens = GAME_WORLD_PTR.get_town(town_index).get_daily_consumptions_citizens();
+    let prices = office.get_administrator_trade_prices();
+    let stocks = office.get_administrator_trade_stock();
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+
+    let mut raised = Vec::new();
+    for ware_id in LOCKED_STAPLES {
+        let i = ware_id as usize;
+        let scaling = ware_id.get_scaling();
+        let weekly = citizens[i].saturating_mul(7);
+        let weekly = (weekly + scaling - 1) / scaling * scaling;
+        if stocks[i] < weekly {
+            execute_operation(&Operation::OfficeAutotradeSettingChange {
+                stock: weekly,
+                price: prices[i],
+                office_index: office_index as _,
+                ware_id,
+            });
+            raised.push(format!("{ware_id:?} {}", weekly / scaling));
+        }
+        execute_operation(&Operation::OfficeAutotradeLockChange {
+            ware_id,
+            town_index: town_index as u16,
+            merchant_index: merchant_index as u16,
+            lock: true,
+        });
+    }
+    ods(&format!(
+        "staples in {town}: locked {} wares, raised [{}] to a week of citizen consumption",
+        LOCKED_STAPLES.len(),
+        raised.join(", ")
     ));
     refresh_administrator_view();
 }

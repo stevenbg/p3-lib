@@ -165,8 +165,12 @@ impl Operation {
                 let opcode: u32 = 0x66;
                 op[0..4].copy_from_slice(&opcode.to_le_bytes());
                 op[0x04..0x08].copy_from_slice(&(*ware_id as u32).to_le_bytes());
-                op[0x08..0x0a].copy_from_slice(&town_index.to_le_bytes());
-                op[0x0c..0x0e].copy_from_slice(&merchant_index.to_le_bytes());
+                // The executor passes +0x8 and +0xc straight to the office lookup
+                // 0x5308a0, whose argument order is (merchant, town) - established by
+                // the checkbox draw code at 0x5d9d59, which passes the player merchant
+                // global (operations+0x924) first and the window's town second.
+                op[0x08..0x0a].copy_from_slice(&merchant_index.to_le_bytes());
+                op[0x0c..0x0e].copy_from_slice(&town_index.to_le_bytes());
                 op[0x10..0x14].copy_from_slice(&(*lock as u32).to_le_bytes());
             }
         }
