@@ -17,7 +17,7 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F9, VK_MENU},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F4, VK_F9, VK_MENU},
         WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
     },
 };
@@ -46,8 +46,17 @@ const DEBUG_KEY: usize = VK_F11.0 as usize;
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
 /// F9: log the current town (probe for the current-town global).
 const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
-/// Ctrl+Z: add a "buy 10 beer at 50" stop for the current town to the selected ship's route.
-const ADD_STOP_KEY: usize = 0x5a; // 'Z'
+/// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
+/// does the same but also buys the [NO_BUY_WARES].
+const ADD_STOP_KEY: usize = VK_F4.0 as usize;
+/// The stop buys what the town produces at this level (the Ctrl+Y price).
+const STOP_BUY_LEVEL: PriceLevel = PriceLevel::LowerMid;
+/// The stop sells everything else at this level (the Alt+Y price).
+const STOP_SELL_LEVEL: PriceLevel = PriceLevel::LowerMid;
+/// Wares plain F4 never buys, even where the town produces them: their margin does not
+/// justify the cargo space early on (grain, hemp and timber are bulky loads goods), so
+/// they stay in the town. Ctrl+F4 buys them too.
+const NO_BUY_WARES: [WareId; 6] = [WareId::Pitch, WareId::Timber, WareId::Salt, WareId::Bricks, WareId::Grain, WareId::Hemp];
 
 /// The game's route file loader: thiscall(this, base_name) -> decompressed buffer. It
 /// forms the path "save\AutoRoute\<name>.rou" itself, so we write the file there and
@@ -187,7 +196,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    ods("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F9 town+ship, F10 routes, ctrl+Z add stop");
+    ods("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 town+ship, F10 routes");
     0
 }
 
@@ -223,7 +232,9 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             match wparam.0 {
                 w if w == CURRENT_TOWN_KEY => on_current_town_hotkey(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
-                w if w == ADD_STOP_KEY && ctrl => on_add_stop_hotkey(),
+                // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
+                // Alt+F4 is left to Windows.
+                w if w == ADD_STOP_KEY && !alt => on_add_stop_hotkey(!ctrl),
                 _ if !office_open => {}
                 w if w == SETUP_KEY => on_setup_hotkey(),
                 w if w == DEBUG_KEY => on_debug_hotkey(),
@@ -382,9 +393,12 @@ unsafe fn apply_route_file(ship_index: u16) -> bool {
     true
 }
 
-/// F8: append a "buy 10 beer at max price 50" stop for the current town to the selected
-/// ship's route, then re-apply the whole route through the game's loader + transfer.
-unsafe fn on_add_stop_hotkey() {
+/// Append a trade stop for the current town to the selected ship's route: buy the wares
+/// the town produces at the STOP_BUY_LEVEL price, sell all others at the STOP_SELL_LEVEL
+/// price, with the sell instructions listed above the buys. With `skip_no_buy_wares` the
+/// [NO_BUY_WARES] get no order at all where the town produces them. The whole route is
+/// then re-applied through the game's loader + transfer.
+unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
     let Some(ship_index) = selected_ship_index() else {
         ods("add stop: no ship selected");
         return;
@@ -399,14 +413,40 @@ unsafe fn on_add_stop_hotkey() {
         return;
     }
     let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
+    let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+    let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
 
-    let mut stops = read_ship_route(ship_index);
-    let beer = WareId::Beer;
     let mut price = [0i32; 24];
     let mut amount = [0i32; 24];
-    price[beer as usize] = -50; // buy: negated max price
-    amount[beer as usize] = 10 * beer.get_scaling(); // 10 barrels in raw units
-    stops.push(builder::stop(town_index, 0x00, price, amount));
+    let mut bought = Vec::new();
+    let mut skipped = Vec::new();
+    let mut sold = 0;
+    for ware_index in TRADE_WARES {
+        let i = ware_index as usize;
+        let ware_id = WareId::from_u16(ware_index).unwrap();
+        if production[i] > 0 {
+            // Produced here: collect it, up to the buy level's maximum price - unless
+            // it is one of the wares we leave in the town.
+            if skip_no_buy_wares && NO_BUY_WARES.contains(&ware_id) {
+                skipped.push(format!("{ware_id:?}"));
+                continue;
+            }
+            price[i] = -buy_price(ware_index, STOP_BUY_LEVEL);
+            bought.push(format!("{ware_id:?}"));
+        } else {
+            // Not produced here: supply it, down to the sell level's minimum price.
+            price[i] = sell_price(ware_index, STOP_SELL_LEVEL);
+            sold += 1;
+        }
+        amount[i] = builder::MAX_AMOUNT;
+    }
+    let mut stop = builder::stop(town_index, 0x00, price, amount);
+    // Sell instructions (positive price) above the buys, so the ship unloads its supplies
+    // before spending the freed space and money on the town's produce.
+    stop.order = builder::ordered_by(|ware| price[ware as usize] > 0);
+
+    let mut stops = read_ship_route(ship_index);
+    stops.push(stop);
 
     // Exactly the first stop carries the logical-first marker.
     for (i, stop) in stops.iter_mut().enumerate() {
@@ -423,12 +463,18 @@ unsafe fn on_add_stop_hotkey() {
         ods(&format!("add stop: failed to write {ROUTE_FILE_PATH}: {e}"));
         return;
     }
-    ods(&format!("add stop: wrote {stop_count} stops ({} bytes)", data.len()));
     let ships = p3_api::ships::ShipsPtr::new();
     let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
     if apply_route_file(ship_index) {
-        let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
-        ods(&format!("add stop: buy 10 beer @ 50 in {town} on {name:?} (route now {stop_count} stops)"));
+        let skipped = if skipped.is_empty() {
+            String::new()
+        } else {
+            format!(", skipping [{}]", skipped.join(", "))
+        };
+        ods(&format!(
+            "add stop in {town} on {name:?}: buying [{}]{skipped}, selling {sold} others (route now {stop_count} stops)",
+            bought.join(", ")
+        ));
     } else {
         ods("add stop: loader failed (is fix_uncompressed_trade_route_loading.dll installed?)");
     }

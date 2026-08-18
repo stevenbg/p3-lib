@@ -58,20 +58,25 @@ pub fn stop(town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]) -> 
     }
 }
 
-/// The order array is the stop's instruction order; put the unloading wares first so
-/// the ship frees up space before taking new cargo on.
-pub fn partitioned_order(unloads_first: [i32; 24]) -> [u8; 24] {
+/// The order array is the stop's instruction order: the wares for which `first` holds
+/// are listed before the rest, each group keeping the game's default display order.
+pub fn ordered_by(first: impl Fn(u8) -> bool) -> [u8; 24] {
     let mut order = [0u8; 24];
     let mut n = 0;
-    for &ware in DEFAULT_ORDER.iter().filter(|&&w| unloads_first[w as usize] < 0) {
+    for &ware in DEFAULT_ORDER.iter().filter(|&&w| first(w)) {
         order[n] = ware;
         n += 1;
     }
-    for &ware in DEFAULT_ORDER.iter().filter(|&&w| unloads_first[w as usize] >= 0) {
+    for &ware in DEFAULT_ORDER.iter().filter(|&&w| !first(w)) {
         order[n] = ware;
         n += 1;
     }
     order
+}
+
+/// Put the unloading wares first so the ship frees up space before taking new cargo on.
+pub fn partitioned_order(unloads_first: [i32; 24]) -> [u8; 24] {
+    ordered_by(|w| unloads_first[w as usize] < 0)
 }
 
 /// Sell without an amount limit at the given minimum prices, and take back exactly the

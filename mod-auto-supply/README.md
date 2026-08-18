@@ -19,9 +19,10 @@ Office keys act only while a trading office window is open, on its administrator
 | Ctrl + Q W E R T Y | Set the BUY price of every ware that has a buy order, to that price level (see below) |
 | Alt + Q W E R T Y | Set the SELL price of every ware that has a sell order |
 | F11 | Dump thresholds, base prices and all price levels to the log and to `<TownName>.csv` in the game directory |
+| F4 | Append a trade stop for the current town to the selected ship's route: buy what the town produces at the Ctrl+Y price, sell everything else at the Alt+Y price, sells listed above the buys. Pitch, timber, salt, bricks, grain and hemp are never bought - their margin does not pay for the cargo space early on |
+| Ctrl + F4 | The same stop, but buying every ware the town produces |
 | F9 | Log the current town and the selected ship |
 | F10 | Dump every ship's applied route chain from the route stop pool |
-| Ctrl + Z | Append a stop for the current town to the selected ship's route (proof of concept: buy 10 beer at 50) |
 
 Directions and amounts are never changed by the price keys; F1 is the only key that
 creates orders.
