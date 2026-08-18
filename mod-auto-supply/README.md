@@ -10,8 +10,10 @@ files are uncompressed.
 
 ## Hotkeys
 
-Office keys act only while a trading office window is open, on its administrator view
-(the "Trading Office" side button). The others work anywhere in a running game.
+F1 and the price keys act only while a trading office window is open, on its
+administrator view (the "Trading Office" side button). The others work anywhere in a
+running game, and take the town whose view is open (on the world map, the town last
+visited).
 
 | Key | Action |
 |-----|--------|

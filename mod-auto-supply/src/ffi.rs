@@ -243,6 +243,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             match wparam.0 {
                 w if w == CURRENT_TOWN_KEY => on_current_town_hotkey(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
+                w if w == DEBUG_KEY => on_debug_hotkey(),
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
                 // Alt+F4 is left to Windows.
                 w if w == ADD_STOP_KEY && !alt => on_add_stop_hotkey(!ctrl),
@@ -255,7 +256,6 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 }),
                 _ if !office_open => {}
                 w if w == SETUP_KEY => on_setup_hotkey(),
-                w if w == DEBUG_KEY => on_debug_hotkey(),
                 // Exactly one of ctrl (buy) / alt (sell) picks the direction.
                 w if ctrl != alt => {
                     if let Some(&(_, level)) = LEVEL_KEYS.iter().find(|(key, _)| *key == w) {
@@ -273,12 +273,20 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
 }
 
+/// The town whose view is open, from the town-scene object. On the world map this is the
+/// town the player last visited.
+unsafe fn current_town_index() -> Option<u8> {
+    let scene = *TOWN_SCENE_PTR;
+    if scene == 0 {
+        return None;
+    }
+    Some(*((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8)
+}
+
 /// F9: log the current town, the player's home town and the selected ship (diagnostics
 /// for the route feature).
 unsafe fn on_current_town_hotkey() {
-    let scene = *TOWN_SCENE_PTR;
-    if scene != 0 {
-        let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
+    if let Some(town_index) = current_town_index() {
         let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
         ods(&format!("current town: {town} ({town_index:#04x})"));
     }
@@ -429,12 +437,10 @@ unsafe fn route_context(what: &str) -> Option<(u16, String, u8)> {
         ods(&format!("{what}: the selected ship is not yours"));
         return None;
     }
-    let scene = *TOWN_SCENE_PTR;
-    if scene == 0 {
+    let Some(town_index) = current_town_index() else {
         ods(&format!("{what}: not in a town"));
         return None;
-    }
-    let town_index = *((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8;
+    };
     let ships = p3_api::ships::ShipsPtr::new();
     let ship_name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
     Some((ship_index, ship_name, town_index))
@@ -735,11 +741,13 @@ unsafe fn refresh_administrator_view() {
 /// F11: dump thresholds, base prices and all price levels for the open town to the log
 /// and to <TownName>.csv in the game directory.
 unsafe fn on_debug_hotkey() {
-    let window = UITradingOfficeWindowPtr::new();
-    let town_index = window.get_town_index();
-    let town_name = get_town_name(town_index as u8).unwrap_or_else(|| "<unknown>".into());
-    let thresholds = GAME_WORLD_PTR.get_town(town_index as u8).get_price_thresholds();
-    let production = GAME_WORLD_PTR.get_town(town_index as u8).get_production_values();
+    let Some(town_index) = current_town_index() else {
+        ods("debug dump: not in a town");
+        return;
+    };
+    let town_name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+    let thresholds = GAME_WORLD_PTR.get_town(town_index).get_price_thresholds();
+    let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
 
     ods(&format!(
         "debug dump for {town_name} (live trade difficulty {}):",
