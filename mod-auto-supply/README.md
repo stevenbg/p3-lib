@@ -20,7 +20,7 @@ visited).
 | F1 | Setup: every ware without an order becomes BUY if the town produces it, SELL otherwise, at the R price levels (buy par, sell supply price). Existing orders are untouched; a buy's amount is set to 9999 only if it is currently 0. |
 | Ctrl + Q W E R T Y | Set the BUY price of every ware that has a buy order, to that price level (see below) |
 | Alt + Q W E R T Y | Set the SELL price of every ware that has a sell order |
-| F11 | Dump thresholds, base prices and all price levels to the log and to `<TownName>.csv` in the game directory |
+| F11 | Dump thresholds, base prices, all price levels and the weekly citizen/business consumptions to the log and to `<TownName>.csv` in the game directory |
 | F3 | Replace the selected ship's route with a 5stop supply route: load a week of the current town's demand at the home office, sell it there, reset that office's stock to the same amounts and haul the surplus home. Alt+F3 uses the 6stop variant, Ctrl+F3 a suck route parked in the current town. The previous route is saved to `_backup.rou` first |
 | F4 | Append a trade stop for the current town to the selected ship's route: buy what the town produces at the Ctrl+Y price, sell everything else at the Alt+Y price, sells listed above the buys. Pitch, timber, salt, bricks, grain and hemp are never bought - their margin does not pay for the cargo space early on |
 | Ctrl + F4 | The same stop, but buying every ware the town produces |
@@ -31,13 +31,20 @@ Directions and amounts are never changed by the price keys; F1 is the only key t
 creates orders.
 
 The route keys take the town whose view is open as the target and the merchant's home
-town (the home office) as the source. Route quantities come from the target town's t0
-thresholds - one week of its citizen and business demand, straight from the game - and
-prices from the R levels. Wares the town produces itself are not supplied to it, and
+town (the home office) as the source. Route quantities are one week of the target
+town's real consumption - citizens plus businesses, the market hall consumption
+window's Total column, read live from the town - rounded up to whole in-game units;
+prices are the R levels. The t0 threshold is deliberately not used for quantities: it
+is a comfortable stock level, inflated by minimum floors and construction reserves, not
+what disappears weekly. Wares the town produces itself are not supplied to it, and
 neither are bricks, pig iron, pitch and hemp - low-value industry inputs not worth the
 hold space; whatever the target office holds of them is still hauled home. Route
 stops that transfer wares to or from an office are wiped by the game in towns where
 there is no player office, and the keys warn when that applies.
+
+Stops load and buy the barrel goods before the bulky loads goods, each group ordered by
+ware value with the best first, so when hold space runs out the least valuable cargo is
+what gets left behind (see p3-rou's README).
 
 ## Price levels
 
@@ -61,12 +68,14 @@ pair: buy at par, sell at the price that leaves the town one week of supply.
 ## Price model
 
 The game recalculates four per-ware price thresholds t0..t3 every tick
-(`TownPtr::get_price_thresholds()`): t0 is one week of the town's consumption, t1 adds
-two more weeks (grain: four), t2 adds ten days of the town's production (verified
-against `get_production_values()` across four towns - this is the gitbook's
-"unidentified array"), and t3 adds another consumption week. Building materials use
-fixed bases, tiny values are clamped to minimum steps, and grain/wine get seasonal
-t1 bonuses in autumn.
+(`TownPtr::get_price_thresholds()`): t0 is one week of the town's consumption - 7 days
+x (citizen + business daily consumption + 1), both arrays live on the town struct
+(`get_daily_consumptions_citizens`/`_businesses`, verified against the market hall
+consumption window) - t1 adds two more weeks (grain: four), t2 adds ten days of the
+town's production (verified against `get_production_values()` across four towns - this
+is the gitbook's "unidentified array"), and t3 adds another consumption week. Building
+materials use fixed bases, tiny values are clamped to minimum steps, and grain/wine get
+seasonal t1 bonuses in autumn.
 
 Prices are continuous piecewise-linear curves over the market stock, anchored at the
 thresholds, as factors of the ware base price:
