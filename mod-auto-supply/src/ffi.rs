@@ -25,12 +25,22 @@ use windows::Win32::{
 use crate::prices::{buy_price, sell_price, PriceLevel};
 
 /// F1: set every ware without an order to BUY (produced by the town) or SELL (rest),
-/// at the Center price levels (buy t1, sell t0). Ctrl+F1: raise the staple amounts to a
-/// week of citizen consumption and lock them.
+/// at the Center price levels (buy t1, sell t0). Ctrl+F1: provision and lock the
+/// celebration goods; Alt+F1: provision and lock the building materials.
 const SETUP_KEY: usize = VK_F1.0 as usize;
 /// The wares Ctrl+F1 provisions and locks in the office: what a celebration needs in
 /// stock.
 const LOCKED_STAPLES: [WareId; 6] = [WareId::Beer, WareId::Wine, WareId::Fish, WareId::Meat, WareId::Grain, WareId::Honey];
+/// What Alt+F1 provisions and locks: building materials (in-game units) covering any
+/// building or ship.
+const LOCKED_BUILDING_MATERIALS: [(WareId, i32); 6] = [
+    (WareId::Cloth, 10),
+    (WareId::Hemp, 8),
+    (WareId::Pitch, 50),
+    (WareId::Bricks, 80),
+    (WareId::Timber, 50),
+    (WareId::IronGoods, 50),
+];
 
 /// The six price levels, on Q W E R T Y in ASCENDING price order: ctrl sets buy prices,
 /// alt sets sell prices. Pressed without a modifier (or with both) they do nothing.
@@ -260,6 +270,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 }),
                 _ if !office_open => {}
                 w if w == SETUP_KEY && ctrl => on_lock_staples_hotkey(),
+                w if w == SETUP_KEY && alt => on_lock_building_materials_hotkey(),
                 w if w == SETUP_KEY => on_setup_hotkey(),
                 // Exactly one of ctrl (buy) / alt (sell) picks the direction.
                 w if ctrl != alt => {
@@ -710,34 +721,30 @@ unsafe fn on_setup_hotkey() {
     refresh_administrator_view();
 }
 
-/// Ctrl+F1: raise the administrator amounts of the [LOCKED_STAPLES] to a week of the
-/// town's citizen consumption - never lowering an amount - and lock their quantities
-/// (the "Lock min. store quantity for auto trade ships" checkbox), so route ships
-/// cannot take the office below the week's buffer. Directions and prices are untouched.
-unsafe fn on_lock_staples_hotkey() {
+/// Raise the administrator amounts of the given wares to the given raw amounts - never
+/// lowering one - and lock their quantities (the "Lock min. store quantity for auto
+/// trade ships" checkbox), so route ships cannot take the stock. Directions and prices
+/// are untouched.
+unsafe fn provision_and_lock(what: &str, targets: &[(WareId, i32)]) {
     let Some((office, office_index, town)) = resolve_office() else {
         return;
     };
     let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
-    let citizens = GAME_WORLD_PTR.get_town(town_index).get_daily_consumptions_citizens();
     let prices = office.get_administrator_trade_prices();
     let stocks = office.get_administrator_trade_stock();
     let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
 
     let mut raised = Vec::new();
-    for ware_id in LOCKED_STAPLES {
+    for &(ware_id, raw_amount) in targets {
         let i = ware_id as usize;
-        let scaling = ware_id.get_scaling();
-        let weekly = citizens[i].saturating_mul(7);
-        let weekly = (weekly + scaling - 1) / scaling * scaling;
-        if stocks[i] < weekly {
+        if stocks[i] < raw_amount {
             execute_operation(&Operation::OfficeAutotradeSettingChange {
-                stock: weekly,
+                stock: raw_amount,
                 price: prices[i],
                 office_index: office_index as _,
                 ware_id,
             });
-            raised.push(format!("{ware_id:?} {}", weekly / scaling));
+            raised.push(format!("{ware_id:?} {}", raw_amount / ware_id.get_scaling()));
         }
         execute_operation(&Operation::OfficeAutotradeLockChange {
             ware_id,
@@ -746,12 +753,27 @@ unsafe fn on_lock_staples_hotkey() {
             lock: true,
         });
     }
-    ods(&format!(
-        "staples in {town}: locked {} wares, raised [{}] to a week of citizen consumption",
-        LOCKED_STAPLES.len(),
-        raised.join(", ")
-    ));
+    ods(&format!("{what} in {town}: locked {} wares, raised [{}]", targets.len(), raised.join(", ")));
     refresh_administrator_view();
+}
+
+/// Ctrl+F1: provision and lock the [LOCKED_STAPLES] at a week of the town's citizen
+/// consumption.
+unsafe fn on_lock_staples_hotkey() {
+    let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
+    let citizens = GAME_WORLD_PTR.get_town(town_index).get_daily_consumptions_citizens();
+    let targets = LOCKED_STAPLES.map(|ware_id| {
+        let scaling = ware_id.get_scaling();
+        let weekly = citizens[ware_id as usize].saturating_mul(7);
+        (ware_id, (weekly + scaling - 1) / scaling * scaling)
+    });
+    provision_and_lock("celebration goods", &targets);
+}
+
+/// Alt+F1: provision and lock the [LOCKED_BUILDING_MATERIALS].
+unsafe fn on_lock_building_materials_hotkey() {
+    let targets = LOCKED_BUILDING_MATERIALS.map(|(ware_id, units)| (ware_id, units * ware_id.get_scaling()));
+    provision_and_lock("building materials", &targets);
 }
 
 /// Sets the price of every ware that has an order, keeping its direction and amount:
