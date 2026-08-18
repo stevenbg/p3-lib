@@ -41,6 +41,14 @@ impl TownPtr {
         unsafe { self.get(0x310) }
     }
 
+    /// Daily consumption of the town's businesses, raw units per day. Identified in
+    /// update_town_price_thresholds (0x528070), whose core loop computes the documented
+    /// t0 = 7 days x (business + citizen consumption + 1) as
+    /// [town+0x64+i*4] + [town+0x310+i*4] + 1.
+    pub fn get_daily_consumptions_businesses(&self) -> [i32; 24] {
+        unsafe { self.get(0x64) }
+    }
+
     pub fn get_production_values(&self) -> [i32; 24] {
         unsafe { self.get(0x490) }
     }

@@ -555,7 +555,8 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
     let load_town_name = get_town_name(load_town).unwrap_or_else(|| "<unknown>".into());
 
     let town = GAME_WORLD_PTR.get_town(sell_town);
-    let consumption = town.get_daily_consumptions_citizens();
+    let citizens = town.get_daily_consumptions_citizens();
+    let businesses = town.get_daily_consumptions_businesses();
     let production = town.get_production_values();
 
     let mut load_amount = [0i32; 24];
@@ -572,11 +573,12 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
         if production[i] > 0 || NO_SUPPLY_WARES.contains(&ware_id) {
             continue;
         }
-        // A week of what the town's citizens actually consume, in raw units. Not the t0
-        // threshold: that is a comfortable stock level, inflated by minimum floors (meat
-        // 5 units where 3 are eaten) and by construction reserves (timber 31 loads where
-        // 11 are used), so it would have us ferrying goods that never disappear.
-        load_amount[i] = consumption[i].saturating_mul(7);
+        // A week of what the town actually consumes - citizens and businesses - in raw
+        // units. Not the t0 threshold: that is a comfortable stock level, inflated by
+        // minimum floors (meat 5 units where 3 are eaten) and by construction reserves
+        // (timber 31 loads where 11 are used), so it would have us ferrying goods that
+        // never disappear.
+        load_amount[i] = (citizens[i] + businesses[i]).saturating_mul(7);
         if load_amount[i] == 0 {
             continue; // the town does not consume it
         }
@@ -753,8 +755,11 @@ unsafe fn on_town_dump_hotkey() {
         return;
     };
     let town_name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
-    let thresholds = GAME_WORLD_PTR.get_town(town_index).get_price_thresholds();
-    let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
+    let town = GAME_WORLD_PTR.get_town(town_index);
+    let thresholds = town.get_price_thresholds();
+    let production = town.get_production_values();
+    let citizens = town.get_daily_consumptions_citizens();
+    let businesses = town.get_daily_consumptions_businesses();
 
     ods(&format!(
         "debug dump for {town_name} (live trade difficulty {}):",
@@ -766,7 +771,7 @@ unsafe fn on_town_dump_hotkey() {
         "ware,base/unit,\
          sell_Q_t1,sell_W_mid_t0_t1,sell_E_30_t0_t1,sell_R_t0,sell_T_70_0_t0,sell_Y_mid_0_t0,\
          buy_Q_t2,buy_W_mid_t1_t2,buy_E_30_t1_t2,buy_R_t1,buy_T_70_t0_t1,buy_Y_mid_t0_t1,\
-         prod/day,(t2-t1)/10,t0 units,t1 units,t2 units,t3 units\n",
+         cit/wk,bus/wk,prod/day,(t2-t1)/10,t0 units,t1 units,t2 units,t3 units\n",
     );
     for ware_index in TRADE_WARES {
         let i = ware_index as usize;
@@ -784,9 +789,11 @@ unsafe fn on_town_dump_hotkey() {
         let sells: Vec<String> = levels.iter().map(|&l| sell_price(ware_index, l).to_string()).collect();
         let buys: Vec<String> = levels.iter().map(|&l| buy_price(ware_index, l).to_string()).collect();
         csv.push_str(&format!(
-            "{ware_id:?},{base_per_unit:.1},{},{},{:.1},{:.1},{},{},{},{}\n",
+            "{ware_id:?},{base_per_unit:.1},{},{},{:.1},{:.1},{:.1},{:.1},{},{},{},{}\n",
             sells.join(","),
             buys.join(","),
+            citizens[i] as f32 * 7.0 / scaling as f32,
+            businesses[i] as f32 * 7.0 / scaling as f32,
             production[i] as f32 / scaling as f32,
             (t2 - t1) as f32 / 10.0 / scaling as f32,
             t0 / scaling,
