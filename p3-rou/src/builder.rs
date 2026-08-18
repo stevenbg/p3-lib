@@ -59,10 +59,46 @@ pub fn stop(town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]) -> 
     }
 }
 
+/// The trade wares from worst to best value per unit of hold space - a trading
+/// judgment, used to decide what fills the hold first.
+pub const VALUE_ORDER_WORST_TO_BEST: [WareId; 20] = [
+    WareId::Timber,
+    WareId::Bricks,
+    WareId::Grain,
+    WareId::Salt,
+    WareId::Beer,
+    WareId::Hemp,
+    WareId::Fish,
+    WareId::Pitch,
+    WareId::WhaleOil,
+    WareId::Wool,
+    WareId::PigIron,
+    WareId::Meat,
+    WareId::Honey,
+    WareId::Pottery,
+    WareId::Cloth,
+    WareId::Wine,
+    WareId::Leather,
+    WareId::IronGoods,
+    WareId::Spices,
+    WareId::Skins,
+];
+
+/// 0 for the best-valued trade ware, 19 for the worst; the weapons (which never carry
+/// route orders) rank after everything.
+fn value_rank(ware: u8) -> u8 {
+    VALUE_ORDER_WORST_TO_BEST
+        .iter()
+        .position(|&w| w as u8 == ware)
+        .map(|pos| (VALUE_ORDER_WORST_TO_BEST.len() - 1 - pos) as u8)
+        .unwrap_or(VALUE_ORDER_WORST_TO_BEST.len() as u8)
+}
+
 /// The instruction order for generated routes: everything that frees cargo space runs
 /// before anything that fills it, and the filling instructions take the barrel goods
-/// before the bulky loads goods (1 load = 10 barrels of hold space), with timber - the
-/// least valuable per unit of hold space - last of all.
+/// before the bulky loads goods (1 load = 10 barrels of hold space), each group ordered
+/// best value first - so when hold space runs out, the least valuable cargo is what
+/// gets left behind.
 ///
 /// Freeing space: selling to the town (positive price) and unloading into the office
 /// (negative amount). Filling it: buying from the town (negative price) and loading from
@@ -71,22 +107,16 @@ pub fn cargo_order(price: &[i32; 24], amount: &[i32; 24]) -> [u8; 24] {
     ordered_by_key(|ware| {
         let i = ware as usize;
         if amount[i] == 0 {
-            return 4; // no instruction for this ware
+            return u8::MAX; // no instruction for this ware
         }
         if amount[i] < 0 || price[i] > 0 {
             return 0; // unload into the office, or sell to the town
         }
-        // Buy from the town or load from the office: barrels before loads goods, timber
-        // last. Keyed off the scaling because WareId::is_barrel_ware panics on the
-        // weapons, which occupy slots in the order array even though they never carry
-        // route orders.
-        if ware == WareId::Timber as u8 {
-            3
-        } else if ware_scaling(i) == BARREL_SCALING {
-            1
-        } else {
-            2
-        }
+        // Buy from the town or load from the office. Barrel/loads grouping is keyed off
+        // the scaling because WareId::is_barrel_ware panics on the weapons, which occupy
+        // slots in the order array even though they never carry route orders.
+        let group = if ware_scaling(i) == BARREL_SCALING { 32 } else { 64 };
+        group + value_rank(ware)
     })
 }
 
