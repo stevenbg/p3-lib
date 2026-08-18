@@ -255,7 +255,8 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
 }
 
-/// F9: log the current town and the selected ship (diagnostics for the route feature).
+/// F9: log the current town, the player's home town and the selected ship (diagnostics
+/// for the route feature).
 unsafe fn on_current_town_hotkey() {
     let scene = *TOWN_SCENE_PTR;
     if scene != 0 {
@@ -263,6 +264,12 @@ unsafe fn on_current_town_hotkey() {
         let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
         ods(&format!("current town: {town} ({town_index:#04x})"));
     }
+
+    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
+    let home_index = merchant.get_hometown_index();
+    let home = get_town_name(home_index).unwrap_or_else(|| "<unknown>".into());
+    ods(&format!("home town: {home} ({home_index:#04x})"));
+
     probe_selected_ship();
 }
 

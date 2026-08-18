@@ -12,6 +12,13 @@ impl MerchantPtr {
         Self { address }
     }
 
+    /// The merchant's home town, as shown on the Personal screen: the town holding the
+    /// home office, which changes when the player moves it. Not the town the merchant
+    /// was born in, which the same screen lists separately.
+    pub fn get_hometown_index(&self) -> u8 {
+        unsafe { self.get(0x19) }
+    }
+
     pub fn get_first_office_index(&self) -> u16 {
         unsafe { self.get(0x0c) }
     }
