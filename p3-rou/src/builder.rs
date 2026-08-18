@@ -149,16 +149,30 @@ fn sell_max_and_unload(load_amount: &[i32; 24]) -> ([i32; 24], [i32; 24]) {
 }
 
 /// Supply route: load the given raw amounts at the source (repairing there), sell max
-/// at the given minimum prices in the target town, reset the target office stock to
-/// exactly the loaded amounts (take everything, put the amounts back), and unload the
+/// at the given minimum prices in the target town, reset the target office's stock of
+/// the supplied wares to exactly the loaded amounts (take max of just those, put the
+/// amounts back) while collecting every other ware from that office, and unload the
 /// whole ship into the source office.
+///
+/// Taking only the supplied wares at the third stop bounds the hold space the reset
+/// needs; the collected wares ride along from the fourth stop, where the put-back has
+/// just freed space (unloads run before loads within a stop, see [cargo_order]).
 pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24]) -> Vec<TradeRouteStop> {
     let (sell_max, unload_calculated) = sell_max_and_unload(&load_amount);
+    let mut take_supplied = [0i32; 24];
+    let mut put_back_and_collect = unload_calculated;
+    for i in 0..24 {
+        if load_amount[i] != 0 {
+            take_supplied[i] = MAX_AMOUNT;
+        } else {
+            put_back_and_collect[i] = MAX_AMOUNT;
+        }
+    }
     vec![
         stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
         stop(sell_town, FLAG_X, sell_prices, sell_max),
-        stop(sell_town, FLAG_X, [0i32; 24], [MAX_AMOUNT; 24]),
-        stop(sell_town, FLAG_X, [0i32; 24], unload_calculated),
+        stop(sell_town, FLAG_X, [0i32; 24], take_supplied),
+        stop(sell_town, FLAG_X, [0i32; 24], put_back_and_collect),
         stop(load_town, FLAG_X, [0i32; 24], [-MAX_AMOUNT; 24]),
     ]
 }

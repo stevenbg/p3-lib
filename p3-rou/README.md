@@ -79,8 +79,9 @@ Generates a supply route from a reference goods table. Quantities are scaled lin
 set), sells the reference goods at the given minimum prices in the target town, resets the target office stock to exactly
 the calculated quantities, and unloads the whole ship back into the source office.
 
-- `--type 5stop`: source load → sell max → take the entire target office stock → put back the calculated quantities →
-  unload everything at the source.
+- `--type 5stop`: source load → sell max → take the target office's stock of the supplied wares → put back the
+  calculated quantities while collecting every other ware from that office → unload everything at the source. Taking
+  only the supplied wares bounds the hold space the office reset needs.
 - `--type 6stop`: like 5stop, but swaps the target office stock one unit category at a time (unload loads-goods + take
   barrels, then unload barrel quantities + take loads-goods, then unload loads quantities), which bounds how much ship
   space the shuffle needs.
