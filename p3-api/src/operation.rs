@@ -46,6 +46,16 @@ pub enum Operation {
         office_index: u32,
         ware_id: WareId,
     },
+    /// The administrator view's per-ware checkbox "Lock min. store quantity for auto
+    /// trade ships": sets or clears the ware's bit in the office lock bitmap
+    /// (office+0x3b4). The executor (opcode 0x66, handlers 0x53644b/0x53dd90) resolves
+    /// the office by town and merchant.
+    OfficeAutotradeLockChange {
+        ware_id: WareId,
+        town_index: u16,
+        merchant_index: u16,
+        lock: bool,
+    },
 }
 
 impl Operation {
@@ -145,6 +155,19 @@ impl Operation {
                 op[8..0x0c].copy_from_slice(&price.to_le_bytes());
                 op[0x0c..0x10].copy_from_slice(&office_index.to_le_bytes());
                 op[0x10..0x14].copy_from_slice(&ware_id.to_le_bytes());
+            }
+            Operation::OfficeAutotradeLockChange {
+                ware_id,
+                town_index,
+                merchant_index,
+                lock,
+            } => {
+                let opcode: u32 = 0x66;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&(*ware_id as u32).to_le_bytes());
+                op[0x08..0x0a].copy_from_slice(&town_index.to_le_bytes());
+                op[0x0c..0x0e].copy_from_slice(&merchant_index.to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&(*lock as u32).to_le_bytes());
             }
         }
         op
