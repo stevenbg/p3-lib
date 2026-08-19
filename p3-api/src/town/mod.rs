@@ -49,6 +49,11 @@ impl TownPtr {
         unsafe { self.get(0x64) }
     }
 
+    /// The town's NOMINAL daily production in raw units: capacity at full
+    /// utilization. Facilities count by existence - staffing is ignored entirely,
+    /// verified down to 0% utilization (the market hall window shows the actual
+    /// staffing-scaled output instead). Nonzero exactly for the wares the town
+    /// produces; the price threshold t2 is t1 + 10 days of this.
     pub fn get_production_values(&self) -> [i32; 24] {
         unsafe { self.get(0x490) }
     }
