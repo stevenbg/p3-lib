@@ -161,24 +161,12 @@ fn ods(message: &str) {
     win_dbg_logger::output_debug_string(&format!("auto_supply: {message}\r\n"));
 }
 
-/// The scrollmap notification manager (static [0x6CBB40]) and its event-ticker
-/// enqueue: the top-left popups where "Game speed:" messages appear. thiscall(this,
-/// char* text); the text is copied into the slot's own string object and shown for
-/// 0x2EE0 ticks; the call silently drops the message while all 5 slots are full.
-const TICKER_MANAGER_PTR: *const u32 = 0x006cbb40 as _;
-const TICKER_ENQUEUE_EVENT: u32 = 0x0042b6a0;
-
-/// Post an in-game popup on the event ticker, mirrored to the debug log.
+/// Post an in-game popup on the event ticker (the top-left "Game speed:" boxes),
+/// mirrored to the debug log.
 unsafe fn notify(text: &str) {
     ods(text);
-    let manager = *TICKER_MANAGER_PTR;
-    if manager == 0 {
-        return;
-    }
-    let mut buf: Vec<u8> = text.bytes().collect();
-    buf.push(0);
-    let enqueue: extern "thiscall" fn(u32, *const u8) = mem::transmute(TICKER_ENQUEUE_EVENT);
-    enqueue(manager, buf.as_ptr());
+    let latin1: Vec<u8> = text.chars().map(|c| if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }).collect();
+    p3_api::ui::ui_notifications::UINotificationsPtr::new().post_event(&latin1);
 }
 
 /// Incoming-letter popups ("Personal letter: Patrol") get the letter's town appended
@@ -1078,8 +1066,10 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
         template
     };
     let stop_count = stops.len();
+    let route_name = route_ship_name(&stops);
 
     if write_and_apply_route(ship_index, stops) {
+        rename_ship(ship_index, &route_name);
         let action = if append { "appended to" } else { "set on" };
         let verb = if matches!(kind, RouteKind::Suck) { "collect at T from" } else { "supply" };
         ods(&format!(
@@ -1087,9 +1077,52 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
             described.join(", ")
         ));
         notify(&format!(
-            "{kind:?} route {action} {name}: {} targets from {load_town_name}, {stop_count} stops",
+            "{kind:?} route {action} {route_name}: {} targets from {load_town_name}, {stop_count} stops",
             described.len()
         ));
+    }
+}
+
+/// The route name for a ship: the first three letters of each of the route's towns,
+/// unique, in route order (e.g. LueRosSte) - up to ten towns. Capped at 31
+/// characters: the ship struct's inline name buffer at +0x160 is 32 bytes and ends
+/// the 0x180-stride struct, so anything longer would spill into the next ship.
+unsafe fn route_ship_name(stops: &[TradeRouteStop]) -> String {
+    let mut route_name = String::new();
+    let mut seen: Vec<u8> = Vec::new();
+    for stop in stops {
+        if seen.contains(&stop.town_index) {
+            continue;
+        }
+        seen.push(stop.town_index);
+        if route_name.chars().count() + 3 > 31 {
+            break;
+        }
+        let town = get_town_name(stop.town_index).unwrap_or_default();
+        route_name.extend(town.chars().take(3));
+    }
+    route_name
+}
+
+/// Rename a ship through the game's rename operations, the way the shipyard does:
+/// opcode 0x2d carries the first 12 latin1 bytes, 0x2e chunks append the rest.
+unsafe fn rename_ship(ship_index: u16, name: &str) {
+    let bytes: Vec<u8> = name.chars().map(|c| if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }).collect();
+    for (i, chunk) in bytes.chunks(12).enumerate() {
+        let mut padded = [0u8; 12];
+        padded[..chunk.len()].copy_from_slice(chunk);
+        let operation = if i == 0 {
+            Operation::RenameShip {
+                ship_index: ship_index as u32,
+                name: padded,
+            }
+        } else {
+            Operation::AppendShipName {
+                ship_index: ship_index as u32,
+                name: padded,
+            }
+        };
+        OPERATIONS_PTR.enqueue_operation(operation);
     }
 }
 

@@ -57,6 +57,11 @@ Stops load and buy the barrel goods before the bulky loads goods, each group ord
 ware value with the best first, so when hold space runs out the least valuable cargo is
 what gets left behind (see p3-rou's README).
 
+F3 also renames the ship after its new route: the first three letters of each route
+town, unique, in route order (e.g. LueRosSte), up to ten towns (31 characters, the
+ship struct's name capacity) - through the game's own rename operations, so every
+name display stays in sync.
+
 ## Price levels
 
 Q to Y ascend in price. Each key names a point on the price curve, expressed as a
