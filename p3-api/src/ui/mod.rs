@@ -8,6 +8,7 @@ pub mod class37;
 pub mod class73;
 pub mod ddraw;
 pub mod font;
+pub mod ui_notifications;
 pub mod ui_shipyard_window;
 pub mod ui_town_hall_sidemenu;
 pub mod ui_town_hall_window;

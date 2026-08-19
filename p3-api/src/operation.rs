@@ -82,6 +82,29 @@ pub enum Operation {
         town_index: u8,
         ship_index: u32,
     },
+    /// Rename a ship: the shipyard's "change name" button. Opcode 0x2d (switch case
+    /// 0x535caa, handler 0x53cce0 - shared with [Operation::AppendShipName]): copies
+    /// exactly 12 name bytes from +0x4 (forcing a NUL after them), bounds-checks the
+    /// ship index at +0x10, and assigns the name through the dynamic-name registry
+    /// (0x512d40, this = 0x6ddaa0) targeting ship+0x15e (the ship's registry id
+    /// word) - which keeps both the registry (used by letter texts) and the ship's
+    /// inline name at +0x160 in sync. Longer names are sent as 0x2d followed by
+    /// 0x2e chunks (the shipyard sender 0x5faf5d chunks by 12; its text field allows
+    /// 15 characters total).
+    RenameShip {
+        ship_index: u32,
+        /// The new name's first chunk: latin1, up to 12 bytes, NUL-padded.
+        name: [u8; 12],
+    },
+    /// Append to a ship's name: the continuation chunk the shipyard sends for names
+    /// longer than 12 characters. Opcode 0x2e, same layout and handler as
+    /// [Operation::RenameShip], but the handler appends the chunk to the ship's
+    /// existing registry name instead of replacing it.
+    AppendShipName {
+        ship_index: u32,
+        /// The next name chunk: latin1, up to 12 bytes, NUL-padded.
+        name: [u8; 12],
+    },
 }
 
 impl Operation {
@@ -222,6 +245,18 @@ impl Operation {
                 op[0x04..0x08].copy_from_slice(&after_stop_pool_index.to_le_bytes());
                 op[0x08..0x0c].copy_from_slice(&1u32.to_le_bytes());
                 op[0x0c..0x10].copy_from_slice(&(*town_index as u32).to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&ship_index.to_le_bytes());
+            }
+            Operation::RenameShip { ship_index, name } => {
+                let opcode: u32 = 0x2d;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x10].copy_from_slice(name);
+                op[0x10..0x14].copy_from_slice(&ship_index.to_le_bytes());
+            }
+            Operation::AppendShipName { ship_index, name } => {
+                let opcode: u32 = 0x2e;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x10].copy_from_slice(name);
                 op[0x10..0x14].copy_from_slice(&ship_index.to_le_bytes());
             }
         }
