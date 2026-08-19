@@ -161,6 +161,157 @@ fn ods(message: &str) {
     win_dbg_logger::output_debug_string(&format!("auto_supply: {message}\r\n"));
 }
 
+/// The scrollmap notification manager (static [0x6CBB40]) and its event-ticker
+/// enqueue: the top-left popups where "Game speed:" messages appear. thiscall(this,
+/// char* text); the text is copied into the slot's own string object and shown for
+/// 0x2EE0 ticks; the call silently drops the message while all 5 slots are full.
+const TICKER_MANAGER_PTR: *const u32 = 0x006cbb40 as _;
+const TICKER_ENQUEUE_EVENT: u32 = 0x0042b6a0;
+
+/// Post an in-game popup on the event ticker, mirrored to the debug log.
+unsafe fn notify(text: &str) {
+    ods(text);
+    let manager = *TICKER_MANAGER_PTR;
+    if manager == 0 {
+        return;
+    }
+    let mut buf: Vec<u8> = text.bytes().collect();
+    buf.push(0);
+    let enqueue: extern "thiscall" fn(u32, *const u8) = mem::transmute(TICKER_ENQUEUE_EVENT);
+    enqueue(manager, buf.as_ptr());
+}
+
+/// Incoming-letter popups ("Personal letter: Patrol") get the letter's town appended
+/// ("Personal letter: Patrol - Stockholm"). Scripted letters carry a garbage town
+/// byte (the patrol-letter bug), but their formatted text names the destination: the
+/// LAST town name occurring in the text ("...get your ship to <town> as soon as
+/// possible"). Simple letters carry a valid town byte directly. Two call hooks: the
+/// mailbox insert's announcer call (0x4D66E0 -> announcer 0x4D7B10) stashes the
+/// message being announced; the announcer's right-ticker enqueue call (0x4D7D12 ->
+/// 0x42BB20) then rebuilds the popup string with the town appended.
+const ANNOUNCER_CALL_OFFSET: u32 = 0x000d66e0;
+const RIGHT_TICKER_CALL_OFFSET: u32 = 0x000d7d12;
+/// The town-name text bank (bank C): 40 string pointers, indexed by the savegame's
+/// town index - the same bank the letters list's town column uses. (The getter
+/// 0x512B20 on the object at 0x6DDAA0 is NOT a town lookup: it resolves dynamic
+/// names - id 15 returned the ship "Aphrodite".)
+const TOWN_NAME_BANK: u32 = 0x006dda00;
+const TOWN_NAME_SLOTS: u32 = 40;
+/// The message currently being announced (set around the announcer call), 0 = none.
+static ANNOUNCED_MESSAGE: AtomicU32 = AtomicU32::new(0);
+static ANNOUNCER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+static RIGHT_TICKER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe extern "thiscall" fn announcer_hook(this: u32, merchant: u32, message: u32) {
+    ANNOUNCED_MESSAGE.store(message, Ordering::SeqCst);
+    let original: extern "thiscall" fn(u32, u32, u32) = mem::transmute((*ANNOUNCER_HOOK.load(Ordering::SeqCst)).old_absolute);
+    original(this, merchant, message);
+    ANNOUNCED_MESSAGE.store(0, Ordering::SeqCst);
+}
+
+/// The right-ticker enqueue takes an MFC string BY VALUE (one data-pointer slot, the
+/// callee releases it). To augment, release the incoming string ourselves and hand
+/// the original a fresh one.
+unsafe extern "thiscall" fn right_ticker_hook(manager: u32, text: u32) {
+    let original: extern "thiscall" fn(u32, u32) = mem::transmute((*RIGHT_TICKER_HOOK.load(Ordering::SeqCst)).old_absolute);
+    let message = ANNOUNCED_MESSAGE.load(Ordering::SeqCst);
+    let town = if message != 0 { letter_town_name(message) } else { None };
+    let Some(town) = town else {
+        original(manager, text);
+        return;
+    };
+    let mut augmented: Vec<u8> = Vec::new();
+    let mut p = text;
+    loop {
+        let b = *(p as *const u8);
+        if b == 0 || augmented.len() >= 96 {
+            break;
+        }
+        augmented.push(b);
+        p += 1;
+    }
+    augmented.extend_from_slice(b" - ");
+    augmented.extend_from_slice(&town);
+    augmented.push(0);
+
+    let ctor: extern "thiscall" fn(*mut u32, *const u8) -> *mut u32 = mem::transmute(STRING_CTOR_FROM_CSTR);
+    let dtor: extern "thiscall" fn(*mut u32) = mem::transmute(STRING_DTOR);
+    let mut incoming = text;
+    dtor(&mut incoming);
+    let mut replacement: u32 = *STRING_EMPTY_HEADER_PTR + 0xc;
+    ctor(&mut replacement, augmented.as_ptr());
+    original(manager, replacement);
+}
+
+/// A town-name bank slot's pointer and name bytes (the letter text is in the game's
+/// codepage, so matching happens on raw bytes).
+unsafe fn town_name_bytes(town_index: u32) -> Option<(u32, Vec<u8>)> {
+    let name = *((TOWN_NAME_BANK + town_index * 4) as *const u32);
+    if name == 0 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    for i in 0..32u32 {
+        let b = *((name + i) as *const u8);
+        if b == 0 {
+            break;
+        }
+        bytes.push(b);
+    }
+    (bytes.len() >= 3).then_some((name, bytes))
+}
+
+/// The town a letter is about, as raw name bytes. Scripted letters: the last town
+/// name occurring in the letter text (bounded by the end pointer the creation
+/// handler stores at descriptor+0). Simple letters: the town byte.
+unsafe fn letter_town_name(message: u32) -> Option<Vec<u8>> {
+    let msg_type = *((message + 4) as *const u8);
+    if !(0x3c..=0x40).contains(&msg_type) && msg_type != 0x71 {
+        let town_byte = *((message + 5) as *const u8) as u32;
+        if town_byte >= TOWN_NAME_SLOTS {
+            return None;
+        }
+        return town_name_bytes(town_byte).map(|(_, name)| name);
+    }
+    let text = *((message + 0xc) as *const u32);
+    let descriptor = *((message + 8) as *const u32);
+    if text == 0 || descriptor == 0 {
+        return None;
+    }
+    // descriptor+0 holds the text LENGTH once the letter is complete (observed 0xA6
+    // for a patrol letter); tolerate an end pointer too, in case other paths leave
+    // the raw write position.
+    let raw = *(descriptor as *const u32);
+    let length = if raw > 0 && raw <= 0x1000 {
+        raw
+    } else if raw > text && raw - text <= 0x1000 {
+        raw - text
+    } else {
+        ods(&format!(
+            "letter town scan: descriptor length looks wrong (type {msg_type:#04x}, text {text:#010x}, desc {descriptor:#010x}, raw {raw:#010x})"
+        ));
+        return None;
+    };
+    let hay = core::slice::from_raw_parts(text as *const u8, length as usize);
+    let mut best: Option<(usize, Vec<u8>)> = None;
+    let mut seen_slots: Vec<u32> = Vec::new();
+    for town_index in 0..TOWN_NAME_SLOTS {
+        // Unfilled bank slots repeat the first town's pointer - scan each name once.
+        let Some((ptr, name)) = town_name_bytes(town_index) else { continue };
+        if seen_slots.contains(&ptr) {
+            continue;
+        }
+        seen_slots.push(ptr);
+        let Some(pos) = hay.windows(name.len()).rposition(|w| w == &name[..]) else {
+            continue;
+        };
+        if best.as_ref().map(|(p, _)| pos > *p).unwrap_or(true) {
+            best = Some((pos, name));
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
 /// Sets the PEB BeingDebugged flag so IsDebuggerPresent() returns true, unlocking the
 /// gated win_dbg_logger used by every mod. No real debugger is attached, so log output
 /// still reaches DebugView via OutputDebugString.
@@ -220,6 +371,23 @@ pub unsafe extern "C" fn start() -> u32 {
         Err(_) => {
             ods("failed to hook the route panel method");
             return 4;
+        }
+    }
+
+    // Letter-popup enrichment: append the letter's town to the incoming-letter
+    // popups ("Personal letter: Patrol - Stockholm").
+    match hook_call_rel32(ANNOUNCER_CALL_OFFSET, announcer_hook as usize as u32) {
+        Ok(hook) => ANNOUNCER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            ods("failed to hook the letter announcer call");
+            return 5;
+        }
+    }
+    match hook_call_rel32(RIGHT_TICKER_CALL_OFFSET, right_ticker_hook as usize as u32) {
+        Ok(hook) => RIGHT_TICKER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            ods("failed to hook the letter ticker call");
+            return 6;
         }
     }
 
@@ -500,20 +668,20 @@ unsafe fn backup_route(ship_index: u16) -> Vec<TradeRouteStop> {
 /// route, and the removals free the pool records it points into.
 unsafe fn on_clear_route_hotkey() {
     if goods_dialog_stop().is_some() {
-        ods("clear route: close the goods dialog first");
+        notify("Clear route: close the goods dialog first");
         return;
     }
     let Some(ship_index) = selected_ship_index() else {
-        ods("clear route: no ship selected");
+        notify("Clear route: no ship selected");
         return;
     };
     if !is_player_ship(ship_index) {
-        ods("clear route: the selected ship is not yours");
+        notify("Clear route: the selected ship is not yours");
         return;
     }
     let previous = backup_route(ship_index);
     if previous.is_empty() {
-        ods("clear route: the ship has no route");
+        notify("Clear route: the ship has no route");
         return;
     }
     // Deactivate first - the removals do not touch the active flag - then remove every
@@ -531,7 +699,7 @@ unsafe fn on_clear_route_hotkey() {
     }
     let ships = p3_api::ships::ShipsPtr::new();
     let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
-    ods(&format!("clear route: removing {} stops from {name:?}", previous.len()));
+    notify(&format!("Route cleared: {} stops removed from {name}", previous.len()));
 }
 
 /// Ctrl/Alt+QWERTY while the goods dialog is open: reprice the stop being edited, in
@@ -571,9 +739,12 @@ unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Option<PriceLe
     if updated > 0 {
         refresh_goods_dialog(dialog, stop_index);
     }
-    ods(&format!(
-        "dialog prices (sell {sell:?}, buy {buy:?}): updated {updated} wares of the {town} stop"
-    ));
+    let what = match (sell, buy) {
+        (Some(level), _) => format!("Sell prices {level:?}"),
+        (_, Some(level)) => format!("Buy prices {level:?}"),
+        _ => "Prices".into(),
+    };
+    notify(&format!("{what}: {updated} wares of the {town} stop"));
 }
 
 /// F1 while the goods dialog is open: fill the displayed stop's EMPTY ware slots with
@@ -637,6 +808,10 @@ unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares
         "dialog setup for the {town} stop: buying [{}]{skipped}, selling {sold} others, {untouched} existing instructions untouched",
         bought.join(", ")
     ));
+    notify(&format!(
+        "Stop setup for {town}: {} buys, {sold} sells, {untouched} kept",
+        bought.len()
+    ));
 }
 
 /// Apply a route file (written to ROUTE_FILE_PATH) to a ship, mimicking the game's own
@@ -673,15 +848,15 @@ unsafe fn apply_route_file(ship_index: u16) -> bool {
 /// the town whose view is open. Logs why not when it cannot be resolved.
 unsafe fn route_context(what: &str) -> Option<(u16, String, u8)> {
     let Some(ship_index) = selected_ship_index() else {
-        ods(&format!("{what}: no ship selected"));
+        notify(&format!("{what}: no ship selected"));
         return None;
     };
     if !is_player_ship(ship_index) {
-        ods(&format!("{what}: the selected ship is not yours"));
+        notify(&format!("{what}: the selected ship is not yours"));
         return None;
     }
     let Some(town_index) = current_town_index() else {
-        ods(&format!("{what}: not in a town"));
+        notify(&format!("{what}: not in a town"));
         return None;
     };
     let ships = p3_api::ships::ShipsPtr::new();
@@ -770,6 +945,7 @@ unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
             "add stop in {town} on {name:?}: buying [{}]{skipped}, selling {sold} others (route now {stop_count} stops)",
             bought.join(", ")
         ));
+        notify(&format!("Stop added in {town}: {name} now {stop_count} stops"));
     }
 }
 
@@ -798,11 +974,11 @@ enum RouteKind {
 /// home town produces itself.
 unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     let Some(ship_index) = selected_ship_index() else {
-        ods("route: no ship selected");
+        notify("Route: no ship selected");
         return;
     };
     if !is_player_ship(ship_index) {
-        ods("route: the selected ship is not yours");
+        notify("Route: the selected ship is not yours");
         return;
     }
     let ships = p3_api::ships::ShipsPtr::new();
@@ -825,7 +1001,7 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     let targets: Vec<u8> = if append {
         // Shift: append the template for the currently open town.
         let Some(town) = current_town_index() else {
-            ods("route: shift appends for the open town, but no town view is open");
+            notify("Route: shift appends for the open town, but no town view is open");
             return;
         };
         vec![town]
@@ -842,7 +1018,7 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
             match current_town_index() {
                 Some(town) if town != load_town => towns.push(town),
                 _ => {
-                    ods("route: no target towns in the current route and no town view open");
+                    notify("Route: no target towns in the current route and no town view open");
                     return;
                 }
             }
@@ -910,6 +1086,10 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
             "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops)",
             described.join(", ")
         ));
+        notify(&format!(
+            "{kind:?} route {action} {name}: {} targets from {load_town_name}, {stop_count} stops",
+            described.len()
+        ));
     }
 }
 
@@ -955,7 +1135,7 @@ unsafe fn town_supply_basket(town_index: u8) -> ([i32; 24], [i32; 24], u32) {
 unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, String)> {
     let window = UITradingOfficeWindowPtr::new();
     if window.get_address() == 0 {
-        ods("hotkey: no trading office window (open one on the Trading Office view)");
+        notify("Office keys: no trading office window open");
         return None;
     }
     let town_index = window.get_town_index();
@@ -963,13 +1143,13 @@ unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, Stri
 
     let page = window.get_selected_page();
     if page != ADMINISTRATOR_PAGE {
-        ods(&format!("hotkey: office window in {town}, page {page} - switch to the Trading Office view"));
+        notify(&format!("Office keys: switch to the Trading Office view ({town} is on page {page})"));
         return None;
     }
 
     let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
     let Some(office) = GAME_WORLD_PTR.get_office_in_of(town_index as _, merchant_index as _) else {
-        ods(&format!("hotkey: no player office found in {town}"));
+        notify(&format!("Office keys: no player office found in {town}"));
         return None;
     };
     let office_index = (0..GAME_WORLD_PTR.get_offices_count()).find(|&i| GAME_WORLD_PTR.get_office(i).address == office.address)?;
@@ -1023,6 +1203,10 @@ unsafe fn on_setup_hotkey() {
         "setup in {town}: buying produced wares [{}], selling {sold} others, {untouched} existing orders untouched",
         bought.join(", ")
     ));
+    notify(&format!(
+        "Office setup in {town}: {} buys, {sold} sells, {untouched} kept",
+        bought.len()
+    ));
     refresh_administrator_view();
 }
 
@@ -1059,6 +1243,7 @@ unsafe fn provision_and_lock(what: &str, targets: &[(WareId, i32)]) {
         });
     }
     ods(&format!("{what} in {town}: locked {} wares, raised [{}]", targets.len(), raised.join(", ")));
+    notify(&format!("Locked {what} in {town} ({} amounts raised)", raised.len()));
     refresh_administrator_view();
 }
 
@@ -1116,7 +1301,12 @@ unsafe fn apply_prices(sell: Option<PriceLevel>, buy: Option<PriceLevel>) {
         });
         updated += 1;
     }
-    ods(&format!("prices (sell {sell:?}, buy {buy:?}): updated {updated} wares in {town}"));
+    let what = match (sell, buy) {
+        (Some(level), _) => format!("Sell prices {level:?}"),
+        (_, Some(level)) => format!("Buy prices {level:?}"),
+        _ => "Prices".into(),
+    };
+    notify(&format!("{what}: {updated} wares in {town}"));
     refresh_administrator_view();
 }
 

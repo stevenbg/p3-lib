@@ -107,6 +107,19 @@ reuse them.
 
 Details: https://p3modding.github.io/towns/ware-prices.html
 
+## Feedback
+
+Every key confirms its action - and explains a refused one (no ship selected, wrong
+office view, goods dialog in the way) - as an in-game popup on the scrollmap's event
+ticker, the top-left boxes where "Game speed" messages appear. Everything is also
+logged with more detail via OutputDebugString.
+
+The game's own incoming-letter popups (top right) additionally get the letter's town
+appended: "Personal letter: Patrol - Stockholm" instead of "Personal letter: Patrol",
+so mission letters say at a glance where to send the ship. For scripted letters
+(whose town field is broken - see mod-fix-patrol-letter-crash) the town is recovered
+from the letter text: the last town name the letter mentions.
+
 ## Known limitations
 
 - The game prices a transaction as the average of the curve over the amount traded, not
