@@ -5,6 +5,7 @@ members = [
     "aimcli",
     "cprcli",
     "mod-auto-supply",
+    "mod-crash-reporter",
     "mod-debug-navpoint-matrix",
     "mod-fix-bath-house-bribe-blunders",
     "mod-fix-damage-to-offside-ship-artillery",
