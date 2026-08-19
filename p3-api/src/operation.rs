@@ -56,6 +56,32 @@ pub enum Operation {
         merchant_index: u16,
         lock: bool,
     },
+    /// Activate or deactivate a ship's trade route: the route panel's "active"
+    /// checkbox (opcode 0x68, executor 0x53df00). transfer_loaded_traderoute enqueues
+    /// the deactivation as its first step when replacing a route (0x5494dd).
+    SetTradeRouteActive {
+        ship_index: u32,
+        active: bool,
+    },
+    /// Remove one stop from an applied trade route: what selecting the town "none" in
+    /// the route panel enqueues. Opcode 0x6a with town 0xff (executor 0x53e610): frees
+    /// the stop's pool record (via the pool free 0x4d4e80), moves the first-stop marker
+    /// to the successor if needed and retargets ships heading for the removed stop
+    /// (0x509030). Verified in-game: pool indices are reused, so the record identity
+    /// comes from the live chain, never from positions.
+    RemoveTradeRouteStop {
+        stop_pool_index: u32,
+        ship_index: u32,
+    },
+    /// Insert a stop into an applied trade route after an existing stop: selecting a
+    /// town in the route panel. The same opcode 0x6a with the +0x8 flag set: allocates
+    /// a pool record (via the pool alloc 0x4d4c90), links it after
+    /// `after_stop_pool_index` and sets its town.
+    InsertTradeRouteStop {
+        after_stop_pool_index: u32,
+        town_index: u8,
+        ship_index: u32,
+    },
 }
 
 impl Operation {
@@ -172,6 +198,31 @@ impl Operation {
                 op[0x08..0x0a].copy_from_slice(&merchant_index.to_le_bytes());
                 op[0x0c..0x0e].copy_from_slice(&town_index.to_le_bytes());
                 op[0x10..0x14].copy_from_slice(&(*lock as u32).to_le_bytes());
+            }
+            Operation::SetTradeRouteActive { ship_index, active } => {
+                let opcode: u32 = 0x68;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&ship_index.to_le_bytes());
+                op[0x08..0x0c].copy_from_slice(&(*active as u32).to_le_bytes());
+            }
+            Operation::RemoveTradeRouteStop { stop_pool_index, ship_index } => {
+                let opcode: u32 = 0x6a;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&stop_pool_index.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&0xffu32.to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&ship_index.to_le_bytes());
+            }
+            Operation::InsertTradeRouteStop {
+                after_stop_pool_index,
+                town_index,
+                ship_index,
+            } => {
+                let opcode: u32 = 0x6a;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&after_stop_pool_index.to_le_bytes());
+                op[0x08..0x0c].copy_from_slice(&1u32.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&(*town_index as u32).to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&ship_index.to_le_bytes());
             }
         }
         op

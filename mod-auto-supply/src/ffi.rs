@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
 use std::{mem, panic};
 
-use hooklet::windows::x86::{hook_function_pointer, FunctionPointerHook};
+use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hook, FunctionPointerHook};
 use log::error;
 use num_traits::FromPrimitive;
 use p3_api::{
@@ -17,7 +17,7 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
         WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
     },
 };
@@ -66,6 +66,8 @@ const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
 const ADD_STOP_KEY: usize = VK_F4.0 as usize;
 /// F3 sets a whole route template: plain 5stop, alt 6stop, ctrl suck.
 const ROUTE_KEY: usize = VK_F3.0 as usize;
+/// DEL clears the selected ship's route (guarded on the goods dialog being closed).
+const CLEAR_ROUTE_KEY: usize = VK_DELETE.0 as usize;
 /// The stop buys what the town produces at this level (the Ctrl+Y price).
 const STOP_BUY_LEVEL: PriceLevel = PriceLevel::LowerMid;
 /// The stop sells everything else at this level (the Alt+Y price).
@@ -286,6 +288,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                         apply_prices(sell, buy);
                     }
                 }
+                w if w == CLEAR_ROUTE_KEY => on_clear_route_hotkey(),
                 // F1 in the goods dialog: fill the displayed stop's empty slots with
                 // buy/sell orders (plain skips the NO_BUY_WARES, ctrl buys everything).
                 w if w == SETUP_KEY && goods_dialog_stop().is_some() => {
@@ -358,56 +361,37 @@ unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
     populate(dialog, stop_index, ship_index, flag);
 }
 
-/// The auto_trader (captain/administrator) array: pointer at ships+0, count at
-/// ships+0xF2 (0x6dd892), stride 0x10. Skills at +0x9 (navigation), +0xA (trade),
-/// +0xB (combat); daily wage word at +0xC. The buying routines divide the trade skill
-/// by 43 for the displayed 0-5 level.
-const CAPTAINS_PTR: *const u32 = 0x006dd7a0 as _;
-const CAPTAINS_COUNT: *const u16 = 0x006dd892 as _;
-/// The office's administrator: an index into the auto_trader array.
-const OFFICE_ADMINISTRATOR_OFFSET: u32 = 0x2f2;
+/// F9 (THROWAWAY): install an operation logger on the queue drain's call into the
+/// operation switch (execute_operations 0x546870 calls 0x535760 at 0x546934), dumping
+/// every processed operation. Used to identify the opcode behind UI actions - press F9
+/// once, perform the action in-game, read the log.
+static OP_LOGGER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+const OP_SWITCH_DRAIN_CALL_OFFSET: u32 = 0x146934;
+/// Noisy periodic opcodes to omit (0x94/0x24/0x7b per the gitbook's debugging notes).
+const OP_LOGGER_NOISE: [u32; 3] = [0x94, 0x24, 0x7b];
 
-unsafe fn describe_auto_trader(index: u16) -> String {
-    if index >= *CAPTAINS_COUNT {
-        return format!("index {index} INVALID (count {})", *CAPTAINS_COUNT);
+unsafe extern "thiscall" fn op_logger_hook(op: u32) {
+    let opcode = *(op as *const u32);
+    if !OP_LOGGER_NOISE.contains(&opcode) {
+        let bytes: Vec<String> = (0..0x14).map(|i| format!("{:02x}", *((op + i) as *const u8))).collect();
+        ods(&format!("op {opcode:#04x}: {}", bytes.join(" ")));
     }
-    let trader = *CAPTAINS_PTR + index as u32 * 0x10;
-    let nav = *((trader + 0x9) as *const u8);
-    let trade = *((trader + 0xa) as *const u8);
-    let combat = *((trader + 0xb) as *const u8);
-    let wage = *((trader + 0xc) as *const i16);
-    format!(
-        "index {index}: nav {nav}, trade {trade} (level {}, pays {}%), combat {combat}, wage {wage}",
-        trade / 43,
-        2 * (50 - (trade / 43) as i32),
-    )
+    let hook = OP_LOGGER_HOOK.load(Ordering::SeqCst);
+    let original: extern "thiscall" fn(u32) = mem::transmute((*hook).old_absolute);
+    original(op);
 }
 
-/// F9 (THROWAWAY): does an office administrator ever carry a nonzero trade skill?
-/// Dump every player office's administrator, plus the player's ship captains for
-/// contrast (their skills are known nonzero and visible in the UI).
 unsafe fn on_current_town_hotkey() {
-    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
-    for town_index in 0..GAME_WORLD_PTR.get_towns_count() {
-        let Some(office) = GAME_WORLD_PTR.get_office_in_of(town_index as _, merchant_index as _) else {
-            continue;
-        };
-        let town = get_town_name(town_index as u8).unwrap_or_else(|| "<unknown>".into());
-        let administrator = *((office.address + OFFICE_ADMINISTRATOR_OFFSET) as *const u16);
-        ods(&format!("administrator in {town}: {}", describe_auto_trader(administrator)));
+    if !OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
+        ods("op logger: already installed");
+        return;
     }
-
-    let ships = p3_api::ships::ShipsPtr::new();
-    let merchant = GAME_WORLD_PTR.get_merchant(merchant_index as u16);
-    let mut ship_index = merchant.get_first_ship_index();
-    for _ in 0..64 {
-        let Some(ship) = ships.get_ship(ship_index) else { break };
-        let captain_index = *((ship.address + 0x42) as *const u16);
-        ods(&format!("captain of {:?}: {}", ship.get_name(), describe_auto_trader(captain_index)));
-        ship_index = ship.get_next_ship_index_of_merchant();
-        if ship_index >= ships.get_ships_size() {
-            break;
+    match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, op_logger_hook as usize as u32) {
+        Ok(hook) => {
+            OP_LOGGER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+            ods("op logger: installed - perform the action to identify");
         }
+        Err(e) => ods(&format!("op logger: hook failed: {e:?}")),
     }
 }
 
@@ -500,6 +484,62 @@ unsafe fn route_stop_records(ship_index: u16) -> Vec<u32> {
 
 unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
     route_stop_records(ship_index).into_iter().map(|record| read_pool_stop(record)).collect()
+}
+
+/// Save the ship's current route to [ROUTE_BACKUP_PATH], loadable from the route
+/// window's File button as "_backup". Returns the stops for reuse.
+unsafe fn backup_route(ship_index: u16) -> Vec<TradeRouteStop> {
+    let previous = read_ship_route(ship_index);
+    if !previous.is_empty() {
+        let count = previous.len();
+        let backup = p3_rou::TradeRouteFile { stops: previous.clone() }.serialize();
+        match std::fs::write(ROUTE_BACKUP_PATH, &backup) {
+            Ok(()) => ods(&format!("route: saved the previous {count} stops to {ROUTE_BACKUP_PATH}")),
+            Err(e) => ods(&format!("route: failed to back up the previous route: {e}")),
+        }
+    }
+    previous
+}
+
+/// DEL: clear the selected ship's route by enqueueing the game's own stop-removal
+/// operation for every stop - the op the route panel's town "none" selection sends,
+/// identifying each stop by its POOL INDEX (stable across the removals, unlike
+/// positions). Guarded on the goods dialog being closed: it displays a stop of this
+/// route, and the removals free the pool records it points into.
+unsafe fn on_clear_route_hotkey() {
+    if goods_dialog_stop().is_some() {
+        ods("clear route: close the goods dialog first");
+        return;
+    }
+    let Some(ship_index) = selected_ship_index() else {
+        ods("clear route: no ship selected");
+        return;
+    };
+    if !is_player_ship(ship_index) {
+        ods("clear route: the selected ship is not yours");
+        return;
+    }
+    let previous = backup_route(ship_index);
+    if previous.is_empty() {
+        ods("clear route: the ship has no route");
+        return;
+    }
+    // Deactivate first - the removals do not touch the active flag - then remove every
+    // stop, the way transfer_loaded_traderoute also deactivates before rebuilding.
+    OPERATIONS_PTR.enqueue_operation(Operation::SetTradeRouteActive {
+        ship_index: ship_index as u32,
+        active: false,
+    });
+    let pool = *ROUTE_STOP_POOL;
+    for record in route_stop_records(ship_index) {
+        OPERATIONS_PTR.enqueue_operation(Operation::RemoveTradeRouteStop {
+            stop_pool_index: (record - pool) / ROUTE_STOP_SIZE,
+            ship_index: ship_index as u32,
+        });
+    }
+    let ships = p3_api::ships::ShipsPtr::new();
+    let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
+    ods(&format!("clear route: removing {} stops from {name:?}", previous.len()));
 }
 
 /// Ctrl/Alt+QWERTY while the goods dialog is open: reprice the stop being edited, in
@@ -804,15 +844,7 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     // Whether replacing or appending, the whole route gets rewritten, so keep the old
     // one loadable from the route window's File button ("_backup") in case this was a
     // mistake.
-    let previous = read_ship_route(ship_index);
-    if !previous.is_empty() {
-        let count = previous.len();
-        let backup = p3_rou::TradeRouteFile { stops: previous.clone() }.serialize();
-        match std::fs::write(ROUTE_BACKUP_PATH, &backup) {
-            Ok(()) => ods(&format!("route: saved the previous {count} stops to {ROUTE_BACKUP_PATH}")),
-            Err(e) => ods(&format!("route: failed to back up the previous route: {e}")),
-        }
-    }
+    let previous = backup_route(ship_index);
 
     let template = match kind {
         RouteKind::FiveStop => builder::five_stop_route(load_town, sell_town, load_amount, sell_prices),

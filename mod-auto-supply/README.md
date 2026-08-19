@@ -27,6 +27,7 @@ visited).
 | F1 (goods dialog) | With the route window's goods dialog open: fill the displayed stop's empty ware slots - buy what the stop's town produces at the Ctrl+Y price (Ctrl+F1 includes the no-buy wares), sell everything else at the Alt+Y price, Max amounts. Existing instructions, office transfers included, stay untouched |
 | F4 | Append a trade stop for the current town to the selected ship's route: buy what the town produces at the Ctrl+Y price, sell everything else at the Alt+Y price, sells listed above the buys. Pitch, timber, salt, bricks, grain and hemp are never bought - their margin does not pay for the cargo space early on |
 | Ctrl + F4 | The same stop, but buying every ware the town produces |
+| DEL | Clear the selected ship's route entirely (own ships only; refused while the goods dialog is open, since it displays a stop of that route). The route is saved to `_backup.rou` first |
 | F9 | Throwaway diagnostics for whatever is being reverse engineered right now |
 | F10 | Dump every ship's applied route chain from the route stop pool |
 
