@@ -17,7 +17,7 @@ use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::Threading::GetCurrentThreadId,
     UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU},
+        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
         WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
     },
 };
@@ -251,6 +251,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
         if flags & 0xC000_0000 == 0 {
             let ctrl = key_down(VK_CONTROL);
             let alt = key_down(VK_MENU);
+            let shift = key_down(VK_SHIFT);
             // The office keys act only while a trading office window is open; the town
             // and route probes are global.
             let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
@@ -261,13 +262,18 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
                 // Alt+F4 is left to Windows.
                 w if w == ADD_STOP_KEY && !alt => on_add_stop_hotkey(!ctrl),
-                w if w == ROUTE_KEY => on_route_hotkey(if ctrl {
-                    RouteKind::Suck
-                } else if alt {
-                    RouteKind::SixStop
-                } else {
-                    RouteKind::FiveStop
-                }),
+                // Shift appends the generated route to the existing one instead of
+                // replacing it.
+                w if w == ROUTE_KEY => on_route_hotkey(
+                    if ctrl {
+                        RouteKind::Suck
+                    } else if alt {
+                        RouteKind::SixStop
+                    } else {
+                        RouteKind::FiveStop
+                    },
+                    shift,
+                ),
                 // Exactly one of ctrl (buy) / alt (sell) picks the direction. The keys
                 // target the goods dialog's stop when it is open, otherwise the office
                 // administrator view.
@@ -279,6 +285,12 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                     } else if office_open {
                         apply_prices(sell, buy);
                     }
+                }
+                // F1 in the goods dialog: fill the displayed stop's empty slots with
+                // buy/sell orders (plain skips the NO_BUY_WARES, ctrl buys everything).
+                w if w == SETUP_KEY && goods_dialog_stop().is_some() => {
+                    let (dialog, stop_index) = goods_dialog_stop().unwrap();
+                    on_dialog_setup_hotkey(dialog, stop_index, !ctrl);
                 }
                 _ if !office_open => {}
                 w if w == SETUP_KEY && ctrl => on_lock_staples_hotkey(),
@@ -346,46 +358,57 @@ unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
     populate(dialog, stop_index, ship_index, flag);
 }
 
-/// F9's snapshot of the trading office window object, for the amount-widget hunt.
-const WINDOW_SNAPSHOT_SIZE: usize = 0xf000;
-static WINDOW_SNAPSHOT: std::sync::Mutex<Option<Box<[u8; WINDOW_SNAPSHOT_SIZE]>>> = std::sync::Mutex::new(None);
+/// The auto_trader (captain/administrator) array: pointer at ships+0, count at
+/// ships+0xF2 (0x6dd892), stride 0x10. Skills at +0x9 (navigation), +0xA (trade),
+/// +0xB (combat); daily wage word at +0xC. The buying routines divide the trade skill
+/// by 43 for the displayed 0-5 level.
+const CAPTAINS_PTR: *const u32 = 0x006dd7a0 as _;
+const CAPTAINS_COUNT: *const u16 = 0x006dd892 as _;
+/// The office's administrator: an index into the auto_trader array.
+const OFFICE_ADMINISTRATOR_OFFSET: u32 = 0x2f2;
 
-/// F9 (THROWAWAY): diff the trading office window object between presses, hunting the
-/// administrator amount row widgets. Sequence: administrator view open, F9 (baseline),
-/// click + once on ONE ware's amount, F9 - the changed fields identify the row struct
-/// the widget setter 0x45c930 needs.
-unsafe fn on_current_town_hotkey() {
-    let window = UITradingOfficeWindowPtr::new();
-    if window.get_address() == 0 {
-        ods("window diff: no trading office window");
-        return;
+unsafe fn describe_auto_trader(index: u16) -> String {
+    if index >= *CAPTAINS_COUNT {
+        return format!("index {index} INVALID (count {})", *CAPTAINS_COUNT);
     }
-    let current: Box<[u8; WINDOW_SNAPSHOT_SIZE]> = Box::new(*(window.get_address() as *const [u8; WINDOW_SNAPSHOT_SIZE]));
-    let mut guard = WINDOW_SNAPSHOT.lock().unwrap();
-    match guard.take() {
-        None => ods(&format!("window diff: baseline of {:#010x} taken", window.get_address())),
-        Some(previous) => {
-            let mut ranges: Vec<(usize, usize)> = Vec::new();
-            for offset in 0..WINDOW_SNAPSHOT_SIZE {
-                if previous[offset] != current[offset] {
-                    match ranges.last_mut() {
-                        Some((_, end)) if *end + 1 == offset => *end = offset,
-                        _ => ranges.push((offset, offset)),
-                    }
-                }
-            }
-            ods(&format!("window diff: {} changed ranges", ranges.len()));
-            for &(start, end) in ranges.iter().take(40) {
-                let old: Vec<String> = previous[start..=end].iter().map(|b| format!("{b:02x}")).collect();
-                let new: Vec<String> = current[start..=end].iter().map(|b| format!("{b:02x}")).collect();
-                ods(&format!("window diff: +{start:#x}..{end:#x}: {} -> {}", old.join(""), new.join("")));
-            }
-            if ranges.len() > 40 {
-                ods("window diff: ... more ranges elided");
-            }
+    let trader = *CAPTAINS_PTR + index as u32 * 0x10;
+    let nav = *((trader + 0x9) as *const u8);
+    let trade = *((trader + 0xa) as *const u8);
+    let combat = *((trader + 0xb) as *const u8);
+    let wage = *((trader + 0xc) as *const i16);
+    format!(
+        "index {index}: nav {nav}, trade {trade} (level {}, pays {}%), combat {combat}, wage {wage}",
+        trade / 43,
+        2 * (50 - (trade / 43) as i32),
+    )
+}
+
+/// F9 (THROWAWAY): does an office administrator ever carry a nonzero trade skill?
+/// Dump every player office's administrator, plus the player's ship captains for
+/// contrast (their skills are known nonzero and visible in the UI).
+unsafe fn on_current_town_hotkey() {
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    for town_index in 0..GAME_WORLD_PTR.get_towns_count() {
+        let Some(office) = GAME_WORLD_PTR.get_office_in_of(town_index as _, merchant_index as _) else {
+            continue;
+        };
+        let town = get_town_name(town_index as u8).unwrap_or_else(|| "<unknown>".into());
+        let administrator = *((office.address + OFFICE_ADMINISTRATOR_OFFSET) as *const u16);
+        ods(&format!("administrator in {town}: {}", describe_auto_trader(administrator)));
+    }
+
+    let ships = p3_api::ships::ShipsPtr::new();
+    let merchant = GAME_WORLD_PTR.get_merchant(merchant_index as u16);
+    let mut ship_index = merchant.get_first_ship_index();
+    for _ in 0..64 {
+        let Some(ship) = ships.get_ship(ship_index) else { break };
+        let captain_index = *((ship.address + 0x42) as *const u16);
+        ods(&format!("captain of {:?}: {}", ship.get_name(), describe_auto_trader(captain_index)));
+        ship_index = ship.get_next_ship_index_of_merchant();
+        if ship_index >= ships.get_ships_size() {
+            break;
         }
     }
-    *guard = Some(current);
 }
 
 /// The ship currently shown in the route panel (map/panel selection), via the captured
@@ -490,6 +513,12 @@ unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Option<PriceLe
 
     let mut updated = 0;
     for ware_index in TRADE_WARES {
+        // Only slots with a nonzero amount carry an instruction: inactive slots can
+        // still hold a (positive) base price the dialog has not normalized yet.
+        let amount = *((record + 124 + ware_index as u32 * 4) as *const i32);
+        if amount == 0 {
+            continue;
+        }
         let price = (record + 28 + ware_index as u32 * 4) as *mut i32;
         let new = match *price {
             0 => continue,
@@ -512,6 +541,69 @@ unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Option<PriceLe
     }
     ods(&format!(
         "dialog prices (sell {sell:?}, buy {buy:?}): updated {updated} wares of the {town} stop"
+    ));
+}
+
+/// F1 while the goods dialog is open: fill the displayed stop's EMPTY ware slots with
+/// trade orders for the stop's own town - buy what it produces (at STOP_BUY_LEVEL),
+/// sell everything else (at STOP_SELL_LEVEL), MAX amounts - exactly F4's stop, but in
+/// place and preserving every existing instruction, office transfers included. With
+/// `skip_no_buy_wares` the [NO_BUY_WARES] get no order where the town produces them.
+/// The instruction order is recomputed into the builder's cargo order.
+unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares: bool) {
+    let record = *ROUTE_STOP_POOL + stop_index * ROUTE_STOP_SIZE;
+    let town_index = *((record + 2) as *const u8);
+    let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+    let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
+
+    let mut price = [0i32; 24];
+    let mut amount = [0i32; 24];
+    core::ptr::copy_nonoverlapping((record + 28) as *const i32, price.as_mut_ptr(), 24);
+    core::ptr::copy_nonoverlapping((record + 124) as *const i32, amount.as_mut_ptr(), 24);
+
+    let mut bought = Vec::new();
+    let mut skipped = Vec::new();
+    let mut sold = 0;
+    let mut untouched = 0;
+    for ware_index in TRADE_WARES {
+        let i = ware_index as usize;
+        let ware_id = WareId::from_u16(ware_index).unwrap();
+        // A slot without an instruction has amount 0 - but NOT necessarily price 0:
+        // the game leaves base prices in inactive slots, and the dialog normalizes
+        // them to 0 lazily via enqueued operations after opening. Testing the price
+        // here would race that queue (observed: quick F1 presses filled fewer wares).
+        if amount[i] != 0 {
+            untouched += 1;
+            continue;
+        }
+        if production[i] > 0 {
+            if skip_no_buy_wares && NO_BUY_WARES.contains(&ware_id) {
+                skipped.push(format!("{ware_id:?}"));
+                continue;
+            }
+            price[i] = -buy_price(ware_index, STOP_BUY_LEVEL);
+            bought.push(format!("{ware_id:?}"));
+        } else {
+            price[i] = sell_price(ware_index, STOP_SELL_LEVEL);
+            sold += 1;
+        }
+        amount[i] = builder::MAX_AMOUNT;
+    }
+
+    core::ptr::copy_nonoverlapping(price.as_ptr(), (record + 28) as *mut i32, 24);
+    core::ptr::copy_nonoverlapping(amount.as_ptr(), (record + 124) as *mut i32, 24);
+    let order = builder::cargo_order(&price, &amount);
+    core::ptr::copy_nonoverlapping(order.as_ptr(), (record + 4) as *mut u8, 24);
+    refresh_goods_dialog(dialog, stop_index);
+
+    let skipped = if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(", skipping [{}]", skipped.join(", "))
+    };
+    ods(&format!(
+        "dialog setup for the {town} stop: buying [{}]{skipped}, selling {sold} others, {untouched} existing instructions untouched",
+        bought.join(", ")
     ));
 }
 
@@ -660,10 +752,10 @@ enum RouteKind {
 /// F3: replace the selected ship's route with a supply route template: load one week of
 /// the current town's demand at the home office, sell it there, reset that office's stock
 /// and haul the surplus home. Ctrl+F3 instead parks in the current town buying everything
-/// up. Quantities come from the town's t0 thresholds (a week of citizen and business
-/// demand, in raw units) and prices from the R levels; wares the town produces itself are
-/// not supplied to it.
-unsafe fn on_route_hotkey(kind: RouteKind) {
+/// up. With shift held, the generated stops are APPENDED to the existing route instead of
+/// replacing it. Quantities are a week of the town's citizen and business consumption and
+/// prices the R levels; wares the town produces itself are not supplied to it.
+unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     let Some((ship_index, name, sell_town)) = route_context("route") else {
         return;
     };
@@ -709,22 +801,30 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
         supplied += 1;
     }
 
-    // These templates replace the whole route, so keep the old one loadable from the
-    // route window's File button ("_backup") in case this was a mistake.
+    // Whether replacing or appending, the whole route gets rewritten, so keep the old
+    // one loadable from the route window's File button ("_backup") in case this was a
+    // mistake.
     let previous = read_ship_route(ship_index);
     if !previous.is_empty() {
         let count = previous.len();
-        let backup = p3_rou::TradeRouteFile { stops: previous }.serialize();
+        let backup = p3_rou::TradeRouteFile { stops: previous.clone() }.serialize();
         match std::fs::write(ROUTE_BACKUP_PATH, &backup) {
             Ok(()) => ods(&format!("route: saved the previous {count} stops to {ROUTE_BACKUP_PATH}")),
             Err(e) => ods(&format!("route: failed to back up the previous route: {e}")),
         }
     }
 
-    let stops = match kind {
+    let template = match kind {
         RouteKind::FiveStop => builder::five_stop_route(load_town, sell_town, load_amount, sell_prices),
         RouteKind::SixStop => builder::six_stop_route(load_town, sell_town, load_amount, sell_prices),
         RouteKind::Suck => builder::suck_route(sell_town, buy_prices),
+    };
+    let stops = if append {
+        let mut stops = previous;
+        stops.extend(template);
+        stops
+    } else {
+        template
     };
     let stop_count = stops.len();
 
@@ -738,12 +838,13 @@ unsafe fn on_route_hotkey(kind: RouteKind) {
     }
 
     if write_and_apply_route(ship_index, stops) {
+        let action = if append { "appended to" } else { "set on" };
         match kind {
             RouteKind::Suck => ods(&format!(
-                "route {kind:?} on {name:?}: parked in {sell_town_name} buying everything at the R prices ({stop_count} stops)"
+                "route {kind:?} {action} {name:?}: parked in {sell_town_name} buying everything at the R prices (route now {stop_count} stops)"
             )),
             _ => ods(&format!(
-                "route {kind:?} on {name:?}: load in {load_town_name}, supply {supplied} wares to {sell_town_name} ({stop_count} stops)"
+                "route {kind:?} {action} {name:?}: load in {load_town_name}, supply {supplied} wares to {sell_town_name} (route now {stop_count} stops)"
             )),
         }
     }

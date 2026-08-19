@@ -1,10 +1,12 @@
 pub mod builder;
 pub mod decompress;
 
+#[derive(Clone)]
 pub struct TradeRouteFile {
     pub stops: Vec<TradeRouteStop>,
 }
 
+#[derive(Clone)]
 pub struct TradeRouteStop {
     pub town_index: u8,
     pub action: u8,
