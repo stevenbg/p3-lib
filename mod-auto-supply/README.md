@@ -23,7 +23,7 @@ visited).
 | Ctrl + Q W E R T Y | Set the BUY prices to that price level (see below): in the route window's goods dialog ("Automatic maritime trading"), every buy order of the stop being edited; otherwise every buy order of the administrator view |
 | Alt + Q W E R T Y | The same for SELL prices |
 | F11 | Dump thresholds, base prices, all price levels and the weekly citizen/business consumptions to the log and to `<TownName>.csv` in the game directory |
-| F3 | Replace the selected ship's route with a 5stop supply route: load a week of the current town's demand at the home office, sell it there, reset that office's stock to the same amounts and haul the surplus home. Alt+F3 uses the 6stop variant, Ctrl+F3 a suck route parked in the current town. Holding Shift appends the generated stops to the existing route instead of replacing it. The previous route is saved to `_backup.rou` first either way |
+| F3 | Rebuild the selected ship's route as a 5stop supply route. The ship's current route provides the towns - its first stop becomes the home town, the remaining unique towns in order the targets (a ship without a route uses the merchant's home town and targets the open town view): load a week of every target's demand at the home office, then per target sell it there and reset that office's stock, and finally haul everything home. Targets without a player office get a combined sell-and-buy stop instead, since office transfers would be wiped there: sells as usual, and buys at T for everything except the no-buy wares and what the home town produces itself. Alt+F3 uses the 6stop office swap per target. Ctrl+F3 builds a collection route: one buy stop per target at the T prices, skipping the no-buy wares and what the home town produces, unloading at home. Holding Shift targets just the currently open town and appends the generated stops to the existing route. The previous route is saved to `_backup.rou` first either way |
 | F1 (goods dialog) | With the route window's goods dialog open: fill the displayed stop's empty ware slots - buy what the stop's town produces at the Ctrl+Y price (Ctrl+F1 includes the no-buy wares), sell everything else at the Alt+Y price, Max amounts. Existing instructions, office transfers included, stay untouched |
 | F4 | Append a trade stop for the current town to the selected ship's route: buy what the town produces at the Ctrl+Y price, sell everything else at the Alt+Y price, sells listed above the buys. Pitch, timber, salt, bricks, grain and hemp are never bought - their margin does not pay for the cargo space early on |
 | Ctrl + F4 | The same stop, but buying every ware the town produces |
@@ -38,17 +38,20 @@ as after a stop switch (the game resets its Undo baseline on every stop display)
 Directions and amounts are never changed by the price keys; F1 is the only key that
 creates orders.
 
-The route keys take the town whose view is open as the target and the merchant's home
-town (the home office) as the source. Route quantities are one week of the target
+F3 takes both the home town (its first stop) and the targets (the rest) from the
+ship's own route; Shift and F4 use the town whose view is open, with the merchant's
+home town as the source. Route
+quantities are one week of each target
 town's real consumption - citizens plus businesses, the market hall consumption
 window's Total column, read live from the town - rounded up to whole in-game units;
 prices are the R levels. The t0 threshold is deliberately not used for quantities: it
 is a comfortable stock level, inflated by minimum floors and construction reserves, not
 what disappears weekly. Wares the town produces itself are not supplied to it, and
 neither are bricks, pig iron, pitch and hemp - low-value industry inputs not worth the
-hold space; whatever the target office holds of them is still hauled home. Route
-stops that transfer wares to or from an office are wiped by the game in towns where
-there is no player office, and the keys warn when that applies.
+hold space; whatever the target office holds of them is still hauled home. The game
+wipes office transfers of stops in towns without a player office at route load time -
+the templates avoid generating any such stop (office-less targets get the 3-stop
+variant, and the collection route only transfers at home).
 
 Stops load and buy the barrel goods before the bulky loads goods, each group ordered by
 ware value with the best first, so when hold space runs out the least valuable cargo is

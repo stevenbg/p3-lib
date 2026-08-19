@@ -39,7 +39,7 @@ enum Command {
         #[arg(short = 't', long = "type", value_enum)]
         route_type: RouteType,
 
-        /// Number of citizens to supply; unused by the suck type
+        /// Number of citizens to supply; unused by the suck type's buy stop
         #[arg(short, long, default_value_t = 1000)]
         citizens: u32,
 
@@ -69,7 +69,7 @@ enum RouteType {
     /// like 5stop, but swaps the office stock one unit category at a time to bound the needed ship space
     #[value(name = "6stop")]
     SixStop,
-    /// park in the load town: unload everything (with repair), then keep buying all goods at the reference buy prices
+    /// start at the load town (with repair), buy all goods at the reference buy prices in the sell town, unload everything back home
     #[value(name = "suck")]
     Suck,
 }
@@ -372,7 +372,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
     let stops = match route_type {
         RouteType::FiveStop => builder::five_stop_route(load_town, sell_town, load_amount, sell_prices),
         RouteType::SixStop => builder::six_stop_route(load_town, sell_town, load_amount, sell_prices),
-        RouteType::Suck => builder::suck_route(load_town, buy_price),
+        RouteType::Suck => builder::suck_route(load_town, sell_town, buy_price),
     };
 
     let stop_count = stops.len();
@@ -385,7 +385,7 @@ fn write_route(route_type: RouteType, citizens: u32, output: &PathBuf, reference
         RouteType::FiveStop | RouteType::SixStop => {
             format!("load in town {load_town:#04x}, sell and restock in town {sell_town:#04x}, unload everything back in town {load_town:#04x}")
         }
-        RouteType::Suck => format!("unload everything (with repair) and buy all goods at the reference buy prices, all in town {load_town:#04x}"),
+        RouteType::Suck => format!("start in town {load_town:#04x} (with repair), buy all goods at the reference buy prices in town {sell_town:#04x}, unload everything back in town {load_town:#04x}"),
     };
     println!("Wrote {stop_count} stops ({} bytes) to {}: {description}", data.len(), output.display());
 }

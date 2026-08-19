@@ -162,17 +162,27 @@ fn sell_max_and_unload(load_amount: &[i32; 24]) -> ([i32; 24], [i32; 24]) {
     (sell_max, unload_calculated)
 }
 
-/// Supply route: load the given raw amounts at the source (repairing there), sell max
-/// at the given minimum prices in the target town, reset the target office's stock of
-/// the supplied wares to exactly the loaded amounts (take max of just those, put the
-/// amounts back) while collecting every other ware from that office, and unload the
-/// whole ship into the source office.
+/// The home bracket every generated route shares: load the given raw amounts at the
+/// source town (repairing there; all-zero amounts make it a plain starting point), run
+/// the middle stops, and unload the whole ship into the source office.
+pub fn bracketed_route(load_town: u8, load_amount: [i32; 24], middle: Vec<TradeRouteStop>) -> Vec<TradeRouteStop> {
+    let mut stops = Vec::with_capacity(middle.len() + 2);
+    stops.push(stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount));
+    stops.extend(middle);
+    stops.push(stop(load_town, FLAG_X, [0i32; 24], all_trade_wares(-MAX_AMOUNT)));
+    stops
+}
+
+/// The 5stop template's per-target stops: sell max at the given minimum prices, reset
+/// the target office's stock of the supplied wares to exactly the given amounts (take
+/// max of just those, put the amounts back) while collecting every other ware from
+/// that office.
 ///
-/// Taking only the supplied wares at the third stop bounds the hold space the reset
-/// needs; the collected wares ride along from the fourth stop, where the put-back has
-/// just freed space (unloads run before loads within a stop, see [cargo_order]).
-pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24]) -> Vec<TradeRouteStop> {
-    let (sell_max, unload_calculated) = sell_max_and_unload(&load_amount);
+/// Taking only the supplied wares bounds the hold space the reset needs; the collected
+/// wares ride along from the put-back stop, which has just freed space (unloads run
+/// before loads within a stop, see [cargo_order]).
+pub fn five_stop_middle(sell_town: u8, load_amount: &[i32; 24], sell_prices: &[i32; 24]) -> Vec<TradeRouteStop> {
+    let (sell_max, unload_calculated) = sell_max_and_unload(load_amount);
     let mut take_supplied = [0i32; 24];
     let mut put_back_and_collect = unload_calculated;
     for i in 0..TRADE_WARE_COUNT {
@@ -183,21 +193,50 @@ pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sel
         }
     }
     vec![
-        stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
-        stop(sell_town, FLAG_X, sell_prices, sell_max),
+        stop(sell_town, FLAG_X, *sell_prices, sell_max),
         stop(sell_town, FLAG_X, [0i32; 24], take_supplied),
         stop(sell_town, FLAG_X, [0i32; 24], put_back_and_collect),
-        stop(load_town, FLAG_X, [0i32; 24], all_trade_wares(-MAX_AMOUNT)),
     ]
 }
 
-/// Like [five_stop_route], but swaps the target office's stock of the supplied wares
-/// one unit category at a time (unload the loads goods + take the supplied barrels,
-/// then put back the barrel amounts + take the supplied loads goods, then put back the
-/// loads amounts + collect every ware the route does not supply), which bounds the ship
-/// space the shuffle needs.
-pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24]) -> Vec<TradeRouteStop> {
-    let (sell_max, unload_calculated) = sell_max_and_unload(&load_amount);
+/// Supply route: the [bracketed_route] around one [five_stop_middle].
+pub fn five_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24]) -> Vec<TradeRouteStop> {
+    let middle = five_stop_middle(sell_town, &load_amount, &sell_prices);
+    bracketed_route(load_town, load_amount, middle)
+}
+
+/// A combined trade stop for a target town WITHOUT a trading office (office transfers
+/// would be wiped at load time there): sell the supplied wares without an amount limit
+/// at the given minimum prices, and buy every ware with a positive price in
+/// `buy_prices` (that carries no sell) at that maximum price.
+pub fn trade_stop(town: u8, load_amount: &[i32; 24], sell_prices: &[i32; 24], buy_prices: &[i32; 24]) -> TradeRouteStop {
+    let mut prices = [0i32; 24];
+    let mut amounts = [0i32; 24];
+    for i in 0..TRADE_WARE_COUNT {
+        if load_amount[i] != 0 {
+            prices[i] = sell_prices[i];
+            amounts[i] = MAX_AMOUNT;
+        } else if buy_prices[i] > 0 {
+            prices[i] = -buy_prices[i];
+            amounts[i] = MAX_AMOUNT;
+        }
+    }
+    stop(town, FLAG_X, prices, amounts)
+}
+
+/// Office-less supply route: the [bracketed_route] around one [trade_stop].
+pub fn three_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24], buy_prices: [i32; 24]) -> Vec<TradeRouteStop> {
+    let middle = vec![trade_stop(sell_town, &load_amount, &sell_prices, &buy_prices)];
+    bracketed_route(load_town, load_amount, middle)
+}
+
+/// The 6stop template's per-target stops: like [five_stop_middle], but swaps the
+/// target office's stock of the supplied wares one unit category at a time (unload the
+/// loads goods + take the supplied barrels, then put back the barrel amounts + take
+/// the supplied loads goods, then put back the loads amounts + collect every ware the
+/// route does not supply), which bounds the ship space the shuffle needs.
+pub fn six_stop_middle(sell_town: u8, load_amount: &[i32; 24], sell_prices: &[i32; 24]) -> Vec<TradeRouteStop> {
+    let (sell_max, unload_calculated) = sell_max_and_unload(load_amount);
     let mut unload_loads_take_barrels = [0i32; 24];
     let mut unload_barrels_take_loads = [0i32; 24];
     let mut put_back_loads_and_collect = [0i32; 24];
@@ -223,19 +262,21 @@ pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell
     }
     // The unloads-before-loads ordering of the swap stops comes from [cargo_order].
     vec![
-        stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount),
-        stop(sell_town, FLAG_X, sell_prices, sell_max),
+        stop(sell_town, FLAG_X, *sell_prices, sell_max),
         stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels),
         stop(sell_town, FLAG_X, [0i32; 24], unload_barrels_take_loads),
         stop(sell_town, FLAG_X, [0i32; 24], put_back_loads_and_collect),
-        stop(load_town, FLAG_X, [0i32; 24], all_trade_wares(-MAX_AMOUNT)),
     ]
 }
 
-/// Collection route parked in one town: unload everything into the office (with the
-/// repair flag), then five stops buying max of every ware with a positive maximum
-/// price in `buy_prices`.
-pub fn suck_route(town: u8, buy_prices: [i32; 24]) -> Vec<TradeRouteStop> {
+/// Supply route: the [bracketed_route] around one [six_stop_middle].
+pub fn six_stop_route(load_town: u8, sell_town: u8, load_amount: [i32; 24], sell_prices: [i32; 24]) -> Vec<TradeRouteStop> {
+    let middle = six_stop_middle(sell_town, &load_amount, &sell_prices);
+    bracketed_route(load_town, load_amount, middle)
+}
+
+/// A stop buying max of every ware with a positive maximum price in `buy_prices`.
+pub fn buy_stop(town: u8, buy_prices: &[i32; 24]) -> TradeRouteStop {
     let mut prices = [0i32; 24];
     let mut buy_max = [0i32; 24];
     for (i, &price) in buy_prices.iter().enumerate().take(TRADE_WARE_COUNT) {
@@ -244,9 +285,12 @@ pub fn suck_route(town: u8, buy_prices: [i32; 24]) -> Vec<TradeRouteStop> {
             buy_max[i] = MAX_AMOUNT;
         }
     }
-    let mut stops = vec![stop(town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], all_trade_wares(-MAX_AMOUNT))];
-    for _ in 0..5 {
-        stops.push(stop(town, FLAG_X, prices, buy_max));
-    }
-    stops
+    stop(town, FLAG_X, prices, buy_max)
+}
+
+/// Collection route: the [bracketed_route] (starting empty-handed) around one
+/// [buy_stop]. The target town needs no trading office - only the source unload is an
+/// office transfer.
+pub fn suck_route(load_town: u8, sell_town: u8, buy_prices: [i32; 24]) -> Vec<TradeRouteStop> {
+    bracketed_route(load_town, [0i32; 24], vec![buy_stop(sell_town, &buy_prices)])
 }

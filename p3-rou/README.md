@@ -74,10 +74,10 @@ that stops there in-game and inspect it with `roucli dump`.
 roucli write --type 5stop --citizens 2500 --load-town 0x0a --sell-town 0x11 -o "Save/AutoRoute/supply.rou"
 ```
 
-Generates a supply route from a reference goods table. Quantities are scaled linearly from the reference citizens count
-(rounding up), prices are used as-is. Every type loads the calculated quantities at the source town (with the repair flag
-set), sells the reference goods at the given minimum prices in the target town, resets the target office stock to exactly
-the calculated quantities, and unloads the whole ship back into the source office.
+Generates a route from a reference goods table. Quantities are scaled linearly from the reference citizens count
+(rounding up), prices are used as-is. The supply types (5stop, 6stop) load the calculated quantities at the source town
+(with the repair flag set), sell the reference goods at the given minimum prices in the target town, reset the target
+office stock to exactly the calculated quantities, and unload the whole ship back into the source office.
 
 - `--type 5stop`: source load → sell max → take the target office's stock of the supplied wares → put back the
   calculated quantities while collecting every other ware from that office → unload everything at the source. Taking
@@ -86,8 +86,12 @@ the calculated quantities, and unloads the whole ship back into the source offic
   (unload loads-goods + take the supplied barrels, then put back the barrel quantities + take the supplied loads-goods,
   then put back the loads quantities + collect every non-supplied ware), which bounds how much ship space the shuffle
   needs.
-- `--type suck`: parks in the load town (`--sell-town` and `--citizens` are unused): one stop unloading everything into
-  the office (with the repair flag), then five stops buying all goods at the reference `buy_price` limits.
+- `--type suck`: a collection run (`--citizens` is unused): start at `--load-town` with the repair flag and no
+  instructions, buy all goods at the reference `buy_price` limits in `--sell-town`, and unload everything back into the
+  load town's office. The sell town needs no trading office.
+
+The builder additionally provides `three_stop_route` for supplying towns without a trading office (load at the source,
+one combined sell-and-buy stop at the target, unload everything at the source); it has no CLI type yet.
 
 The stops use town indices 0 unless `--load-town`/`--sell-town` are given (savegame-specific, find them with `dump`).
 Towns of load/unload stops need a trading office — the game wipes office transfers in office-less towns at route load

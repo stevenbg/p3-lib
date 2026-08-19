@@ -316,14 +316,6 @@ unsafe fn current_town_index() -> Option<u8> {
     Some(*((scene + TOWN_SCENE_CURRENT_TOWN_OFFSET) as *const u32) as u8)
 }
 
-/// THROWAWAY (auto-trade dialog hunt): the window statics cluster. Each is written
-/// exactly once, by its window class ctor. Identified neighbors: 0x6e5500 town hall
-/// sidemenu, 0x6e557c trading office, 0x6e558c town hall, 0x6e55c0 shipyard.
-const WINDOW_STATICS_CLUSTER: [u32; 22] = [
-    0x6e551c, 0x6e5524, 0x6e5528, 0x6e552c, 0x6e5530, 0x6e5534, 0x6e5538, 0x6e553c, 0x6e5544, 0x6e5548, 0x6e5550, 0x6e5558, 0x6e5564, 0x6e556c, 0x6e5574,
-    0x6e5584, 0x6e5588, 0x6e55a0, 0x6e55a8, 0x6e55b0, 0x6e55b4, 0x6e55b8,
-];
-
 /// The "Automatic maritime trading" (goods) dialog object, constructed at startup
 /// (ctor 0x403020, vtable 0x66a7f0, allocated by the mass-constructor at 0x424eb0).
 /// Its +0xa4 holds the POOL INDEX of the displayed stop - its arrows walk the pool
@@ -789,68 +781,119 @@ enum RouteKind {
     Suck,
 }
 
-/// F3: replace the selected ship's route with a supply route template: load one week of
-/// the current town's demand at the home office, sell it there, reset that office's stock
-/// and haul the surplus home. Ctrl+F3 instead parks in the current town buying everything
-/// up. With shift held, the generated stops are APPENDED to the existing route instead of
-/// replacing it. Quantities are a week of the town's citizen and business consumption and
-/// prices the R levels; wares the town produces itself are not supplied to it.
+/// F3: rebuild the selected ship's route from a supply template. The ship's current
+/// route provides the towns: its FIRST stop's town becomes the home town, and the
+/// remaining unique towns, in order, the targets (further occurrences of the home town
+/// are ignored; a ship without a route uses the merchant's home town and the open town
+/// view). The generated route repeats the template's action stops once per target,
+/// bracketed by a home load stop (summed quantities) and a home unload stop. With
+/// shift held, the target is just the currently open town and the generated stops are
+/// APPENDED to the existing route instead of replacing it.
+///
+/// Quantities are a week of each target's citizen and business consumption; prices the
+/// R levels. Wares a target produces itself are not supplied to it; targets without a
+/// player office get a combined sell-and-buy trade stop (buying their produce at T)
+/// instead of the office-reset stops. Ctrl+F3 builds a collection route instead: one
+/// buy stop per target at the T prices, skipping the NO_BUY_WARES and everything the
+/// home town produces itself.
 unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
-    let Some((ship_index, name, sell_town)) = route_context("route") else {
+    let Some(ship_index) = selected_ship_index() else {
+        ods("route: no ship selected");
         return;
     };
-    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
-    let load_town = merchant.get_hometown_index();
-    let sell_town_name = get_town_name(sell_town).unwrap_or_else(|| "<unknown>".into());
+    if !is_player_ship(ship_index) {
+        ods("route: the selected ship is not yours");
+        return;
+    }
+    let ships = p3_api::ships::ShipsPtr::new();
+    let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
+    // Whether replacing or appending, the whole route gets rewritten, so keep the old
+    // one loadable from the route window's File button ("_backup") in case this was a
+    // mistake. The previous stops also provide the home and target towns.
+    let previous = backup_route(ship_index);
+
+    // The route's first stop is the home town; without a route, the merchant's home.
+    let load_town = if !append && !previous.is_empty() {
+        previous[0].town_index
+    } else {
+        GAME_WORLD_PTR
+            .get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16)
+            .get_hometown_index()
+    };
     let load_town_name = get_town_name(load_town).unwrap_or_else(|| "<unknown>".into());
 
-    let town = GAME_WORLD_PTR.get_town(sell_town);
-    let citizens = town.get_daily_consumptions_citizens();
-    let businesses = town.get_daily_consumptions_businesses();
-    let production = town.get_production_values();
+    let targets: Vec<u8> = if append {
+        // Shift: append the template for the currently open town.
+        let Some(town) = current_town_index() else {
+            ods("route: shift appends for the open town, but no town view is open");
+            return;
+        };
+        vec![town]
+    } else {
+        let mut towns: Vec<u8> = Vec::new();
+        for stop in previous.iter().skip(1) {
+            if stop.town_index != load_town && !towns.contains(&stop.town_index) {
+                towns.push(stop.town_index);
+            }
+        }
+        // A ship without a route (or one only touching one town) falls back to the
+        // open town view, preserving the old single-target workflow.
+        if towns.is_empty() {
+            match current_town_index() {
+                Some(town) if town != load_town => towns.push(town),
+                _ => {
+                    ods("route: no target towns in the current route and no town view open");
+                    return;
+                }
+            }
+        }
+        towns
+    };
 
-    let mut load_amount = [0i32; 24];
-    let mut sell_prices = [0i32; 24];
-    let mut buy_prices = [0i32; 24];
-    let mut supplied = 0;
+    // The buy list, shared by the collection route and the office-less trade stops:
+    // everything except the NO_BUY_WARES and what the home town produces itself, at
+    // the T price. (In trade stops, sells take precedence per ware.)
+    let home_production = GAME_WORLD_PTR.get_town(load_town).get_production_values();
+    let mut collect_buys = [0i32; 24];
     for ware_index in TRADE_WARES {
         let i = ware_index as usize;
         let ware_id = WareId::from_u16(ware_index).unwrap();
-        buy_prices[i] = buy_price(ware_index, PriceLevel::Center);
-        // A zero load amount is how the route templates express "do not supply this":
-        // the ware is neither loaded nor sold nor put back, but whatever the target
-        // office holds is still collected.
-        if production[i] > 0 || NO_SUPPLY_WARES.contains(&ware_id) {
-            continue;
+        if home_production[i] <= 0 && !NO_BUY_WARES.contains(&ware_id) {
+            collect_buys[i] = buy_price(ware_index, PriceLevel::Lower70);
         }
-        // A week of what the town actually consumes - citizens and businesses - in raw
-        // units. Not the t0 threshold: that is a comfortable stock level, inflated by
-        // minimum floors (meat 5 units where 3 are eaten) and by construction reserves
-        // (timber 31 loads where 11 are used), so it would have us ferrying goods that
-        // never disappear.
-        let weekly = (citizens[i] + businesses[i]).saturating_mul(7);
-        if weekly == 0 {
-            continue; // the town does not consume it
-        }
-        // Rounded UP to whole in-game units: undersupply empties the office before the
-        // ship returns, while the surplus just rides home; and game-saved routes only
-        // ever carry whole-unit amounts, so we stay within the format's known ground.
-        let scaling = ware_id.get_scaling();
-        load_amount[i] = (weekly + scaling - 1) / scaling * scaling;
-        sell_prices[i] = sell_price(ware_index, PriceLevel::Center);
-        supplied += 1;
     }
 
-    // Whether replacing or appending, the whole route gets rewritten, so keep the old
-    // one loadable from the route window's File button ("_backup") in case this was a
-    // mistake.
-    let previous = backup_route(ship_index);
+    let mut total_load = [0i32; 24];
+    let mut middle: Vec<TradeRouteStop> = Vec::new();
+    let mut described: Vec<String> = Vec::new();
+    for &town_index in &targets {
+        let town_name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+        if matches!(kind, RouteKind::Suck) {
+            middle.push(builder::buy_stop(town_index, &collect_buys));
+            described.push(town_name);
+            continue;
+        }
 
-    let template = match kind {
-        RouteKind::FiveStop => builder::five_stop_route(load_town, sell_town, load_amount, sell_prices),
-        RouteKind::SixStop => builder::six_stop_route(load_town, sell_town, load_amount, sell_prices),
-        RouteKind::Suck => builder::suck_route(sell_town, buy_prices),
-    };
+        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index);
+        for i in 0..24 {
+            total_load[i] = total_load[i].saturating_add(load_amount[i]);
+        }
+        if has_player_office(town_index) {
+            middle.extend(match kind {
+                RouteKind::FiveStop => builder::five_stop_middle(town_index, &load_amount, &sell_prices),
+                _ => builder::six_stop_middle(town_index, &load_amount, &sell_prices),
+            });
+            described.push(format!("{town_name} ({supplied} wares)"));
+        } else {
+            // No office: the reset stops would be wiped, so trade in one stop - sell
+            // the supplies and buy the rest at T through the shared buy filter (no
+            // NO_BUY_WARES, nothing the home town produces itself).
+            middle.push(builder::trade_stop(town_index, &load_amount, &sell_prices, &collect_buys));
+            described.push(format!("{town_name} ({supplied} wares, no office)"));
+        }
+    }
+
+    let template = builder::bracketed_route(load_town, total_load, middle);
     let stops = if append {
         let mut stops = previous;
         stops.extend(template);
@@ -860,26 +903,52 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     };
     let stop_count = stops.len();
 
-    // Every template transfers wares to or from an office in the current town, and the
-    // game wipes those instructions at load time where there is no office. The load town
-    // is the home office, so only the current town can be missing one.
-    if !has_player_office(sell_town) {
-        ods(&format!(
-            "route: no office in {sell_town_name} - the game will wipe this route's office transfers there"
-        ));
-    }
-
     if write_and_apply_route(ship_index, stops) {
         let action = if append { "appended to" } else { "set on" };
-        match kind {
-            RouteKind::Suck => ods(&format!(
-                "route {kind:?} {action} {name:?}: parked in {sell_town_name} buying everything at the R prices (route now {stop_count} stops)"
-            )),
-            _ => ods(&format!(
-                "route {kind:?} {action} {name:?}: load in {load_town_name}, supply {supplied} wares to {sell_town_name} (route now {stop_count} stops)"
-            )),
-        }
+        let verb = if matches!(kind, RouteKind::Suck) { "collect at T from" } else { "supply" };
+        ods(&format!(
+            "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops)",
+            described.join(", ")
+        ));
     }
+}
+
+/// One target town's supply basket: a week of its citizen and business consumption in
+/// raw units, rounded up to whole in-game units, with the R sell prices; wares the town
+/// produces itself and the NO_SUPPLY_WARES are excluded. Returns (amounts, prices,
+/// supplied ware count).
+unsafe fn town_supply_basket(town_index: u8) -> ([i32; 24], [i32; 24], u32) {
+    let town = GAME_WORLD_PTR.get_town(town_index);
+    let citizens = town.get_daily_consumptions_citizens();
+    let businesses = town.get_daily_consumptions_businesses();
+    let production = town.get_production_values();
+
+    let mut load_amount = [0i32; 24];
+    let mut sell_prices = [0i32; 24];
+    let mut supplied = 0;
+    for ware_index in TRADE_WARES {
+        let i = ware_index as usize;
+        let ware_id = WareId::from_u16(ware_index).unwrap();
+        // A zero load amount is how the route templates express "do not supply this".
+        if production[i] > 0 || NO_SUPPLY_WARES.contains(&ware_id) {
+            continue;
+        }
+        // A week of what the town actually consumes - citizens and businesses - in raw
+        // units. Not the t0 threshold: that is a comfortable stock level, inflated by
+        // minimum floors and construction reserves, so it would have us ferrying goods
+        // that never disappear.
+        let weekly = (citizens[i] + businesses[i]).saturating_mul(7);
+        if weekly == 0 {
+            continue; // the town does not consume it
+        }
+        // Rounded UP to whole in-game units: undersupply empties the office before the
+        // ship returns, while the surplus just rides home.
+        let scaling = ware_id.get_scaling();
+        load_amount[i] = (weekly + scaling - 1) / scaling * scaling;
+        sell_prices[i] = sell_price(ware_index, PriceLevel::Center);
+        supplied += 1;
+    }
+    (load_amount, sell_prices, supplied)
 }
 
 /// Returns the administrator view's office and its index, or logs why not.
