@@ -6,8 +6,6 @@ pub mod class27;
 pub mod class48;
 pub mod convoy;
 pub mod enums;
-pub mod mission;
-pub mod missions;
 pub mod navigation_matrix;
 pub mod navigation_vector;
 pub mod navpoint_matrix;

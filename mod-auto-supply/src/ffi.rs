@@ -6,12 +6,12 @@ use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hoo
 use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::{enums::WareId, mission::MISSION_SIZE, missions::MissionsPtr, p3_ptr::P3Pointer},
+    data::{enums::WareId, p3_ptr::P3Pointer},
     letters::LettersPtr,
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::SCHEDULED_TASKS_PTR,
+    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
     town::{get_town_name, TOWN_SIZE},
     ui::ui_trading_office_window::UITradingOfficeWindowPtr,
 };
@@ -574,11 +574,13 @@ unsafe fn describe_address(at: usize) -> String {
     if (0x0040_0000..0x0080_0000).contains(&at) {
         return " (executable data)".into();
     }
-    let pool_base: u32 = MissionsPtr::new().get(0x0);
-    let pool_end = pool_base as usize + 256 * MISSION_SIZE as usize;
+    let pool_base: u32 = SCHEDULED_TASKS_PTR.get(0x0);
+    let capacity: u16 = SCHEDULED_TASKS_PTR.get(0x0c);
+    let stride = SCHEDULED_TASK_SIZE as usize;
+    let pool_end = pool_base as usize + capacity as usize * stride;
     if (pool_base as usize..pool_end).contains(&at) {
         let delta = at - pool_base as usize;
-        return format!(" (pool record {} +{:#x})", delta / MISSION_SIZE as usize, delta % MISSION_SIZE as usize);
+        return format!(" (scheduled task {} +{:#x})", delta / stride, delta % stride);
     }
     String::new()
 }
