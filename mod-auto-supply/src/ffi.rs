@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::{mem, panic};
 
 use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hook, FunctionPointerHook};
@@ -9,7 +10,7 @@ use p3_api::{
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    town::get_town_name,
+    town::{get_town_name, TOWN_SIZE},
     ui::ui_trading_office_window::UITradingOfficeWindowPtr,
 };
 use p3_rou::{builder, TradeRouteStop};
@@ -209,7 +210,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 town+ship, F10 routes");
+    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 town snapshot/diff, F10 routes");
     0
 }
 
@@ -359,8 +360,102 @@ unsafe extern "thiscall" fn op_logger_hook(op: u32) {
     original(op);
 }
 
+/// F9 (THROWAWAY): find what marks a town as enterable while the player's ship is
+/// arriving but has not docked yet. Press F9 once while the ship is still at sea (takes
+/// a byte-exact snapshot of every town struct and dumps the ship's movement state),
+/// then again the moment the town's tavern becomes reachable: the second press diffs
+/// every town against the snapshot and dumps the ships again. Keep the two presses
+/// close together - a day boundary in between adds price and stock noise to the diff.
+static TOWN_SNAPSHOT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
 unsafe fn on_current_town_hotkey() {
-    find_tavern_captains();
+    if TOWN_SNAPSHOT.lock().unwrap().is_empty() {
+        let towns = snapshot_towns();
+        dump_player_ships("before");
+        info!("town probe: snapshot of {towns} towns taken - press F9 again when the town becomes enterable");
+    } else {
+        diff_towns();
+        dump_player_ships("after");
+        info!("town probe: diff done, snapshot cleared");
+    }
+}
+
+/// Every town struct, byte for byte, concatenated.
+unsafe fn snapshot_towns() -> u8 {
+    let count = GAME_WORLD_PTR.get_towns_count() as u8;
+    let mut buffer = Vec::with_capacity(count as usize * TOWN_SIZE as usize);
+    for town_index in 0..count {
+        let town = GAME_WORLD_PTR.get_town(town_index);
+        buffer.extend_from_slice(std::slice::from_raw_parts(town.get_address() as *const u8, TOWN_SIZE as usize));
+    }
+    *TOWN_SNAPSHOT.lock().unwrap() = buffer;
+    count
+}
+
+/// Log every run of bytes that changed since the snapshot, per town.
+unsafe fn diff_towns() {
+    let snapshot = std::mem::take(&mut *TOWN_SNAPSHOT.lock().unwrap());
+    let size = TOWN_SIZE as usize;
+    for town_index in 0..(snapshot.len() / size) as u8 {
+        let town = GAME_WORLD_PTR.get_town(town_index);
+        let now = std::slice::from_raw_parts(town.get_address() as *const u8, size);
+        let before = &snapshot[town_index as usize * size..][..size];
+        let name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+
+        let mut offset = 0;
+        while offset < size {
+            if now[offset] == before[offset] {
+                offset += 1;
+                continue;
+            }
+            let start = offset;
+            while offset < size && now[offset] != before[offset] {
+                offset += 1;
+            }
+            let old: Vec<String> = before[start..offset].iter().map(|b| format!("{b:02x}")).collect();
+            let new: Vec<String> = now[start..offset].iter().map(|b| format!("{b:02x}")).collect();
+            debug!("town diff {name} +{start:#x}: {} -> {}", old.join(" "), new.join(" "));
+        }
+    }
+}
+
+/// The movement state of every ship the player owns: the fields that could plausibly
+/// carry "arriving at a town" - status (+0x134), the flag bytes around the destination
+/// (+0x3C..+0x3E), the counter at +0x138, and the owning convoy's status and town.
+unsafe fn dump_player_ships(label: &str) {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u8;
+    for index in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(index) else { break };
+        if ship.get_merchant_index() != player_merchant {
+            continue;
+        }
+        let convoy_id = ship.get_convoy_id();
+        let (convoy_status, convoy_town) = match ships.get_convoy(convoy_id) {
+            Some(convoy) => (convoy.get_status() as i32, convoy.get_current_town_index() as i32),
+            None => (-1, -1),
+        };
+        let flags: [u8; 3] = [ship.get(0x3c), ship.get(0x3d), ship.get(0x3e)];
+        let counter: u16 = ship.get(0x138);
+        debug!(
+            "{label}: ship {index} {} status {:#x} dest {:?} last {:?} flags {:02x}/{:02x}/{:02x} +0x138 {counter} convoy {convoy_id} (status {convoy_status:#x} town {convoy_town}) pos {},{}",
+            ship.get_name(),
+            ship.get_status(),
+            ship.get_destination_town_index(),
+            ship.get_last_town_index(),
+            flags[0],
+            flags[1],
+            flags[2],
+            ship.get_x() >> 16,
+            ship.get_y() >> 16
+        );
+    }
+}
+
+/// Kept from the previous investigation (the auto-trader chain work): the op logger
+/// installer and the tavern-captain census.
+#[allow(dead_code)]
+unsafe fn install_op_logger() {
     if !OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
         return;
     }
@@ -376,6 +471,7 @@ unsafe fn on_current_town_hotkey() {
 /// F9 (THROWAWAY): dump the name-registry neighborhood past bank C (pointers at
 /// 0x6DDB48.., counts 0x6DDB70/0x6DDB74) to identify the first/last-name tables the
 /// auto-trader name ids index.
+#[allow(dead_code)]
 unsafe fn dump_name_registry() {
     let first_count = *(0x006ddb70 as *const u16);
     let last_count = *(0x006ddb74 as *const u16);
@@ -406,6 +502,7 @@ unsafe fn dump_name_registry() {
 /// the game's resolver 0x5261d0: walk the town's auto-trader chain, a hireable
 /// captain is an available (state > 0x20) unemployed (merchant 0xff) record. Logs
 /// every chain record to the debug log for offset verification.
+#[allow(dead_code)]
 unsafe fn find_tavern_captains() {
     debug!("today's date serial: {}", *(0x006de4b4 as *const u32));
     dump_name_registry();
