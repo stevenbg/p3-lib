@@ -48,6 +48,14 @@ impl OfficePtr {
         self.set(0x354, &stock)
     }
 
+    /// The office's administrator as an index into the auto-trader array, out of
+    /// range (>= the auto-trader count) when none is employed - the bounds check the
+    /// game itself does, e.g. before applying the administrator's buying discount at
+    /// 0x004FF7C0.
+    pub unsafe fn get_administrator_index(&self) -> u16 {
+        self.get(0x2f2)
+    }
+
     pub unsafe fn get_administrator_trade_lock_bitmap(&self) -> u32 {
         self.get(0x3b4)
     }

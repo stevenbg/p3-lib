@@ -1,6 +1,8 @@
 use crate::data::p3_ptr::P3Pointer;
 
 pub const AUTO_TRADER_SIZE: u32 = 0x10;
+/// Raw skill points per displayed skill level: level 5 is skill byte 215.
+pub const SKILL_PER_LEVEL: u8 = 43;
 
 /// One record of the auto-trader array: the game's captains, administrators and
 /// pirate captains. The array pointer is the first field of the ships container
@@ -82,6 +84,18 @@ impl AutoTraderPtr {
 
     pub fn get_combat_skill(&self) -> u8 {
         unsafe { self.get(0xb) }
+    }
+
+    /// The 0-5 level the game displays for a raw skill byte.
+    pub fn skill_level(skill: u8) -> u8 {
+        skill / SKILL_PER_LEVEL
+    }
+
+    /// The percentage of a transaction price this auto trader pays when buying:
+    /// `2 * (50 - trade_skill / 43)`, so 100% at trade level 0 down to 90% at level
+    /// 5 (captains 0x004D5347, administrators 0x004FF7C0 - both buying only).
+    pub fn get_buy_percent_paid(&self) -> u32 {
+        2 * (50 - Self::skill_level(self.get_trade_skill()) as u32)
     }
 
     /// The daily wage; caps at 110 in-game.

@@ -6,7 +6,7 @@ pub const STATIC_UI_TRADING_OFFICE_WINDOW_PTR_ADDRESS: *const u32 = 0x006E557C a
 
 #[derive(Clone, Debug, Copy)]
 pub struct UITradingOfficeWindowPtr {
-    address: u32,
+    pub address: u32,
 }
 
 impl Default for UITradingOfficeWindowPtr {
@@ -23,7 +23,24 @@ impl UITradingOfficeWindowPtr {
         }
     }
 
-    /// The side menu view: 0 Total, ..., 4 Trading Office (administrator), ...
+    pub fn get_x(&self) -> i32 {
+        unsafe { self.get(0x14) }
+    }
+
+    pub fn get_y(&self) -> i32 {
+        unsafe { self.get(0x18) }
+    }
+
+    pub fn get_width(&self) -> i32 {
+        unsafe { self.get(0x2c) }
+    }
+
+    pub fn get_height(&self) -> i32 {
+        unsafe { self.get(0x30) }
+    }
+
+    /// The side menu view: 0 Total, ..., 4 Trading Office (administrator), ...;
+    /// `-1` is the empty starting page the window opens on.
     pub unsafe fn get_selected_page(&self) -> i32 {
         self.get(0xecc4)
     }
