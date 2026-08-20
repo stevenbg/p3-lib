@@ -23,6 +23,7 @@ members = [
     "mod-shipyard-details",
     "mod-tavern-show-all-sailors",
     "mod-town-hall-details",
+    "mod-trading-office-details",
     "mod-trading-office-prices-synchronization",
     "mod-ui-tweaks",
     "navpointmatrixcli",
