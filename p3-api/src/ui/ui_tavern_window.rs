@@ -48,6 +48,13 @@ impl UITavernWindowPtr {
         unsafe { self.get(0x30) }
     }
 
+    /// The town the tavern belongs to. The window computes the town address from it at
+    /// `0x005CC931` and passes it as the town index to the sailor-availability getter at
+    /// `0x005CD4C1`.
+    pub unsafe fn get_town_index(&self) -> u16 {
+        self.get(0x1bfc)
+    }
+
     /// The tavern's page, `-1` being the empty page the window starts on. Both the
     /// update method (page load at `0x005CD54D`, `this` in edi) and the draw method
     /// (page load at `0x005CE3E0`, `this` in esi) load this field and dispatch through

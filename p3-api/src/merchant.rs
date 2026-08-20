@@ -25,6 +25,13 @@ impl MerchantPtr {
         unsafe { self.get(0x0c) }
     }
 
+    /// The head of this merchant's letter chain in the message pool; the next link is
+    /// every letter's `+0x6`, and the chain ends on an index at or above the pool size.
+    /// The tavern side room starts its search for mission offers here (`0x005A7223`).
+    pub fn get_first_letter_index(&self) -> u16 {
+        unsafe { self.get(0x0a) }
+    }
+
     /// The head of this merchant's ship chain; the next link is every ship's `+0x4`
     /// (`ShipPtr::get_next_ship_index_of_merchant`), and the chain ends on an index at
     /// or above the ship count. Walking it costs this merchant's fleet instead of the

@@ -1,21 +1,24 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::{mem, panic};
+use std::{mem, panic, ptr};
 
 use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hook, FunctionPointerHook};
 use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::{enums::WareId, p3_ptr::P3Pointer},
+    data::{enums::WareId, mission::MISSION_SIZE, missions::MissionsPtr, p3_ptr::P3Pointer},
+    letters::LettersPtr,
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
+    scheduled_tasks::SCHEDULED_TASKS_PTR,
     town::{get_town_name, TOWN_SIZE},
     ui::ui_trading_office_window::UITradingOfficeWindowPtr,
 };
 use p3_rou::{builder, TradeRouteStop};
 use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
+    System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT},
     System::Threading::GetCurrentThreadId,
     UI::{
         Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
@@ -368,7 +371,8 @@ unsafe extern "thiscall" fn op_logger_hook(op: u32) {
 /// close together - a day boundary in between adds price and stock noise to the diff.
 static TOWN_SNAPSHOT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-unsafe fn on_current_town_hotkey() {
+#[allow(dead_code)]
+unsafe fn on_town_snapshot_hotkey() {
     if TOWN_SNAPSHOT.lock().unwrap().is_empty() {
         let towns = snapshot_towns();
         dump_player_ships("before");
@@ -378,6 +382,205 @@ unsafe fn on_current_town_hotkey() {
         dump_player_ships("after");
         info!("town probe: diff done, snapshot cleared");
     }
+}
+
+/// The side-room missions of the save this probe was written against, counted per town
+/// index (Edinburgh 0 .. Novgorod 23): Edinburgh pirate hunter, London trader, Hamburg
+/// trader, Rostock trader + courier, Oslo patrol + smuggler + courier, Malmö smuggler,
+/// Gdansk escort, Reval fugitive + treasure map, Ladoga patrol.
+const MISSIONS_PER_TOWN: [u8; 24] = [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 2, 1, 0];
+
+/// F9 (THROWAWAY): attribute the tavern mission lock to the UI actions that take and
+/// release it. Installs a logger on the operation queue's drain call that reports every
+/// tavern interaction operation (`0x52`) with its decoded fields, and - after the game's
+/// own handler has run - the lock of every mission offer in that operation's town.
+///
+/// The merchant field names the panel's enqueue site: `0xFFFFFFFF` is `0x005A6604`, the
+/// merchant count (an invalid index) is `0x005A7A7D`, and the real player index is
+/// `0x005A7BA0`. Press F9, then in one tavern: open the side room, click another page,
+/// open the side room again, right click to close.
+static TAVERN_OP_LOGGER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe fn on_current_town_hotkey() {
+    if !TAVERN_OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
+        info!("tavern op logger: already installed");
+        return;
+    }
+    match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, tavern_op_logger_hook as usize as u32) {
+        Ok(hook) => {
+            TAVERN_OP_LOGGER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+            info!("tavern op logger: installed - open a side room, switch pages, right click out");
+        }
+        Err(e) => error!("tavern op logger: hook failed: {e:?}"),
+    }
+}
+
+/// The operation switch (`0x00535760`) is called with the operation in ecx; opcode `0x52`
+/// is a tavern interaction, laid out opcode / rand / merchant / town / type.
+unsafe extern "thiscall" fn tavern_op_logger_hook(op: u32) {
+    let opcode = *(op as *const u32);
+    let tavern = opcode == 0x52;
+    if tavern {
+        let merchant = *((op + 0x8) as *const u32);
+        let town = *((op + 0xc) as *const u32);
+        let interaction = *((op + 0x10) as *const u32);
+        let site = match merchant {
+            0xffff_ffff => "0x005A6604",
+            m if m == GAME_WORLD_PTR.get_merchants_count() as u32 => "0x005A7A7D",
+            _ => "0x005A7BA0",
+        };
+        debug!(
+            "tavern op: town {town} ({}) type {interaction} merchant {merchant:#x} from {site}",
+            get_town_name(town as u8).unwrap_or_else(|| "<unknown>".into())
+        );
+        log_offer_locks(town as u8, "before");
+    }
+
+    let hook = TAVERN_OP_LOGGER_HOOK.load(Ordering::SeqCst);
+    let original: extern "thiscall" fn(u32) = mem::transmute((*hook).old_absolute);
+    original(op);
+
+    if tavern {
+        log_offer_locks(*((op + 0xc) as *const u32) as u8, "after");
+    }
+}
+
+/// Every mission offer the player holds in a town, with the lock variable that decides
+/// who may take it.
+unsafe fn log_offer_locks(town_index: u8, label: &str) {
+    let letters = LettersPtr::new();
+    let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u16;
+    let merchant = GAME_WORLD_PTR.get_merchant(player_merchant);
+    let capacity: u16 = SCHEDULED_TASKS_PTR.get(0x0c);
+    let mut index = merchant.get_first_letter_index();
+
+    for _ in 0..letters.get_size() {
+        let Some(found) = letters.find_tavern_mission(index, town_index as u16) else { break };
+        let Some(letter) = letters.get_letter(found) else { break };
+        let descriptor = letter.get_descriptor();
+        let mut lock = "?".to_string();
+        if (0x0001_0000..0x7fff_0000).contains(&descriptor) {
+            let task_index: u16 = *((descriptor + 0x8) as *const u16);
+            let slot: u8 = *((descriptor + 0xc) as *const u8);
+            if task_index < capacity {
+                let array: u32 = SCHEDULED_TASKS_PTR.get_scheduled_task(task_index).get(0x0c);
+                if (0x0001_0000..0x7fff_0000).contains(&array) {
+                    lock = format!("{:#x}", *((array + slot as u32 * 4) as *const u32));
+                }
+            }
+        }
+        debug!(
+            "    {label}: letter {found} {:?} lock {lock}",
+            String::from_utf8_lossy(&letter.get_title_bytes().unwrap_or_default())
+        );
+        index = letter.get_next_index();
+    }
+}
+
+/// F9 (THROWAWAY, kept): scan every committed page for a per-town table matching
+/// `MISSIONS_PER_TOWN` - the fallback for when a link is in neither the town struct nor
+/// the records.
+#[allow(dead_code)]
+unsafe fn scan_memory_for_mission_table() {
+    let towns = GAME_WORLD_PTR.get_towns_count().min(0xff) as usize;
+    if towns != MISSIONS_PER_TOWN.len() {
+        error!("mission probe: this save has {towns} towns, the expectation has {}", MISSIONS_PER_TOWN.len());
+        return;
+    }
+
+    let mut region = MEMORY_BASIC_INFORMATION::default();
+    let mut address: usize = 0x10000;
+    let mut scanned = 0usize;
+    let mut hits = 0usize;
+    while address < 0x7fff_0000 {
+        if VirtualQuery(Some(address as _), &mut region, mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
+            break;
+        }
+        let base = region.BaseAddress as usize;
+        let size = region.RegionSize;
+        address = base + size.max(0x1000);
+
+        // Committed, readable, not a guard page - anything else faults on read.
+        const READABLE: u32 = 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
+        if region.State != MEM_COMMIT || region.Protect.0 & READABLE == 0 || region.Protect.0 & 0x100 != 0 {
+            continue;
+        }
+        scanned += size;
+        hits += scan_region_for_mission_table(base, size, towns);
+    }
+
+    info!("mission probe: scanned {} MiB, {hits} hits", scanned / (1024 * 1024));
+}
+
+/// The shapes a per-town mission table could have, tested at every offset of a region.
+/// Each has a cheap first test (a town without a mission) before the full comparison.
+unsafe fn scan_region_for_mission_table(base: usize, size: usize, towns: usize) -> usize {
+    let has_mission = |town: usize| MISSIONS_PER_TOWN[town] > 0;
+    let mut hits = 0;
+    let stride_end = size.saturating_sub(4 * towns);
+    for offset in 0..stride_end {
+        let at = base + offset;
+
+        // One byte per town: the mission count, or any nonzero marker where a mission is.
+        let first: u8 = ptr::read_unaligned(at as *const u8);
+        if first != 0 && ptr::read_unaligned((at + 1) as *const u8) == 0 {
+            let bytes: Vec<u8> = (0..towns).map(|t| ptr::read_unaligned((at + t) as *const u8)).collect();
+            if (0..towns).all(|t| bytes[t] == MISSIONS_PER_TOWN[t]) {
+                debug!("mission COUNTS (u8) at {at:#010x}{}: {bytes:?}", describe_address(at));
+                hits += 1;
+            } else if (0..towns).all(|t| (bytes[t] != 0) == has_mission(t)) {
+                debug!("u8 set where a mission is at {at:#010x}{}: {bytes:?}", describe_address(at));
+                hits += 1;
+            } else if (0..towns).all(|t| (bytes[t] != 0xff) == has_mission(t)) {
+                debug!("u8 0xff-empty at {at:#010x}{}: {bytes:?}", describe_address(at));
+                hits += 1;
+            }
+        }
+
+        // One id per town, the usual 0xFFFF or 0 for "no mission here".
+        for empty in [0u16, 0xffff] {
+            if ptr::read_unaligned((at + 2) as *const u16) == empty && ptr::read_unaligned(at as *const u16) != empty {
+                let words: Vec<u16> = (0..towns).map(|t| ptr::read_unaligned((at + 2 * t) as *const u16)).collect();
+                if (0..towns).all(|t| (words[t] != empty) == has_mission(t)) {
+                    debug!("u16 ids ({empty:#06x} = none) at {at:#010x}{}: {words:?}", describe_address(at));
+                    hits += 1;
+                }
+            }
+        }
+
+        // Same, as dwords - an id, a pointer or a count per town.
+        for empty in [0u32, 0xffff_ffff] {
+            if ptr::read_unaligned((at + 4) as *const u32) == empty && ptr::read_unaligned(at as *const u32) != empty {
+                let dwords: Vec<u32> = (0..towns).map(|t| ptr::read_unaligned((at + 4 * t) as *const u32)).collect();
+                if (0..towns).all(|t| (dwords[t] != empty) == has_mission(t)) {
+                    debug!("u32 ids ({empty:#010x} = none) at {at:#010x}{}: {dwords:x?}", describe_address(at));
+                    hits += 1;
+                }
+            }
+        }
+    }
+    hits
+}
+
+/// Where an address sits, so a hit can be placed: inside a town struct (with the town and
+/// the field offset), in the executable's own data, or in unidentified heap.
+unsafe fn describe_address(at: usize) -> String {
+    let towns_base: u32 = GAME_WORLD_PTR.get(0x68);
+    let towns_end = towns_base as usize + GAME_WORLD_PTR.get_towns_count() as usize * TOWN_SIZE as usize;
+    if (towns_base as usize..towns_end).contains(&at) {
+        let delta = at - towns_base as usize;
+        return format!(" (town {} +{:#x})", delta / TOWN_SIZE as usize, delta % TOWN_SIZE as usize);
+    }
+    if (0x0040_0000..0x0080_0000).contains(&at) {
+        return " (executable data)".into();
+    }
+    let pool_base: u32 = MissionsPtr::new().get(0x0);
+    let pool_end = pool_base as usize + 256 * MISSION_SIZE as usize;
+    if (pool_base as usize..pool_end).contains(&at) {
+        let delta = at - pool_base as usize;
+        return format!(" (pool record {} +{:#x})", delta / MISSION_SIZE as usize, delta % MISSION_SIZE as usize);
+    }
+    String::new()
 }
 
 /// Every town struct, byte for byte, concatenated.

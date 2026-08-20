@@ -115,6 +115,12 @@ impl GameWorldPtr {
         OfficePtr::new(base_address + office_index as u32 * OFFICE_SIZE)
     }
 
+    /// How many merchants the game holds (`0x006DE4AA`); merchant indices at or above
+    /// it are "nobody" - the way the tavern side room reads an unclaimed mission slot.
+    pub fn get_merchants_count(&self) -> u16 {
+        unsafe { self.get(0x0a) }
+    }
+
     pub unsafe fn get_merchant(&self, index: u16) -> MerchantPtr {
         let base_address: u32 = self.get(0x78);
         MerchantPtr::new(base_address + index as u32 * MERCHANT_SIZE)

@@ -1,16 +1,17 @@
 use std::ffi::CStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use p3_api::{
     auto_trader::AutoTraderPtr,
     data::{class48::Class48Ptr, ddraw_set_constant_color, ddraw_set_text_mode, screen_rectangle::Rect, ui_render_text_at},
     game_world::GAME_WORLD_PTR,
+    letters::LettersPtr,
     operations::OPERATIONS_PTR,
     ships::ShipsPtr,
     town::get_town_name_bytes,
     ui::{font, rect_clipper_stuff, ui_tavern_window::UITavernWindowPtr},
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_F1, VK_F2, VK_MENU};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_F1, VK_F2, VK_F3, VK_MENU};
 
 pub static CAPTAINS: &CStr = c"Captains in town";
 pub static PIRATES: &CStr = c"Pirates in town";
@@ -27,8 +28,12 @@ pub static COMBAT: &CStr = c"Comb";
 pub static WAGE: &CStr = c"Wage";
 pub static SHARE: &CStr = c"Share";
 pub static AVAILABLE: &CStr = c"Available";
+pub static MISSIONS: &CStr = c"Missions in town";
+pub static KNOWN_MISSIONS: &CStr = c"Known missions in town";
+pub static OFFER: &CStr = c"Offer";
 pub static SAILORS_HINT: &CStr = c"F2: sailors";
 pub static CAPTAINS_HINT: &CStr = c"F1: captains";
+pub static MISSIONS_HINT: &CStr = c"F3: missions";
 
 /// Text mode 2 draws right-aligned: every column x below is the right edge of that
 /// column, so a long town name reaches further left than a short one.
@@ -44,10 +49,15 @@ const BLACK: u32 = 0xff000000;
 /// What the page shows, switched by a key press rather than held, and kept across
 /// openings of the window: F1 the captains and pirates, F2 the sailor pools, with alt
 /// selecting every town instead of only the enterable ones.
-static SHOW_SAILORS: AtomicBool = AtomicBool::new(false);
+static VIEW: AtomicU8 = AtomicU8::new(VIEW_CAPTAINS);
 static SHOW_ALL_TOWNS: AtomicBool = AtomicBool::new(false);
 static F1_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static F2_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static F3_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+
+const VIEW_CAPTAINS: u8 = 0;
+const VIEW_SAILORS: u8 = 1;
+const VIEW_MISSIONS: u8 = 2;
 
 /// Read the page's keys, called once per frame from the update phase and only while the
 /// page is actually on screen. That is the whole scoping: the F1 that mod-auto-supply
@@ -55,13 +65,15 @@ static F2_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 /// keyboard hook is involved. Acts on the down edge, so a key switches the view rather
 /// than needing to be held.
 pub(crate) fn poll_keys() {
-    if key_pressed(VK_F1, &F1_WAS_DOWN) {
-        SHOW_SAILORS.store(false, Ordering::Relaxed);
-        SHOW_ALL_TOWNS.store(key_down(VK_MENU), Ordering::Relaxed);
-    }
-    if key_pressed(VK_F2, &F2_WAS_DOWN) {
-        SHOW_SAILORS.store(true, Ordering::Relaxed);
-        SHOW_ALL_TOWNS.store(key_down(VK_MENU), Ordering::Relaxed);
+    for (key, was_down, view) in [
+        (VK_F1, &F1_WAS_DOWN, VIEW_CAPTAINS),
+        (VK_F2, &F2_WAS_DOWN, VIEW_SAILORS),
+        (VK_F3, &F3_WAS_DOWN, VIEW_MISSIONS),
+    ] {
+        if key_pressed(key, was_down) {
+            VIEW.store(view, Ordering::Relaxed);
+            SHOW_ALL_TOWNS.store(key_down(VK_MENU), Ordering::Relaxed);
+        }
     }
 }
 
@@ -109,25 +121,88 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     let last_y = window.get_y() + window.get_height() - ROW_HEIGHT;
 
     let all_towns = SHOW_ALL_TOWNS.load(Ordering::Relaxed);
-    let sailors = SHOW_SAILORS.load(Ordering::Relaxed);
+    let view = VIEW.load(Ordering::Relaxed);
     let towns = enterable_towns(all_towns);
 
-    if sailors {
-        let heading = if all_towns { SAILORS } else { KNOWN_SAILORS };
-        y = draw_sailors(x, y, last_y, heading, &towns);
-    } else {
-        let (captains, pirates) = hireable_auto_traders(&towns);
-        let (captains_heading, pirates_heading) = if all_towns { (CAPTAINS, PIRATES) } else { (KNOWN_CAPTAINS, KNOWN_PIRATES) };
-        y = draw_section(x, y, last_y, captains_heading, WAGE, &captains, false);
-        y += ROW_HEIGHT;
-        y = draw_section(x, y, last_y, pirates_heading, SHARE, &pirates, true);
+    match view {
+        VIEW_SAILORS => {
+            let heading = if all_towns { SAILORS } else { KNOWN_SAILORS };
+            y = draw_sailors(x, y, last_y, heading, &towns);
+        }
+        VIEW_MISSIONS => {
+            let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
+            y = draw_missions(x, y, last_y, heading, &towns);
+        }
+        _ => {
+            let (captains, pirates) = hireable_auto_traders(&towns);
+            let (captains_heading, pirates_heading) = if all_towns { (CAPTAINS, PIRATES) } else { (KNOWN_CAPTAINS, KNOWN_PIRATES) };
+            y = draw_section(x, y, last_y, captains_heading, WAGE, &captains, false);
+            y += ROW_HEIGHT;
+            y = draw_section(x, y, last_y, pirates_heading, SHARE, &pirates, true);
+        }
     }
 
     if y <= last_y {
         font::ddraw_set_font(font::get_normal_font());
-        let other_view = if sailors { CAPTAINS_HINT } else { SAILORS_HINT };
-        draw_text(x + VALUE_X, y + ROW_HEIGHT, other_view.to_bytes());
+        let hints: [&CStr; 2] = match view {
+            VIEW_SAILORS => [CAPTAINS_HINT, MISSIONS_HINT],
+            VIEW_MISSIONS => [CAPTAINS_HINT, SAILORS_HINT],
+            _ => [SAILORS_HINT, MISSIONS_HINT],
+        };
+        draw_text(x + TRADE_X, y + ROW_HEIGHT, hints[0].to_bytes());
+        draw_text(x + VALUE_X, y + ROW_HEIGHT, hints[1].to_bytes());
     }
+}
+
+/// One row per mission a tavern's side room offers, by town.
+///
+/// An offer is a letter in the player's own mailbox: the side room walks his letter
+/// chain with the game's predicate at `0x004D7900` - type `0x71`, the town byte matching
+/// the tavern, and a descriptor date still in the future - and titles its page with the
+/// start of the letter's text, which is where "Patrol" or "Escort" comes from.
+unsafe fn draw_missions(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8]) -> i32 {
+    let mut y = y;
+    font::ddraw_set_font(font::get_header_font());
+    draw_text(x + TOWN_X, y, heading.to_bytes());
+    draw_text(x + TRADE_X, y, OFFER.to_bytes());
+    y += ROW_HEIGHT;
+
+    font::ddraw_set_font(font::get_normal_font());
+    let letters = LettersPtr::new();
+    let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u16;
+    let merchant = GAME_WORLD_PTR.get_merchant(player_merchant);
+    let mut found = false;
+    for town_index in towns {
+        let mut index = merchant.get_first_letter_index();
+        // Each hit continues the walk from that letter's own next link, the way the side
+        // room does; the pool size caps it against a cycle.
+        for _ in 0..letters.get_size() {
+            let Some(found_index) = letters.find_tavern_mission(index, *town_index as u16) else { break };
+            let Some(letter) = letters.get_letter(found_index) else { break };
+            // Skip what the side room skips: an offer a rival merchant has taken.
+            if !letter.tavern_mission_is_open(player_merchant) {
+                index = letter.get_next_index();
+                continue;
+            }
+            if y > last_y {
+                return y;
+            }
+            found = true;
+            if let Some(town) = get_town_name_bytes(*town_index) {
+                draw_text(x + TOWN_X, y, &town);
+            }
+            if let Some(title) = letter.get_title_bytes() {
+                draw_text(x + TRADE_X, y, &title);
+            }
+            y += ROW_HEIGHT;
+            index = letter.get_next_index();
+        }
+    }
+    if !found {
+        draw_text(x + TOWN_X, y, NONE.to_bytes());
+        y += ROW_HEIGHT;
+    }
+    y
 }
 
 fn key_down(key: VIRTUAL_KEY) -> bool {
