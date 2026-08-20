@@ -1112,7 +1112,9 @@ unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, Stri
 
     let page = window.get_selected_page();
     if page != ADMINISTRATOR_PAGE {
-        notify(&format!("Office keys: switch to the Trading Office view ({town} is on page {page})"));
+        // No popup: F1 doubles as mod-trading-office-details' "all towns" key, so
+        // the office keys stay quiet on the other pages.
+        debug!("office keys: {town} is on page {page}, not the Trading Office view");
         return None;
     }
 
