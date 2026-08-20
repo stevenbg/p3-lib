@@ -2,6 +2,7 @@
 
 extern crate num_derive;
 
+pub mod auto_trader;
 pub mod class35;
 pub mod data;
 pub mod facility;

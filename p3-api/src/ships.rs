@@ -1,6 +1,9 @@
-use crate::data::{
-    convoy::{ConvoyPtr, CONVOY_SIZE},
-    p3_ptr::P3Pointer,
+use crate::{
+    auto_trader::{AutoTraderPtr, AUTO_TRADER_SIZE},
+    data::{
+        convoy::{ConvoyPtr, CONVOY_SIZE},
+        p3_ptr::P3Pointer,
+    },
 };
 
 use super::ship::{ShipPtr, SHIP_SIZE};
@@ -49,6 +52,21 @@ impl ShipsPtr {
         } else {
             None
         }
+    }
+
+    /// The auto-trader array (captains and administrators): pointer at +0x0, one
+    /// record per hired or hireable auto trader.
+    pub fn get_auto_trader(&self, index: u16) -> Option<AutoTraderPtr> {
+        if index < self.get_auto_traders_size() {
+            let base_address: u32 = unsafe { self.get(0x00) };
+            Some(AutoTraderPtr::new(base_address + index as u32 * AUTO_TRADER_SIZE))
+        } else {
+            None
+        }
+    }
+
+    pub fn get_auto_traders_size(&self) -> u16 {
+        unsafe { self.get(0xf2) }
     }
 
     pub fn get_ships_size(&self) -> u16 {

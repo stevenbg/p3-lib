@@ -62,6 +62,19 @@ impl TownPtr {
         unsafe { self.get(0x670) }
     }
 
+    /// The head of this town's auto-trader chain (records linked via their
+    /// `get_next_index`, ended by an out-of-range index; `0xFFFF` = empty, sentinel
+    /// write 0x525f08). The chain mixes two record kinds: the town's tavern captain
+    /// (when one is here) and the town's pirate captain (the tavern pirate a ship
+    /// can be handed to). A hireable tavern captain is a chain record with
+    /// `is_captain()` and merchant `0xFF` - the game's captain resolver
+    /// 0x5269a0(town, merchant) walks the chain applying exactly that, preferring a
+    /// captain the asking merchant employs; the sibling resolver 0x5261d0 does the
+    /// same for the other record kind.
+    pub fn get_auto_trader_chain_head(&self) -> u16 {
+        unsafe { self.get(0x82e) }
+    }
+
     pub fn get_councillor_bribes(&self) -> [u8; 4] {
         unsafe { self.get(0x6dc) }
     }

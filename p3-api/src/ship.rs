@@ -19,6 +19,12 @@ impl ShipPtr {
         self.get(0x04)
     }
 
+    /// The owning merchant (ships chain per owner via +0x4,
+    /// `get_next_ship_index_of_merchant`).
+    pub fn get_merchant_index(&self) -> u8 {
+        unsafe { self.get(0x0) }
+    }
+
     pub fn get_next_ship_in_convoy(&self) -> u16 {
         unsafe { self.get(0x06) }
     }
@@ -74,6 +80,13 @@ impl ShipPtr {
 
     pub fn get_payload_buy_sum(&self) -> i32 {
         unsafe { self.get(0x114) }
+    }
+
+    /// The ship's captain as an auto-trader index, out-of-range = none. The AI hire
+    /// path (0x51a1b9) fills it from the town's tavern captain (resolver 0x5269a0)
+    /// and unlinks the record from the town's chain.
+    pub fn get_captain_index(&self) -> u16 {
+        unsafe { self.get(0x42) }
     }
 
     pub fn get_status(&self) -> u16 {
