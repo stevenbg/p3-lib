@@ -530,8 +530,8 @@ unsafe extern "thiscall" fn op_logger_hook(op: u32) {
 }
 
 unsafe fn on_current_town_hotkey() {
+    find_tavern_captains();
     if !OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
-        ods("op logger: already installed");
         return;
     }
     match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, op_logger_hook as usize as u32) {
@@ -540,6 +540,112 @@ unsafe fn on_current_town_hotkey() {
             ods("op logger: installed - perform the action to identify");
         }
         Err(e) => ods(&format!("op logger: hook failed: {e:?}")),
+    }
+}
+
+/// F9 (THROWAWAY): dump the name-registry neighborhood past bank C (pointers at
+/// 0x6DDB48.., counts 0x6DDB70/0x6DDB74) to identify the first/last-name tables the
+/// auto-trader name ids index.
+unsafe fn dump_name_registry() {
+    let first_count = *(0x006ddb70 as *const u16);
+    let last_count = *(0x006ddb74 as *const u16);
+    ods(&format!("name registry counts: first {first_count}, last {last_count}"));
+    for i in 0..10u32 {
+        let slot = 0x006ddb48 + i * 4;
+        let ptr = *(slot as *const u32);
+        if !(0x0001_0000..0x7fff_0000).contains(&ptr) {
+            ods(&format!("name table slot {slot:#010x}: {ptr:#010x} (not a pointer)"));
+            continue;
+        }
+        let mut preview = String::new();
+        for off in 0..96u32 {
+            let b = *((ptr + off) as *const u8);
+            preview.push(if b == 0 {
+                '|'
+            } else if (0x20..0x7f).contains(&b) {
+                b as char
+            } else {
+                '.'
+            });
+        }
+        ods(&format!("name table slot {slot:#010x} -> {ptr:#010x}: {preview}"));
+    }
+}
+
+/// F9 (THROWAWAY): list the towns whose tavern has a hireable captain, replicating
+/// the game's resolver 0x5261d0: walk the town's auto-trader chain, a hireable
+/// captain is an available (state > 0x20) unemployed (merchant 0xff) record. Logs
+/// every chain record to the debug log for offset verification.
+unsafe fn find_tavern_captains() {
+    ods(&format!("today's date serial: {}", *(0x006de4b4 as *const u32)));
+    dump_name_registry();
+    let ships = p3_api::ships::ShipsPtr::new();
+    let count = ships.get_auto_traders_size();
+    let mut chained: Vec<(u16, String)> = Vec::new();
+    let mut found = 0;
+    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
+        let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
+        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
+        // The chain ends on an out-of-range index; cap the walk against cycles.
+        for _ in 0..count {
+            let Some(trader) = ships.get_auto_trader(index) else { break };
+            chained.push((index, town.clone()));
+            if trader.is_captain() && trader.get_merchant_index() == 0xff {
+                found += 1;
+                notify(&format!(
+                    "Captain for hire in {town}: nav {} trade {} combat {} (43/level), wage {}",
+                    trader.get_navigation_skill(),
+                    trader.get_trade_skill(),
+                    trader.get_combat_skill(),
+                    trader.get_daily_wage()
+                ));
+            }
+            index = trader.get_next_index();
+        }
+    }
+    // The whole array: chained records tagged with their town, the rest "unchained" -
+    // employed captains, parked administrators, free slots.
+    for index in 0..count {
+        let Some(trader) = ships.get_auto_trader(index) else { break };
+        let location = chained
+            .iter()
+            .find(|(i, _)| *i == index)
+            .map(|(_, town)| town.clone())
+            .unwrap_or_else(|| "unchained".into());
+        let share = if trader.is_pirate() {
+            format!(" share {}%", trader.get_pirate_loot_share_percent())
+        } else {
+            String::new()
+        };
+        ods(&format!(
+            "auto trader {index} ({location}): state {:#04x}{share} names {}/{} field4 {} nav {} trade {} combat {} wage {} merchant {:#04x} next {:#x}",
+            trader.get_state_byte(),
+            trader.get_first_name_id(),
+            trader.get_last_name_id(),
+            trader.get_timestamp(),
+            trader.get_navigation_skill(),
+            trader.get_trade_skill(),
+            trader.get_combat_skill(),
+            trader.get_daily_wage(),
+            trader.get_merchant_index(),
+            trader.get_next_index()
+        ));
+    }
+    if found == 0 {
+        notify("No captain is waiting in any tavern");
+    }
+    // Every ship with a captain: correlates the unchained auto-trader records with
+    // the ships employing them (ship+0x42, incl. town-owned and pirate ships).
+    for ship_index in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(ship_index) else { continue };
+        let captain = ship.get_captain_index();
+        if captain < count {
+            ods(&format!(
+                "ship {ship_index} {:?} (owner {:#04x}): captain {captain}",
+                ship.get_name(),
+                ship.get_merchant_index()
+            ));
+        }
     }
 }
 
