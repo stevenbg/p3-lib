@@ -21,6 +21,7 @@ members = [
     "mod-new-settlement-more-production",
     "mod-scrollmap-render-all-ships",
     "mod-shipyard-details",
+    "mod-tavern-details",
     "mod-tavern-show-all-sailors",
     "mod-town-hall-details",
     "mod-trading-office-details",

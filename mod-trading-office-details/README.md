@@ -9,20 +9,12 @@ modloader).
 
 ## Page contents
 
-- the office administrator's **buying discount**: his trade skill makes him pay
-  `2 * (50 - level)` percent of every purchase price, i.e. 2% off per skill level up
-  to 10% at level 5 - a real effect the game never shows anywhere
-- **captains for hire**, by town: their navigation, trade and combat levels and
-  their daily wage. A captain is listed while his record is chained to a town (that
-  is where he sits) and no merchant employs him
-- **pirate captains**, by town: their levels and the share of the loot they demand
-  (`25 + 5 * ceil(field_8 / 32)` percent). Every town keeps one pirate record
-  permanently, so this lists the pirate belonging to each town rather than the ones
-  currently sitting in a tavern; pirates out sailing for a merchant drop off the
-  list because their record leaves the town's chain
+The office administrator's **buying discount**: his trade skill makes him pay
+`2 * (50 - level)` percent of every purchase price, i.e. 2% off per skill level up to
+10% at level 5 - a real effect the game never shows anywhere.
 
-Both lists cover the towns the player has a trading office in. Hold **F1** to list
-every town instead.
+The captains and pirate captains for hire used to be listed here too; they live on the
+tavern window's starting page now, see `mod-tavern-details`.
 
 ## How it works
 
@@ -51,4 +43,4 @@ background art torn and the text flickering.
 
 The page draws no window title: the game's own page `-1` has none, and
 `render_window_title` (`0x00420C70`) would spend the top of the window on the title
-banner graphic, which the tables need for rows.
+banner graphic, which leaves less room for text.
