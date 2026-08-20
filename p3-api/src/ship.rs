@@ -93,6 +93,21 @@ impl ShipPtr {
         unsafe { self.get(0x134) }
     }
 
+    /// Is the ship at the town named by `get_last_town_index`, rather than out at sea?
+    ///
+    /// The game classifies its own status field with exactly two tests, next to each
+    /// other in the per-merchant ship census at `0x004F0B02`/`0x004F0B11`/`0x004F0B26`:
+    /// `status == 0xF` is a merchant vessel at sea (the value mod-scrollmap-render-all-
+    /// ships draws, along with `0x12` for an AI pirate), and `status <= 3` is the
+    /// in-port family. `0` is lying in the port; `3` is set while entering it
+    /// (`0x004E13FA`, which also clears the convoy fields `+0x6`/`+0x8` and ORs `0x60`
+    /// into the flags at `+0x3C`), and `+0x39` already names the town then - verified
+    /// in-game: a ship sailing to a town flips from `0xF` to `3` at the moment the town
+    /// becomes enterable and its tavern reachable, before it has docked.
+    pub fn is_in_port(&self) -> bool {
+        self.get_status() <= 3
+    }
+
     pub fn get_name(&self) -> String {
         let buf: [u8; 32] = unsafe { self.get(0x160) };
         latin1_to_string(&buf)
