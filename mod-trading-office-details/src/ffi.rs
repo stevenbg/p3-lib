@@ -31,7 +31,9 @@ static WINDOW_OPEN_HOOK: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::pt
 #[no_mangle]
 pub unsafe extern "C" fn start() -> u32 {
     let _ = log::set_logger(&win_dbg_logger::DEBUGGER_LOGGER);
-    log::set_max_level(log::LevelFilter::Trace);
+    // Not Trace: the page calls p3-api lookups every frame, and their trace! lines
+    // would flood the debug log.
+    log::set_max_level(log::LevelFilter::Info);
 
     match hook_function_pointer(WINDOW_OPEN_POINTER_OFFSET, window_open_hook as usize as u32) {
         Ok(hook) => WINDOW_OPEN_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
