@@ -8,7 +8,7 @@ Install: put `tavern_details.dll` into the `mods` folder (requires the modloader
 
 ## Page contents
 
-Two views, **F1** and **F2**.
+Three views, **F1**, **F2** and **F3**.
 
 F1 - who can be hired, by town:
 
@@ -26,7 +26,17 @@ F2 - **sailors available for hire**, by town: the number the tavern itself works
 that the tavern's own page caps what it offers at 50 unless
 `mod-tavern-show-all-sailors` is installed; this table shows the uncapped number.
 
-Both views cover the towns the player may legally enter, which is where he can hire:
+F3 - the **missions** a side room offers, by town: the offer's title, the town a
+transport order delivers to, the cargo it needs a ship for in loads, and what it pays.
+Each of those comes out of the mission script's own variables (see `p3-api`'s
+`letters` module for which variable and how it was identified); a mission that states no
+sum or carries no cargo leaves those cells empty, and a patrol's figure is the bonus per
+foiled ambush rather than a fee.
+
+A smuggler's order names its destination only in the message that follows acceptance, so
+the filtered view leaves that cell blank and only the unrestricted one fills it in.
+
+All three views cover the towns the player may legally enter, which is where he can hire:
 the ones he has a trading office in, plus the ones one of his ships is in - including a
 ship still entering the harbour, which is when the town becomes enterable and its tavern
 reachable (ship status `<= 3`, town from the ship's `+0x39`).
@@ -36,9 +46,10 @@ ship `+0x4` for the next link), the way the game's per-merchant ship census at
 `0x004F0AB1` does, so a world with a thousand ships in it costs no more than the
 player's own fleet.
 
-Each view has a filtered and an unrestricted variant: **F1**/**F2** list only the
-enterable towns, **Alt+F1**/**Alt+F2** every town in the game. The filtered headings say
-"Known captains/pirates/sailors in town", since what they list is what the player can
+Each view has a filtered and an unrestricted variant: **F1**/**F2**/**F3** list only the
+enterable towns and only what the player could know, **Alt+F1**/**Alt+F2**/**Alt+F3**
+every town in the game and everything readable. The filtered headings say "Known
+captains/pirates/sailors/missions in town", since what they list is what the player can
 see rather than what exists; the unrestricted ones drop the word. The keys act on their
 down edge, so nothing has to be held, and the chosen view survives closing and reopening
 the tavern. The page's bottom line names the key for the other view; the alt variants

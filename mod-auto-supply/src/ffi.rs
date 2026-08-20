@@ -390,90 +390,79 @@ unsafe fn on_town_snapshot_hotkey() {
 /// Gdansk escort, Reval fugitive + treasure map, Ladoga patrol.
 const MISSIONS_PER_TOWN: [u8; 24] = [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 2, 1, 0];
 
-/// F9 (THROWAWAY): attribute the tavern mission lock to the UI actions that take and
-/// release it. Installs a logger on the operation queue's drain call that reports every
-/// tavern interaction operation (`0x52`) with its decoded fields, and - after the game's
-/// own handler has run - the lock of every mission offer in that operation's town.
+/// F9 (THROWAWAY): dump a mission's script so its variables can be named from the code
+/// that uses them, instead of from the letter text.
 ///
-/// The merchant field names the panel's enqueue site: `0xFFFFFFFF` is `0x005A6604`, the
-/// merchant count (an invalid index) is `0x005A7A7D`, and the real player index is
-/// `0x005A7BA0`. Press F9, then in one tavern: open the side room, click another page,
-/// open the side room again, right click to close.
-static TAVERN_OP_LOGGER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
-
+/// The interpreter (`0x004ECF64`, run by scheduled task opcode `0x1B`) takes the script
+/// blob from `task+0x8`, the variable array from `task+0xC`, the variable count from
+/// `task+0x12` and the program counter from `task+0x14`. A command's bytes live at
+/// `blob + [blob + 4 + pc*4]`, its first byte is the command, and the command dispatches
+/// through the index table at `0x004F3054` into the handler table at `0x004F2E34`.
+///
+/// One script per distinct script id, so the log stays readable.
 unsafe fn on_current_town_hotkey() {
-    if !TAVERN_OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
-        info!("tavern op logger: already installed");
-        return;
-    }
-    match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, tavern_op_logger_hook as usize as u32) {
-        Ok(hook) => {
-            TAVERN_OP_LOGGER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-            info!("tavern op logger: installed - open a side room, switch pages, right click out");
-        }
-        Err(e) => error!("tavern op logger: hook failed: {e:?}"),
-    }
-}
-
-/// The operation switch (`0x00535760`) is called with the operation in ecx; opcode `0x52`
-/// is a tavern interaction, laid out opcode / rand / merchant / town / type.
-unsafe extern "thiscall" fn tavern_op_logger_hook(op: u32) {
-    let opcode = *(op as *const u32);
-    let tavern = opcode == 0x52;
-    if tavern {
-        let merchant = *((op + 0x8) as *const u32);
-        let town = *((op + 0xc) as *const u32);
-        let interaction = *((op + 0x10) as *const u32);
-        let site = match merchant {
-            0xffff_ffff => "0x005A6604",
-            m if m == GAME_WORLD_PTR.get_merchants_count() as u32 => "0x005A7A7D",
-            _ => "0x005A7BA0",
-        };
-        debug!(
-            "tavern op: town {town} ({}) type {interaction} merchant {merchant:#x} from {site}",
-            get_town_name(town as u8).unwrap_or_else(|| "<unknown>".into())
-        );
-        log_offer_locks(town as u8, "before");
-    }
-
-    let hook = TAVERN_OP_LOGGER_HOOK.load(Ordering::SeqCst);
-    let original: extern "thiscall" fn(u32) = mem::transmute((*hook).old_absolute);
-    original(op);
-
-    if tavern {
-        log_offer_locks(*((op + 0xc) as *const u32) as u8, "after");
-    }
-}
-
-/// Every mission offer the player holds in a town, with the lock variable that decides
-/// who may take it.
-unsafe fn log_offer_locks(town_index: u8, label: &str) {
     let letters = LettersPtr::new();
     let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u16;
     let merchant = GAME_WORLD_PTR.get_merchant(player_merchant);
     let capacity: u16 = SCHEDULED_TASKS_PTR.get(0x0c);
-    let mut index = merchant.get_first_letter_index();
+    let mut seen: Vec<u16> = Vec::new();
 
-    for _ in 0..letters.get_size() {
-        let Some(found) = letters.find_tavern_mission(index, town_index as u16) else { break };
-        let Some(letter) = letters.get_letter(found) else { break };
-        let descriptor = letter.get_descriptor();
-        let mut lock = "?".to_string();
-        if (0x0001_0000..0x7fff_0000).contains(&descriptor) {
+    for town_index in 0..GAME_WORLD_PTR.get_towns_count().min(0xff) as u8 {
+        let mut index = merchant.get_first_letter_index();
+        for _ in 0..letters.get_size() {
+            let Some(found) = letters.find_tavern_mission(index, town_index as u16) else { break };
+            let Some(letter) = letters.get_letter(found) else { break };
+            index = letter.get_next_index();
+
+            let descriptor = letter.get_descriptor();
+            if !(0x0001_0000..0x7fff_0000).contains(&descriptor) {
+                continue;
+            }
             let task_index: u16 = *((descriptor + 0x8) as *const u16);
-            let slot: u8 = *((descriptor + 0xc) as *const u8);
-            if task_index < capacity {
-                let array: u32 = SCHEDULED_TASKS_PTR.get_scheduled_task(task_index).get(0x0c);
-                if (0x0001_0000..0x7fff_0000).contains(&array) {
-                    lock = format!("{:#x}", *((array + slot as u32 * 4) as *const u32));
+            if task_index >= capacity {
+                continue;
+            }
+            let task = SCHEDULED_TASKS_PTR.get_scheduled_task(task_index);
+            let script_id: u16 = task.get(0x10);
+            if seen.contains(&script_id) {
+                continue;
+            }
+            seen.push(script_id);
+
+            let blob: u32 = task.get(0x08);
+            let variables: u16 = task.get(0x12);
+            let pc: u16 = task.get(0x14);
+            if !(0x0001_0000..0x7fff_0000).contains(&blob) {
+                continue;
+            }
+            let title = String::from_utf8_lossy(&letter.get_title_bytes().unwrap_or_default()).to_string();
+            let header: Vec<String> = (0..0x10).map(|i| format!("{:02x}", *((blob + i) as *const u8))).collect();
+            debug!(
+                "{title:?}: script {script_id}, {variables} variables, pc {pc}, blob {blob:#010x} header [{}]",
+                header.join(" ")
+            );
+
+            // Walk the offset table until an entry stops looking like an offset into the
+            // blob, dumping each command with the handler it dispatches to.
+            for command_index in 0..64u32 {
+                let offset: u32 = *((blob + 4 + command_index * 4) as *const u32);
+                if offset < 4 || offset > 0x8000 {
+                    debug!("    {command_index} commands");
+                    break;
                 }
+                let command: u8 = *((blob + offset) as *const u8);
+                let operands: Vec<String> = (1..10u32).map(|i| format!("{:02x}", *((blob + offset + i) as *const u8))).collect();
+                let handler = if command >= 1 && command <= 0xfb {
+                    let slot: u8 = *((0x004f3054 + command as u32 - 1) as *const u8);
+                    let address: u32 = *((0x004f2e34 + slot as u32 * 4) as *const u32);
+                    format!("slot {slot:#04x} -> {address:#010x}")
+                } else {
+                    "out of range".into()
+                };
+                let marker = if command_index == pc as u32 { "  <- pc" } else { "" };
+                debug!("    [{command_index}] +{offset:#x} cmd {command:#04x} ({handler}) operands [{}]{marker}", operands.join(" "));
             }
         }
-        debug!(
-            "    {label}: letter {found} {:?} lock {lock}",
-            String::from_utf8_lossy(&letter.get_title_bytes().unwrap_or_default())
-        );
-        index = letter.get_next_index();
     }
 }
 

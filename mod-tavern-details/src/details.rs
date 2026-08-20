@@ -31,6 +31,9 @@ pub static AVAILABLE: &CStr = c"Available";
 pub static MISSIONS: &CStr = c"Missions in town";
 pub static KNOWN_MISSIONS: &CStr = c"Known missions in town";
 pub static OFFER: &CStr = c"Offer";
+pub static GOLD: &CStr = c"Gold";
+pub static LOADS: &CStr = c"Loads";
+pub static TO: &CStr = c"To";
 pub static SAILORS_HINT: &CStr = c"F2: sailors";
 pub static CAPTAINS_HINT: &CStr = c"F1: captains";
 pub static MISSIONS_HINT: &CStr = c"F3: missions";
@@ -131,7 +134,7 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
         }
         VIEW_MISSIONS => {
             let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
-            y = draw_missions(x, y, last_y, heading, &towns);
+            y = draw_missions(x, y, last_y, window.get_width(), heading, &towns, all_towns);
         }
         _ => {
             let (captains, pirates) = hireable_auto_traders(&towns);
@@ -160,11 +163,20 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
 /// chain with the game's predicate at `0x004D7900` - type `0x71`, the town byte matching
 /// the tavern, and a descriptor date still in the future - and titles its page with the
 /// start of the letter's text, which is where "Patrol" or "Escort" comes from.
-unsafe fn draw_missions(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8]) -> i32 {
+unsafe fn draw_missions(x: i32, y: i32, last_y: i32, width: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
+    // Four columns need more room than the other views, so they hang off the window's
+    // right edge; a narrow window falls back to the shared column positions.
+    let gold_x = (width - 15).max(VALUE_X);
+    let loads_x = gold_x - 55;
+    let destination_x = loads_x - 55;
+
     let mut y = y;
     font::ddraw_set_font(font::get_header_font());
     draw_text(x + TOWN_X, y, heading.to_bytes());
     draw_text(x + TRADE_X, y, OFFER.to_bytes());
+    draw_text(x + destination_x, y, TO.to_bytes());
+    draw_text(x + loads_x, y, LOADS.to_bytes());
+    draw_text(x + gold_x, y, GOLD.to_bytes());
     y += ROW_HEIGHT;
 
     font::ddraw_set_font(font::get_normal_font());
@@ -193,6 +205,22 @@ unsafe fn draw_missions(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8
             }
             if let Some(title) = letter.get_title_bytes() {
                 draw_text(x + TRADE_X, y, &title);
+            }
+            // Only the transport orders carry cargo to a town; only some missions state a
+            // sum.
+            // A smuggler names his town only once the order is accepted, so the filtered
+            // view - what the player could know - leaves it out.
+            let disclosed = all_towns || !letter.tavern_mission_conceals_destination();
+            if let Some(destination) = letter.get_destination_town_index().filter(|_| disclosed) {
+                if let Some(town) = get_town_name_bytes(destination) {
+                    draw_text(x + destination_x, y, &town);
+                }
+            }
+            if let Some(loads) = letter.get_required_loads() {
+                draw_number(x + loads_x, y, loads as i32, "");
+            }
+            if let Some(reward) = letter.get_reward() {
+                draw_number(x + gold_x, y, reward as i32, "");
             }
             y += ROW_HEIGHT;
             index = letter.get_next_index();

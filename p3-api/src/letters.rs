@@ -134,6 +134,125 @@ impl LetterPtr {
         Some(bytes)
     }
 
+    /// The sum a tavern mission offer is worth, read from the variable its own script
+    /// computes it into, or `None` for a mission that never states one.
+    ///
+    /// Which variable that is belongs to the script (`task+0x10`), so it takes a small
+    /// table. The scripts were decoded from their bytecode - the interpreter's arithmetic
+    /// is `0A dst imm32` (load), `0B a b dst` (add), `0C` (subtract) and `0D` (multiply),
+    /// all operating on the variable array:
+    ///
+    /// |Script|Mission|Computation|Variable|
+    /// |-|-|-|-|
+    /// |11|pirate hunter|`(var4 + 1) * 1500`|5|
+    /// |15|escort, fugitive|`var4 * 100 + 3000`|13|
+    /// |16|patrol|`(var3 + 1) * 1700`|4|
+    ///
+    /// The patrol's figure is a rate rather than a fee: `var3` counts foiled ambushes, so
+    /// the variable holds what one ambush is worth, and its voyage pay is never stated.
+    /// The transport orders - trader (script 9), smuggler (8) and courier (13) - compute
+    /// no sum at all; their letters only promise to pay well.
+    ///
+    /// Registers are reused as a script runs, so only the destination variable keeps the
+    /// value: an escort's `var4` no longer holds the distance its reward was computed
+    /// from, while `var13` still holds the reward.
+    pub unsafe fn get_reward(&self) -> Option<u32> {
+        let (script, variables, count) = self.tavern_mission_script()?;
+        let variable = match script {
+            11 => 5,
+            15 => 13,
+            16 => 4,
+            _ => return None,
+        };
+        if variable >= count {
+            return None;
+        }
+        Some(*((variables + variable as u32 * 4) as *const u32))
+    }
+
+    /// The offer's script id, its variable array and the variable count - the three things
+    /// every per-script field lookup needs, from the mission's scheduled task.
+    unsafe fn tavern_mission_script(&self) -> Option<(u16, u32, u16)> {
+        let descriptor = self.get_descriptor();
+        if !(0x0001_0000..0x7fff_0000).contains(&descriptor) {
+            return None;
+        }
+        let task_index: u16 = *((descriptor + 0x8) as *const u16);
+        if task_index >= SCHEDULED_TASKS_PTR.get::<u16>(0x0c) {
+            return None;
+        }
+        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(task_index);
+        if task.get_opcode() != TASK_OPCODE_TAVERN_MISSION {
+            return None;
+        }
+        let variables: u32 = task.get(0x0c);
+        if !(0x0001_0000..0x7fff_0000).contains(&variables) {
+            return None;
+        }
+        Some((task.get(0x10), variables, task.get(0x12)))
+    }
+
+    /// The cargo a tavern mission offer needs a ship for, in loads, or `None` for a
+    /// mission that carries nothing.
+    ///
+    /// Variable 3 of the transport scripts - trader (script 9) and smuggler (script 8) -
+    /// which both compute it as `<value> + 4`, so an order never asks for fewer than four
+    /// loads. Unlike the reward variables this is an empirical identification rather than
+    /// a decoded formula: across five offers the variable matched the amount the letter
+    /// asked for every time (traders 21, 12 and 13 loads, smugglers 14 and 15), and the
+    /// command that tests a ship against it sits further into the script than has been
+    /// decoded. The courier (script 13) asks for three loads in its text but keeps no such
+    /// variable, so it returns `None`.
+    pub unsafe fn get_required_loads(&self) -> Option<u32> {
+        let (script, variables, count) = self.tavern_mission_script()?;
+        let variable = match script {
+            8 | 9 => 3,
+            _ => return None,
+        };
+        if variable >= count {
+            return None;
+        }
+        Some(*((variables + variable as u32 * 4) as *const u32))
+    }
+
+    /// The town a transport order's cargo has to reach, or `None` for a mission that has
+    /// no destination.
+    ///
+    /// Variable 5 of the transport scripts - trader (script 9) and smuggler (script 8) -
+    /// and variable 10 of the passenger script (15), which serves both the escort and the
+    /// fugitive. Identified the same empirical way as the cargo: the variable named the
+    /// town the letter names in all seven offers seen (traders to Malmö, Edinburgh and
+    /// Ladoga, smugglers to Edinburgh and London, an escort to Rostock and a fugitive to
+    /// Riga). For script 15 the neighbouring town-shaped variables 8 and 9 matched neither
+    /// destination, and variable 10 both.
+    pub unsafe fn get_destination_town_index(&self) -> Option<u8> {
+        let (script, variables, count) = self.tavern_mission_script()?;
+        let variable = match script {
+            8 | 9 => 5,
+            15 => 10,
+            _ => return None,
+        };
+        if variable >= count {
+            return None;
+        }
+        let town = *((variables + variable as u32 * 4) as *const u32);
+        if town < 0xff {
+            Some(town as u8)
+        } else {
+            None
+        }
+    }
+
+    /// Does the offer keep its destination from the player until he accepts?
+    ///
+    /// True for a smuggler (script 8), whose offer only asks for free capacity and names
+    /// the town in the message that follows acceptance, and false for a trader (script 9),
+    /// whose offer states both towns up front. A display that shows only what the player
+    /// could know has to respect that, even though the field is readable either way.
+    pub unsafe fn tavern_mission_conceals_destination(&self) -> bool {
+        matches!(self.tavern_mission_script(), Some((8, _, _)))
+    }
+
     /// Is this tavern mission offer still open to `merchant_index`?
     ///
     /// The side room's second test (`0x005A7274`..`0x005A72A3`), applied after the type,
