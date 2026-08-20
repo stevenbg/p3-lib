@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering}
 use std::{mem, panic};
 
 use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hook, FunctionPointerHook};
-use log::error;
+use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
     data::{enums::WareId, p3_ptr::P3Pointer},
@@ -155,164 +155,13 @@ jmp [{method}]
     method = sym PANEL_METHOD_ADDRESS,
 );
 
-/// Logs unconditionally via OutputDebugString: the shared DEBUGGER_LOGGER drops all
-/// messages unless a real debugger is attached, which hides them from DebugView.
-fn ods(message: &str) {
-    win_dbg_logger::output_debug_string(&format!("auto_supply: {message}\r\n"));
-}
-
 /// Post an in-game popup on the event ticker (the top-left "Game speed:" boxes),
 /// mirrored to the debug log.
 unsafe fn notify(text: &str) {
-    ods(text);
+    info!("{text}");
     let latin1: Vec<u8> = text.chars().map(|c| if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }).collect();
     p3_api::ui::ui_notifications::UINotificationsPtr::new().post_event(&latin1);
 }
-
-/// Incoming-letter popups ("Personal letter: Patrol") get the letter's town appended
-/// ("Personal letter: Patrol - Stockholm"). Scripted letters carry a garbage town
-/// byte (the patrol-letter bug), but their formatted text names the destination: the
-/// LAST town name occurring in the text ("...get your ship to <town> as soon as
-/// possible"). Simple letters carry a valid town byte directly. Two call hooks: the
-/// mailbox insert's announcer call (0x4D66E0 -> announcer 0x4D7B10) stashes the
-/// message being announced; the announcer's right-ticker enqueue call (0x4D7D12 ->
-/// 0x42BB20) then rebuilds the popup string with the town appended.
-const ANNOUNCER_CALL_OFFSET: u32 = 0x000d66e0;
-const RIGHT_TICKER_CALL_OFFSET: u32 = 0x000d7d12;
-/// The town-name text bank (bank C): 40 string pointers, indexed by the savegame's
-/// town index - the same bank the letters list's town column uses. (The getter
-/// 0x512B20 on the object at 0x6DDAA0 is NOT a town lookup: it resolves dynamic
-/// names - id 15 returned the ship "Aphrodite".)
-const TOWN_NAME_BANK: u32 = 0x006dda00;
-const TOWN_NAME_SLOTS: u32 = 40;
-/// The message currently being announced (set around the announcer call), 0 = none.
-static ANNOUNCED_MESSAGE: AtomicU32 = AtomicU32::new(0);
-static ANNOUNCER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
-static RIGHT_TICKER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
-
-unsafe extern "thiscall" fn announcer_hook(this: u32, merchant: u32, message: u32) {
-    ANNOUNCED_MESSAGE.store(message, Ordering::SeqCst);
-    let original: extern "thiscall" fn(u32, u32, u32) = mem::transmute((*ANNOUNCER_HOOK.load(Ordering::SeqCst)).old_absolute);
-    original(this, merchant, message);
-    ANNOUNCED_MESSAGE.store(0, Ordering::SeqCst);
-}
-
-/// The right-ticker enqueue takes an MFC string BY VALUE (one data-pointer slot, the
-/// callee releases it). To augment, release the incoming string ourselves and hand
-/// the original a fresh one.
-unsafe extern "thiscall" fn right_ticker_hook(manager: u32, text: u32) {
-    let original: extern "thiscall" fn(u32, u32) = mem::transmute((*RIGHT_TICKER_HOOK.load(Ordering::SeqCst)).old_absolute);
-    let message = ANNOUNCED_MESSAGE.load(Ordering::SeqCst);
-    let town = if message != 0 { letter_town_name(message) } else { None };
-    let Some(town) = town else {
-        original(manager, text);
-        return;
-    };
-    let mut augmented: Vec<u8> = Vec::new();
-    let mut p = text;
-    loop {
-        let b = *(p as *const u8);
-        if b == 0 || augmented.len() >= 96 {
-            break;
-        }
-        augmented.push(b);
-        p += 1;
-    }
-    augmented.extend_from_slice(b" - ");
-    augmented.extend_from_slice(&town);
-    augmented.push(0);
-
-    let ctor: extern "thiscall" fn(*mut u32, *const u8) -> *mut u32 = mem::transmute(STRING_CTOR_FROM_CSTR);
-    let dtor: extern "thiscall" fn(*mut u32) = mem::transmute(STRING_DTOR);
-    let mut incoming = text;
-    dtor(&mut incoming);
-    let mut replacement: u32 = *STRING_EMPTY_HEADER_PTR + 0xc;
-    ctor(&mut replacement, augmented.as_ptr());
-    original(manager, replacement);
-}
-
-/// A town-name bank slot's pointer and name bytes (the letter text is in the game's
-/// codepage, so matching happens on raw bytes).
-unsafe fn town_name_bytes(town_index: u32) -> Option<(u32, Vec<u8>)> {
-    let name = *((TOWN_NAME_BANK + town_index * 4) as *const u32);
-    if name == 0 {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    for i in 0..32u32 {
-        let b = *((name + i) as *const u8);
-        if b == 0 {
-            break;
-        }
-        bytes.push(b);
-    }
-    (bytes.len() >= 3).then_some((name, bytes))
-}
-
-/// The town a letter is about, as raw name bytes. Scripted letters: the last town
-/// name occurring in the letter text (bounded by the end pointer the creation
-/// handler stores at descriptor+0). Simple letters: the town byte.
-unsafe fn letter_town_name(message: u32) -> Option<Vec<u8>> {
-    let msg_type = *((message + 4) as *const u8);
-    if !(0x3c..=0x40).contains(&msg_type) && msg_type != 0x71 {
-        let town_byte = *((message + 5) as *const u8) as u32;
-        if town_byte >= TOWN_NAME_SLOTS {
-            return None;
-        }
-        return town_name_bytes(town_byte).map(|(_, name)| name);
-    }
-    let text = *((message + 0xc) as *const u32);
-    let descriptor = *((message + 8) as *const u32);
-    if text == 0 || descriptor == 0 {
-        return None;
-    }
-    // descriptor+0 holds the text LENGTH once the letter is complete (observed 0xA6
-    // for a patrol letter); tolerate an end pointer too, in case other paths leave
-    // the raw write position.
-    let raw = *(descriptor as *const u32);
-    let length = if raw > 0 && raw <= 0x1000 {
-        raw
-    } else if raw > text && raw - text <= 0x1000 {
-        raw - text
-    } else {
-        ods(&format!(
-            "letter town scan: descriptor length looks wrong (type {msg_type:#04x}, text {text:#010x}, desc {descriptor:#010x}, raw {raw:#010x})"
-        ));
-        return None;
-    };
-    let hay = core::slice::from_raw_parts(text as *const u8, length as usize);
-    let mut best: Option<(usize, Vec<u8>)> = None;
-    let mut seen_slots: Vec<u32> = Vec::new();
-    for town_index in 0..TOWN_NAME_SLOTS {
-        // Unfilled bank slots repeat the first town's pointer - scan each name once.
-        let Some((ptr, name)) = town_name_bytes(town_index) else { continue };
-        if seen_slots.contains(&ptr) {
-            continue;
-        }
-        seen_slots.push(ptr);
-        let Some(pos) = hay.windows(name.len()).rposition(|w| w == &name[..]) else {
-            continue;
-        };
-        if best.as_ref().map(|(p, _)| pos > *p).unwrap_or(true) {
-            best = Some((pos, name));
-        }
-    }
-    best.map(|(_, name)| name)
-}
-
-/// Sets the PEB BeingDebugged flag so IsDebuggerPresent() returns true, unlocking the
-/// gated win_dbg_logger used by every mod. No real debugger is attached, so log output
-/// still reaches DebugView via OutputDebugString.
-#[cfg(target_arch = "x86")]
-unsafe fn fake_being_debugged() {
-    let peb: *mut u8;
-    std::arch::asm!("mov {}, fs:[0x30]", out(reg) peb);
-    // PEB + 0x02 = BeingDebugged (u8).
-    *peb.add(2) = 1;
-}
-
-#[cfg(not(target_arch = "x86"))]
-unsafe fn fake_being_debugged() {}
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> u32 {
@@ -323,15 +172,13 @@ pub unsafe extern "C" fn start() -> u32 {
         error!("{p}");
     }));
 
-    fake_being_debugged();
-
     // start() runs on the game's main thread (the modloader calls it from its WinMain
     // hook), which then pumps the message loop - so a thread-scoped keyboard hook
     // installed here fires on key events at any game speed, for the process lifetime.
     match SetWindowsHookExW(WH_KEYBOARD, Some(keyboard_hook), None, GetCurrentThreadId()) {
         Ok(hook) => KEYBOARD_HOOK.store(hook.0, Ordering::SeqCst),
         Err(_) => {
-            ods("installing the keyboard hook failed");
+            error!("installing the keyboard hook failed");
             return 1;
         }
     }
@@ -341,14 +188,14 @@ pub unsafe extern "C" fn start() -> u32 {
     match hook_function_pointer(OFFICE_WINDOW_OPEN_POINTER_OFFSET, office_window_open_hook as usize as u32) {
         Ok(hook) => OPEN_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {
-            ods("failed to hook office window open");
+            error!("failed to hook office window open");
             return 2;
         }
     }
     match hook_function_pointer(OFFICE_WINDOW_CLOSE_POINTER_OFFSET, office_window_close_hook as usize as u32) {
         Ok(hook) => CLOSE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {
-            ods("failed to hook office window close");
+            error!("failed to hook office window close");
             return 3;
         }
     }
@@ -357,29 +204,12 @@ pub unsafe extern "C" fn start() -> u32 {
     match hook_function_pointer(PANEL_METHOD_VTABLE_OFFSET, &panel_capture_hook as *const _ as u32) {
         Ok(hook) => PANEL_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {
-            ods("failed to hook the route panel method");
+            error!("failed to hook the route panel method");
             return 4;
         }
     }
 
-    // Letter-popup enrichment: append the letter's town to the incoming-letter
-    // popups ("Personal letter: Patrol - Stockholm").
-    match hook_call_rel32(ANNOUNCER_CALL_OFFSET, announcer_hook as usize as u32) {
-        Ok(hook) => ANNOUNCER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-        Err(_) => {
-            ods("failed to hook the letter announcer call");
-            return 5;
-        }
-    }
-    match hook_call_rel32(RIGHT_TICKER_CALL_OFFSET, right_ticker_hook as usize as u32) {
-        Ok(hook) => RIGHT_TICKER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-        Err(_) => {
-            ods("failed to hook the letter ticker call");
-            return 6;
-        }
-    }
-
-    ods("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 town+ship, F10 routes");
+    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 town+ship, F10 routes");
     0
 }
 
@@ -522,7 +352,7 @@ unsafe extern "thiscall" fn op_logger_hook(op: u32) {
     let opcode = *(op as *const u32);
     if !OP_LOGGER_NOISE.contains(&opcode) {
         let bytes: Vec<String> = (0..0x14).map(|i| format!("{:02x}", *((op + i) as *const u8))).collect();
-        ods(&format!("op {opcode:#04x}: {}", bytes.join(" ")));
+        debug!("op {opcode:#04x}: {}", bytes.join(" "));
     }
     let hook = OP_LOGGER_HOOK.load(Ordering::SeqCst);
     let original: extern "thiscall" fn(u32) = mem::transmute((*hook).old_absolute);
@@ -537,9 +367,9 @@ unsafe fn on_current_town_hotkey() {
     match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, op_logger_hook as usize as u32) {
         Ok(hook) => {
             OP_LOGGER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-            ods("op logger: installed - perform the action to identify");
+            info!("op logger: installed - perform the action to identify");
         }
-        Err(e) => ods(&format!("op logger: hook failed: {e:?}")),
+        Err(e) => error!("op logger: hook failed: {e:?}"),
     }
 }
 
@@ -549,12 +379,12 @@ unsafe fn on_current_town_hotkey() {
 unsafe fn dump_name_registry() {
     let first_count = *(0x006ddb70 as *const u16);
     let last_count = *(0x006ddb74 as *const u16);
-    ods(&format!("name registry counts: first {first_count}, last {last_count}"));
+    debug!("name registry counts: first {first_count}, last {last_count}");
     for i in 0..10u32 {
         let slot = 0x006ddb48 + i * 4;
         let ptr = *(slot as *const u32);
         if !(0x0001_0000..0x7fff_0000).contains(&ptr) {
-            ods(&format!("name table slot {slot:#010x}: {ptr:#010x} (not a pointer)"));
+            debug!("name table slot {slot:#010x}: {ptr:#010x} (not a pointer)");
             continue;
         }
         let mut preview = String::new();
@@ -568,7 +398,7 @@ unsafe fn dump_name_registry() {
                 '.'
             });
         }
-        ods(&format!("name table slot {slot:#010x} -> {ptr:#010x}: {preview}"));
+        debug!("name table slot {slot:#010x} -> {ptr:#010x}: {preview}");
     }
 }
 
@@ -577,7 +407,7 @@ unsafe fn dump_name_registry() {
 /// captain is an available (state > 0x20) unemployed (merchant 0xff) record. Logs
 /// every chain record to the debug log for offset verification.
 unsafe fn find_tavern_captains() {
-    ods(&format!("today's date serial: {}", *(0x006de4b4 as *const u32)));
+    debug!("today's date serial: {}", *(0x006de4b4 as *const u32));
     dump_name_registry();
     let ships = p3_api::ships::ShipsPtr::new();
     let count = ships.get_auto_traders_size();
@@ -617,7 +447,7 @@ unsafe fn find_tavern_captains() {
         } else {
             String::new()
         };
-        ods(&format!(
+        debug!(
             "auto trader {index} ({location}): state {:#04x}{share} names {}/{} field4 {} nav {} trade {} combat {} wage {} merchant {:#04x} next {:#x}",
             trader.get_state_byte(),
             trader.get_first_name_id(),
@@ -629,7 +459,7 @@ unsafe fn find_tavern_captains() {
             trader.get_daily_wage(),
             trader.get_merchant_index(),
             trader.get_next_index()
-        ));
+        );
     }
     if found == 0 {
         notify("No captain is waiting in any tavern");
@@ -640,11 +470,11 @@ unsafe fn find_tavern_captains() {
         let Some(ship) = ships.get_ship(ship_index) else { continue };
         let captain = ship.get_captain_index();
         if captain < count {
-            ods(&format!(
+            debug!(
                 "ship {ship_index} {:?} (owner {:#04x}): captain {captain}",
                 ship.get_name(),
                 ship.get_merchant_index()
-            ));
+            );
         }
     }
 }
@@ -748,8 +578,8 @@ unsafe fn backup_route(ship_index: u16) -> Vec<TradeRouteStop> {
         let count = previous.len();
         let backup = p3_rou::TradeRouteFile { stops: previous.clone() }.serialize();
         match std::fs::write(ROUTE_BACKUP_PATH, &backup) {
-            Ok(()) => ods(&format!("route: saved the previous {count} stops to {ROUTE_BACKUP_PATH}")),
-            Err(e) => ods(&format!("route: failed to back up the previous route: {e}")),
+            Ok(()) => info!("route: saved the previous {count} stops to {ROUTE_BACKUP_PATH}"),
+            Err(e) => error!("route: failed to back up the previous route: {e}"),
         }
     }
     previous
@@ -898,10 +728,10 @@ unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares
     } else {
         format!(", skipping [{}]", skipped.join(", "))
     };
-    ods(&format!(
+    info!(
         "dialog setup for the {town} stop: buying [{}]{skipped}, selling {sold} others, {untouched} existing instructions untouched",
         bought.join(", ")
-    ));
+    );
     notify(&format!(
         "Stop setup for {town}: {} buys, {sold} sells, {untouched} kept",
         bought.len()
@@ -920,12 +750,12 @@ unsafe fn apply_route_file(ship_index: u16) -> bool {
     let mut string_object: u32 = *STRING_EMPTY_HEADER_PTR + 0xc;
     let ctor: extern "thiscall" fn(*mut u32, *const u8) -> *mut u32 = mem::transmute(STRING_CTOR_FROM_CSTR);
     ctor(&mut string_object, name.as_ptr());
-    ods("add stop: name string built");
+    debug!("add stop: name string built");
 
     *OPERATIONS_ROUTE_SHIP = ship_index as u32;
     let loader: extern "thiscall" fn(u32, *const u32) -> u32 = mem::transmute(ROUTE_LOADER_ADDRESS);
     let buffer = loader(ROUTE_LOADER_THIS, &string_object);
-    ods(&format!("add stop: loader returned buffer {buffer:#010x}"));
+    debug!("add stop: loader returned buffer {buffer:#010x}");
 
     let dtor: extern "thiscall" fn(*mut u32) = mem::transmute(STRING_DTOR);
     dtor(&mut string_object);
@@ -977,11 +807,11 @@ unsafe fn write_and_apply_route(ship_index: u16, mut stops: Vec<TradeRouteStop>)
     }
     let data = p3_rou::TradeRouteFile { stops }.serialize();
     if let Err(e) = std::fs::write(ROUTE_FILE_PATH, &data) {
-        ods(&format!("route: failed to write {ROUTE_FILE_PATH}: {e}"));
+        error!("route: failed to write {ROUTE_FILE_PATH}: {e}");
         return false;
     }
     if !apply_route_file(ship_index) {
-        ods("route: loader failed (is fix_uncompressed_trade_route_loading.dll installed?)");
+        error!("route: loader failed (is fix_uncompressed_trade_route_loading.dll installed?)");
         return false;
     }
     true
@@ -1035,10 +865,10 @@ unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
         } else {
             format!(", skipping [{}]", skipped.join(", "))
         };
-        ods(&format!(
+        info!(
             "add stop in {town} on {name:?}: buying [{}]{skipped}, selling {sold} others (route now {stop_count} stops)",
             bought.join(", ")
-        ));
+        );
         notify(&format!("Stop added in {town}: {name} now {stop_count} stops"));
     }
 }
@@ -1178,10 +1008,10 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
         rename_ship(ship_index, &route_name);
         let action = if append { "appended to" } else { "set on" };
         let verb = if matches!(kind, RouteKind::Suck) { "collect at T from" } else { "supply" };
-        ods(&format!(
+        info!(
             "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops)",
             described.join(", ")
-        ));
+        );
         notify(&format!(
             "{kind:?} route {action} {route_name}: {} targets from {load_town_name}, {stop_count} stops",
             described.len()
@@ -1338,10 +1168,10 @@ unsafe fn on_setup_hotkey() {
             ware_id,
         });
     }
-    ods(&format!(
+    info!(
         "setup in {town}: buying produced wares [{}], selling {sold} others, {untouched} existing orders untouched",
         bought.join(", ")
-    ));
+    );
     notify(&format!(
         "Office setup in {town}: {} buys, {sold} sells, {untouched} kept",
         bought.len()
@@ -1381,7 +1211,7 @@ unsafe fn provision_and_lock(what: &str, targets: &[(WareId, i32)]) {
             lock: true,
         });
     }
-    ods(&format!("{what} in {town}: locked {} wares, raised [{}]", targets.len(), raised.join(", ")));
+    info!("{what} in {town}: locked {} wares, raised [{}]", targets.len(), raised.join(", "));
     notify(&format!("Locked {what} in {town} ({} amounts raised)", raised.len()));
     refresh_administrator_view();
 }
@@ -1492,7 +1322,7 @@ unsafe fn refresh_administrator_view() {
 /// and to <TownName>.csv in the game directory.
 unsafe fn on_town_dump_hotkey() {
     let Some(town_index) = current_town_index() else {
-        ods("debug dump: not in a town");
+        info!("debug dump: not in a town");
         return;
     };
     let town_name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
@@ -1502,10 +1332,10 @@ unsafe fn on_town_dump_hotkey() {
     let citizens = town.get_daily_consumptions_citizens();
     let businesses = town.get_daily_consumptions_businesses();
 
-    ods(&format!(
+    debug!(
         "debug dump for {town_name} (live trade difficulty {}):",
         crate::prices::difficulty_d()
-    ));
+    );
     // The price columns follow the hotkeys Q W E R T Y (ascending price), sells (alt)
     // then buys (ctrl).
     let mut csv = String::from(
@@ -1520,12 +1350,12 @@ unsafe fn on_town_dump_hotkey() {
         let scaling = ware_id.get_scaling();
         let base_per_unit = crate::prices::base_price_per_unit(ware_index);
         let [t0, t1, t2, t3] = thresholds[i];
-        ods(&format!(
+        debug!(
             "{ware_id:?}: t=[{t0}, {t1}, {t2}, {t3}] raw ({} units of week supply), base {base_per_unit:.1}/unit, sell@t0 {}, buy@t1 {}",
             t0 / scaling,
             sell_price(ware_index, PriceLevel::Center),
             buy_price(ware_index, PriceLevel::Center),
-        ));
+        );
         let levels = LEVEL_KEYS.map(|(_, level)| level);
         let sells: Vec<String> = levels.iter().map(|&l| sell_price(ware_index, l).to_string()).collect();
         let buys: Vec<String> = levels.iter().map(|&l| buy_price(ware_index, l).to_string()).collect();
@@ -1546,8 +1376,8 @@ unsafe fn on_town_dump_hotkey() {
 
     let file_name = format!("{town_name}.csv");
     match std::fs::write(&file_name, csv) {
-        Ok(()) => ods(&format!("wrote {file_name} to the game directory")),
-        Err(e) => ods(&format!("failed to write {file_name}: {e}")),
+        Ok(()) => info!("wrote {file_name} to the game directory"),
+        Err(e) => error!("failed to write {file_name}: {e}"),
     }
 }
 
@@ -1565,7 +1395,7 @@ const SHIP_ROUTE_HEAD_OFFSET: u32 = 0x132;
 unsafe fn dump_ship_routes() {
     let pool = *ROUTE_STOP_POOL;
     let pool_count = *ROUTE_STOP_POOL_COUNT;
-    ods(&format!("route stop pool at {pool:#010x}, {pool_count} entries"));
+    debug!("route stop pool at {pool:#010x}, {pool_count} entries");
     if pool == 0 {
         return;
     }
@@ -1582,7 +1412,7 @@ unsafe fn dump_ship_routes() {
         // The ship struct address is a candidate value for the map-selection global, if
         // the selection is stored as a pointer (scan for it in Cheat Engine, 4-byte hex,
         // while switching selected ships).
-        ods(&format!("ship {ship_id} at {:#010x} {:?}: route head {head}", ship.address, ship.get_name()));
+        debug!("ship {ship_id} at {:#010x} {:?}: route head {head}", ship.address, ship.get_name());
 
         let mut index = head;
         for n in 0..32 {
@@ -1599,10 +1429,10 @@ unsafe fn dump_ship_routes() {
                     ops.push(format!("{:?} p{price} a{amount}", WareId::from_usize(i).unwrap()));
                 }
             }
-            ods(&format!(
+            debug!(
                 "  stop {n}: pool[{index}] town {town}, action {action:#04x}, next {next}, ops [{}]",
                 ops.join(", ")
-            ));
+            );
             index = next;
             if index == head || index >= pool_count {
                 break;

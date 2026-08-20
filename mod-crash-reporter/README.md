@@ -6,8 +6,8 @@ minidump, no error dialog, nothing in DebugView - which makes crashes nearly
 impossible to diagnose; with this mod loaded, every crash leaves a report behind.
 
 Install: put `crash_reporter.dll` into the `mods` folder (requires the
-modloader). On load it prints `crash_reporter: installed` to DebugView, and one
-line per written report.
+modloader). On load it logs "installed" (visible in DebugView when the gated
+mod logging is unlocked, see mod-ui-tweaks).
 
 ## How it works
 

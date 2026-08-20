@@ -119,11 +119,8 @@ office view, goods dialog in the way) - as an in-game popup on the scrollmap's e
 ticker, the top-left boxes where "Game speed" messages appear. Everything is also
 logged with more detail via OutputDebugString.
 
-The game's own incoming-letter popups (top right) additionally get the letter's town
-appended: "Personal letter: Patrol - Stockholm" instead of "Personal letter: Patrol",
-so mission letters say at a glance where to send the ship. For scripted letters
-(whose town field is broken - see mod-fix-patrol-letter-crash) the town is recovered
-from the letter text: the last town name the letter mentions.
+(The letter-popup town suffix - "Personal letter: Patrol - Stockholm" - lives in
+mod-ui-tweaks.)
 
 ## Known limitations
 
@@ -131,5 +128,5 @@ from the letter text: the last town name the letter mentions.
   the marginal price at the end point, so a limit set exactly at a level lets the last
   transaction overshoot that stock point by up to one transaction chunk. Correcting for
   it needs the game's transaction chunk size, which is not reverse engineered yet.
-- Log output goes to OutputDebugString (DebugView or a debugger); the mod fakes the PEB
-  BeingDebugged flag at load, which also unlocks the gated logging of all other mods.
+- Log output goes to OutputDebugString (DebugView or a debugger); mod-ui-tweaks fakes
+  the PEB BeingDebugged flag at load, which unlocks the gated logging of all mods.

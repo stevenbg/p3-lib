@@ -20,6 +20,7 @@
 //!
 //! This mod found the patrol-letter crash fixed by mod-fix-patrol-letter-crash.
 
+use log::info;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -57,7 +58,7 @@ pub unsafe extern "C" fn start() -> u32 {
     // reaching the unhandled filter.
     AddVectoredExceptionHandler(1, Some(vectored_handler));
     SetUnhandledExceptionFilter(Some(unhandled_filter));
-    win_dbg_logger::output_debug_string("crash_reporter: installed\r\n");
+    info!("installed");
     0
 }
 
@@ -138,10 +139,6 @@ unsafe fn write_report(info: &EXCEPTION_POINTERS, record: &EXCEPTION_RECORD, cod
         let _ = f.write_all(out.as_bytes());
         let _ = f.flush();
     }
-    win_dbg_logger::output_debug_string(&format!(
-        "crash_reporter: report {n} written: {kind} {code:#010x} at {:#010x}\r\n",
-        record.ExceptionAddress as u32
-    ));
 }
 
 /// The code bytes around EIP, so the faulting instruction is identifiable even if the

@@ -106,6 +106,29 @@ impl P3Pointer for TownPtr {
     }
 }
 
+/// The town-name bank holds this many slots; maps with fewer towns repeat the first
+/// town's pointer in the unfilled slots.
+pub const TOWN_NAME_SLOTS: u8 = 40;
+
+/// A town's name as its raw latin1 bytes, straight from the name bank - for
+/// byte-exact work against other game strings (matching, splicing), where decoding
+/// to UTF-8 would corrupt the comparison.
+pub fn get_town_name_bytes(town_index: u8) -> Option<Vec<u8>> {
+    unsafe {
+        let town_names_ptr: *const *const u8 = TOWN_NAME_PTRS_ADDRESS as _;
+        let mut name_ptr = *town_names_ptr.add(town_index as _);
+        if name_ptr.is_null() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        while *name_ptr != 0 {
+            bytes.push(*name_ptr);
+            name_ptr = name_ptr.add(1);
+        }
+        Some(bytes)
+    }
+}
+
 pub fn get_town_name(town_index: u8) -> Option<String> {
     unsafe {
         let town_names_ptr: *const *const u8 = TOWN_NAME_PTRS_ADDRESS as _;
