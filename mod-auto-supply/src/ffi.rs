@@ -390,79 +390,39 @@ unsafe fn on_town_snapshot_hotkey() {
 /// Gdansk escort, Reval fugitive + treasure map, Ladoga patrol.
 const MISSIONS_PER_TOWN: [u8; 24] = [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 2, 1, 0];
 
-/// F9 (THROWAWAY): dump a mission's script so its variables can be named from the code
-/// that uses them, instead of from the letter text.
+/// F9 (THROWAWAY): dump the inline symbol strings the UI's rich-text markup splices in.
 ///
-/// The interpreter (`0x004ECF64`, run by scheduled task opcode `0x1B`) takes the script
-/// blob from `task+0x8`, the variable array from `task+0xC`, the variable count from
-/// `task+0x12` and the program counter from `task+0x14`. A command's bytes live at
-/// `blob + [blob + 4 + pc*4]`, its first byte is the command, and the command dispatches
-/// through the index table at `0x004F3054` into the handler table at `0x004F2E34`.
-///
-/// One script per distinct script id, so the log stays readable.
+/// The layout routine at `0x00462520` expands `\\C`, `\\L` and `\\B` by taking the
+/// `char*` at `+0x4` of the objects in `0x006CC37C`, `0x006CC384` and `0x006CC380`
+/// (`0x004627F5`..`0x0046281F`), so they are text, not graphics - and can be appended to
+/// any string drawn the ordinary way. This prints them, and their neighbours in that
+/// global cluster, as bytes and as characters.
 unsafe fn on_current_town_hotkey() {
-    let letters = LettersPtr::new();
-    let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u16;
-    let merchant = GAME_WORLD_PTR.get_merchant(player_merchant);
-    let capacity: u16 = SCHEDULED_TASKS_PTR.get(0x0c);
-    let mut seen: Vec<u16> = Vec::new();
-
-    for town_index in 0..GAME_WORLD_PTR.get_towns_count().min(0xff) as u8 {
-        let mut index = merchant.get_first_letter_index();
-        for _ in 0..letters.get_size() {
-            let Some(found) = letters.find_tavern_mission(index, town_index as u16) else { break };
-            let Some(letter) = letters.get_letter(found) else { break };
-            index = letter.get_next_index();
-
-            let descriptor = letter.get_descriptor();
-            if !(0x0001_0000..0x7fff_0000).contains(&descriptor) {
-                continue;
-            }
-            let task_index: u16 = *((descriptor + 0x8) as *const u16);
-            if task_index >= capacity {
-                continue;
-            }
-            let task = SCHEDULED_TASKS_PTR.get_scheduled_task(task_index);
-            let script_id: u16 = task.get(0x10);
-            if seen.contains(&script_id) {
-                continue;
-            }
-            seen.push(script_id);
-
-            let blob: u32 = task.get(0x08);
-            let variables: u16 = task.get(0x12);
-            let pc: u16 = task.get(0x14);
-            if !(0x0001_0000..0x7fff_0000).contains(&blob) {
-                continue;
-            }
-            let title = String::from_utf8_lossy(&letter.get_title_bytes().unwrap_or_default()).to_string();
-            let header: Vec<String> = (0..0x10).map(|i| format!("{:02x}", *((blob + i) as *const u8))).collect();
-            debug!(
-                "{title:?}: script {script_id}, {variables} variables, pc {pc}, blob {blob:#010x} header [{}]",
-                header.join(" ")
-            );
-
-            // Walk the offset table until an entry stops looking like an offset into the
-            // blob, dumping each command with the handler it dispatches to.
-            for command_index in 0..64u32 {
-                let offset: u32 = *((blob + 4 + command_index * 4) as *const u32);
-                if offset < 4 || offset > 0x8000 {
-                    debug!("    {command_index} commands");
-                    break;
-                }
-                let command: u8 = *((blob + offset) as *const u8);
-                let operands: Vec<String> = (1..10u32).map(|i| format!("{:02x}", *((blob + offset + i) as *const u8))).collect();
-                let handler = if command >= 1 && command <= 0xfb {
-                    let slot: u8 = *((0x004f3054 + command as u32 - 1) as *const u8);
-                    let address: u32 = *((0x004f2e34 + slot as u32 * 4) as *const u32);
-                    format!("slot {slot:#04x} -> {address:#010x}")
-                } else {
-                    "out of range".into()
-                };
-                let marker = if command_index == pc as u32 { "  <- pc" } else { "" };
-                debug!("    [{command_index}] +{offset:#x} cmd {command:#04x} ({handler}) operands [{}]{marker}", operands.join(" "));
-            }
+    for global in (0x006cc370..=0x006cc394u32).step_by(4) {
+        let object = *(global as *const u32);
+        if !(0x0001_0000..0x7fff_0000).contains(&object) {
+            debug!("{global:#010x}: {object:#010x} (not a pointer)");
+            continue;
         }
+        let text = *((object + 4) as *const u32);
+        if !(0x0001_0000..0x7fff_0000).contains(&text) {
+            debug!("{global:#010x}: object {object:#010x}, +4 = {text:#010x} (not a pointer)");
+            continue;
+        }
+        let mut bytes = Vec::new();
+        for offset in 0..32u32 {
+            let byte = *((text + offset) as *const u8);
+            if byte == 0 {
+                break;
+            }
+            bytes.push(byte);
+        }
+        let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let shown: String = bytes
+            .iter()
+            .map(|b| if (0x20..0x7f).contains(b) { *b as char } else { '.' })
+            .collect();
+        debug!("{global:#010x}: object {object:#010x} -> \"{shown}\" [{}]", hex.join(" "));
     }
 }
 

@@ -9,7 +9,11 @@ use p3_api::{
     operations::OPERATIONS_PTR,
     ships::ShipsPtr,
     town::get_town_name_bytes,
-    ui::{font, rect_clipper_stuff, ui_tavern_window::UITavernWindowPtr},
+    ui::{
+        font, rect_clipper_stuff,
+        rich_text::{draw_rich_text, TAVERN_WINDOW_LAYOUT_OFFSET},
+        ui_tavern_window::UITavernWindowPtr,
+    },
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_1, VK_2, VK_3, VK_MENU};
 
@@ -31,9 +35,7 @@ pub static AVAILABLE: &CStr = c"Available";
 pub static MISSIONS: &CStr = c"Missions in town";
 pub static KNOWN_MISSIONS: &CStr = c"Known missions in town";
 pub static OFFER: &CStr = c"Offer";
-pub static GOLD: &CStr = c"Gold";
-pub static LOADS: &CStr = c"Loads";
-pub static TO: &CStr = c"To";
+pub static TERMS: &CStr = c"Terms";
 pub static SAILORS_HINT: &CStr = c"2: sailors";
 pub static CAPTAINS_HINT: &CStr = c"1: captains";
 pub static MISSIONS_HINT: &CStr = c"3: missions";
@@ -135,7 +137,7 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
         }
         VIEW_MISSIONS => {
             let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
-            y = draw_missions(x, y, last_y, window.get_width(), heading, &towns, all_towns);
+            y = draw_missions(window, y, last_y, heading, &towns, all_towns);
         }
         _ => {
             let (captains, pirates) = hireable_auto_traders(&towns);
@@ -164,20 +166,21 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
 /// chain with the game's predicate at `0x004D7900` - type `0x71`, the town byte matching
 /// the tavern, and a descriptor date still in the future - and titles its page with the
 /// start of the letter's text, which is where "Patrol" or "Escort" comes from.
-unsafe fn draw_missions(x: i32, y: i32, last_y: i32, width: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
-    // Four columns need more room than the other views, so they hang off the window's
-    // right edge; a narrow window falls back to the shared column positions.
-    let gold_x = (width - 15).max(VALUE_X);
-    let loads_x = gold_x - 55;
-    let destination_x = loads_x - 55;
+/// The width of the terms cell, wide enough for a town, a cargo and a sum; the rich-text
+/// pass wraps at this, so too narrow a cell would spill onto a second line.
+const TERMS_WIDTH: i32 = 170;
+
+unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
+    let x = window.get_x();
+    // The terms hang off the window's right edge; a narrow window falls back to the
+    // column position the other views share.
+    let terms_right = (window.get_width() - 15).max(VALUE_X);
 
     let mut y = y;
     font::ddraw_set_font(font::get_header_font());
     draw_text(x + TOWN_X, y, heading.to_bytes());
     draw_text(x + TRADE_X, y, OFFER.to_bytes());
-    draw_text(x + destination_x, y, TO.to_bytes());
-    draw_text(x + loads_x, y, LOADS.to_bytes());
-    draw_text(x + gold_x, y, GOLD.to_bytes());
+    draw_text(x + terms_right, y, TERMS.to_bytes());
     y += ROW_HEIGHT;
 
     font::ddraw_set_font(font::get_normal_font());
@@ -207,21 +210,43 @@ unsafe fn draw_missions(x: i32, y: i32, last_y: i32, width: i32, heading: &CStr,
             if let Some(title) = letter.get_title_bytes() {
                 draw_text(x + TRADE_X, y, &title);
             }
-            // Only the transport orders carry cargo to a town; only some missions state a
-            // sum.
-            // A smuggler names his town only once the order is accepted, so the filtered
-            // view - what the player could know - leaves it out.
+            // What the offer is worth, in one cell: where the cargo goes, how much of it,
+            // and the sum. A smuggler names his town only once the order is accepted, so
+            // the filtered view - what the player could know - leaves that part out.
+            let mut terms: Vec<Vec<u8>> = Vec::new();
             let disclosed = all_towns || !letter.tavern_mission_conceals_destination();
             if let Some(destination) = letter.get_destination_town_index().filter(|_| disclosed) {
                 if let Some(town) = get_town_name_bytes(destination) {
-                    draw_text(x + destination_x, y, &town);
+                    terms.push(town);
                 }
             }
             if let Some(loads) = letter.get_required_loads() {
-                draw_number(x + loads_x, y, loads as i32, "");
+                terms.push(format!("{loads}\\L").into_bytes());
             }
             if let Some(reward) = letter.get_reward() {
-                draw_number(x + gold_x, y, reward as i32, "");
+                terms.push(format!("{reward}\\C").into_bytes());
+            }
+            if !terms.is_empty() {
+                // Through the framework's rich-text pass, for the game's own cargo and
+                // coin symbols. `\r` offsets the line by minus its own width
+                // (`0x00420AB2`), so the x argument is the cell's RIGHT edge, while the
+                // width argument only bounds word wrap. That pass sets its own font and
+                // colour, so the page's state is restored after it.
+                let mut cell = b"\\r".to_vec();
+                cell.extend(terms.join(&b", "[..]));
+                cell.push(0);
+                draw_rich_text(
+                    window.address + TAVERN_WINDOW_LAYOUT_OFFSET,
+                    &cell,
+                    x + terms_right,
+                    y,
+                    TERMS_WIDTH,
+                    ROW_HEIGHT,
+                    BLACK,
+                );
+                ddraw_set_constant_color(BLACK);
+                ddraw_set_text_mode(2);
+                font::ddraw_set_font(font::get_normal_font());
             }
             y += ROW_HEIGHT;
             index = letter.get_next_index();
