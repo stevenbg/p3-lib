@@ -1,0 +1,21 @@
+[package]
+name = "mod-ui-tweaks"
+edition = "2021"
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name="ui_tweaks"
+
+[dependencies]
+log = { workspace = true }
+win_dbg_logger = { workspace = true }
+hooklet = { workspace = true }
+p3-api = { path = "../p3-api" }
+
+[dependencies.windows]
+version = "0.48"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+]

@@ -11,11 +11,13 @@ pub mod font;
 pub mod graphics;
 pub mod rich_text;
 pub mod ui_notifications;
+pub mod ui_local_map_window;
 pub mod ui_shipyard_window;
 pub mod ui_tavern_window;
 pub mod ui_town_hall_sidemenu;
 pub mod ui_town_hall_window;
 pub mod ui_trading_office_window;
+pub mod window_manager;
 
 pub unsafe fn rect_clipper_stuff(rect: *const Rect) {
     let function: extern "stdcall" fn(rect: *const Rect) = mem::transmute(0x004B9650);

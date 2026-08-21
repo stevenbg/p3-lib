@@ -5,6 +5,7 @@ members = [
     "aimcli",
     "cprcli",
     "mod-auto-supply",
+    "mod-ui-tweaks",
     "mod-crash-reporter",
     "mod-debug-navpoint-matrix",
     "mod-fix-bath-house-bribe-blunders",
