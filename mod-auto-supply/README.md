@@ -120,7 +120,7 @@ ticker, the top-left boxes where "Game speed" messages appear. Everything is als
 logged with more detail via OutputDebugString.
 
 (The letter-popup town suffix - "Personal letter: Patrol - Stockholm" - lives in
-mod-ui-tweaks.)
+mod-tavern-details.)
 
 ## Known limitations
 
@@ -128,5 +128,5 @@ mod-ui-tweaks.)
   the marginal price at the end point, so a limit set exactly at a level lets the last
   transaction overshoot that stock point by up to one transaction chunk. Correcting for
   it needs the game's transaction chunk size, which is not reverse engineered yet.
-- Log output goes to OutputDebugString (DebugView or a debugger); mod-ui-tweaks fakes
+- Log output goes to OutputDebugString (DebugView or a debugger); mod-tavern-details fakes
   the PEB BeingDebugged flag at load, which unlocks the gated logging of all mods.

@@ -7,7 +7,7 @@ impossible to diagnose; with this mod loaded, every crash leaves a report behind
 
 Install: put `crash_reporter.dll` into the `mods` folder (requires the
 modloader). On load it logs "installed" (visible in DebugView when the gated
-mod logging is unlocked, see mod-ui-tweaks).
+mod logging is unlocked, see mod-tavern-details).
 
 ## How it works
 

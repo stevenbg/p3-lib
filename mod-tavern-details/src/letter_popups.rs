@@ -1,16 +1,16 @@
-//! Small quality-of-life tweaks to the game's own UI.
+//! Incoming-letter popups name their town.
 //!
-//! Current tweaks:
-//! - Letter popups name their town: the incoming-letter notifications on the top
-//!   right ("Personal letter: Patrol") get the letter's town appended ("Personal
-//!   letter: Patrol - Stockholm"), so mission letters say at a glance where to
-//!   send the ship.
+//! The notifications on the top right ("Personal letter: Patrol") get the letter's
+//! town appended ("Personal letter: Patrol - Stockholm"), so a mission letter says at
+//! a glance where to send the ship. This started life as `mod-ui-tweaks`; it lives
+//! here because what it is for is the same thing the details page is for - knowing
+//! where a tavern mission wants the ship without opening every letter.
 
-use log::{error, info, warn};
 use std::mem;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use hooklet::windows::x86::{hook_call_rel32, CallRel32Hook};
+use log::warn;
 
 /// The game's MFC-style string objects: a single pointer to character data whose
 /// header lives in the 12 bytes before it. [0x6C7CD0] holds the shared empty-string
@@ -22,14 +22,10 @@ const STRING_CTOR_FROM_CSTR: u32 = 0x0064f390;
 /// thiscall(this): release the string data.
 const STRING_DTOR: u32 = 0x0064f253;
 
-/// Incoming-letter popups ("Personal letter: Patrol") get the letter's town appended
-/// ("Personal letter: Patrol - Stockholm"). Scripted letters carry a garbage town
-/// byte (the patrol-letter bug), but their formatted text names the destination: the
-/// LAST town name occurring in the text ("...get your ship to <town> as soon as
-/// possible"). Simple letters carry a valid town byte directly. Two call hooks: the
-/// mailbox insert's announcer call (0x4D66E0 -> announcer 0x4D7B10) stashes the
-/// message being announced; the announcer's right-ticker enqueue call (0x4D7D12 ->
-/// 0x42BB20) then rebuilds the popup string with the town appended.
+/// Two call hooks: the mailbox insert's announcer call (`0x004D66E0` -> announcer
+/// `0x004D7B10`) stashes the message being announced; the announcer's right-ticker
+/// enqueue call (`0x004D7D12` -> `0x0042BB20`) then rebuilds the popup string with the
+/// town appended.
 const ANNOUNCER_CALL_OFFSET: u32 = 0x000d66e0;
 const RIGHT_TICKER_CALL_OFFSET: u32 = 0x000d7d12;
 /// The message currently being announced (set around the announcer call), 0 = none.
@@ -37,44 +33,17 @@ static ANNOUNCED_MESSAGE: AtomicU32 = AtomicU32::new(0);
 static ANNOUNCER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 static RIGHT_TICKER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Sets the PEB BeingDebugged flag so IsDebuggerPresent() returns true, unlocking the
-/// gated win_dbg_logger used by every mod. No real debugger is attached, so log output
-/// still reaches DebugView via OutputDebugString. Lives here (rather than in a
-/// specific automation mod) so it is easy to find and remove later.
-#[cfg(target_arch = "x86")]
-unsafe fn fake_being_debugged() {
-    let peb: *mut u8;
-    std::arch::asm!("mov {}, fs:[0x30]", out(reg) peb);
-    // PEB + 0x02 = BeingDebugged (u8).
-    *peb.add(2) = 1;
-}
-
-#[cfg(not(target_arch = "x86"))]
-unsafe fn fake_being_debugged() {}
-
-#[no_mangle]
-pub unsafe extern "C" fn start() -> u32 {
-    let _ = log::set_logger(&win_dbg_logger::DEBUGGER_LOGGER);
-    log::set_max_level(log::LevelFilter::Trace);
-
-    fake_being_debugged();
-
+/// Installs both hooks; `Err` names which one failed.
+pub unsafe fn install() -> Result<(), &'static str> {
     match hook_call_rel32(ANNOUNCER_CALL_OFFSET, announcer_hook as usize as u32) {
         Ok(hook) => ANNOUNCER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-        Err(_) => {
-            error!("failed to hook the letter announcer call");
-            return 1;
-        }
+        Err(_) => return Err("the letter announcer call"),
     }
     match hook_call_rel32(RIGHT_TICKER_CALL_OFFSET, right_ticker_hook as usize as u32) {
         Ok(hook) => RIGHT_TICKER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-        Err(_) => {
-            error!("failed to hook the letter ticker call");
-            return 2;
-        }
+        Err(_) => return Err("the letter ticker call"),
     }
-    info!("loaded: letter popups name their town");
-    0
+    Ok(())
 }
 
 unsafe extern "thiscall" fn announcer_hook(this: u32, merchant: u32, message: u32) {
@@ -124,9 +93,12 @@ fn town_name_bytes(town_index: u8) -> Option<Vec<u8>> {
     p3_api::town::get_town_name_bytes(town_index).filter(|name| name.len() >= 3)
 }
 
-/// The town a letter is about, as raw name bytes. Scripted letters: the last town
-/// name occurring in the letter text (bounded by the length the creation handler
-/// stores at descriptor+0). Simple letters: the town byte.
+/// The town a letter is about, as raw name bytes. Simple letters carry a valid town
+/// byte. Scripted letters are read out of their text instead - the LAST town name
+/// occurring in it ("...get your ship to <town> as soon as possible") - because their
+/// town byte is the low byte of a script variable and need not be the town the letter
+/// is about at all; a patrol letter's is outright garbage unless the corrected
+/// `patrouille.p2m` from mod-fix-patrol-letter-crash is installed.
 unsafe fn letter_town_name(message: u32) -> Option<Vec<u8>> {
     let msg_type = *((message + 4) as *const u8);
     if !(0x3c..=0x40).contains(&msg_type) && msg_type != 0x71 {

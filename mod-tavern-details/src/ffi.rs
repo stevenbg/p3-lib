@@ -9,6 +9,22 @@ use hooklet::windows::x86::{deploy_rel32_raw, hook_function_pointer, FunctionPoi
 use log::error;
 use p3_api::ui::ui_tavern_window::UITavernWindowPtr;
 
+/// Sets the PEB BeingDebugged flag so IsDebuggerPresent() returns true, unlocking the
+/// gated win_dbg_logger used by every mod. No real debugger is attached, so log output
+/// still reaches DebugView via OutputDebugString. It lives in this mod (rather than in
+/// one of the automation mods) so it is easy to find and remove later; it used to live
+/// in mod-ui-tweaks, which this mod absorbed.
+#[cfg(target_arch = "x86")]
+unsafe fn fake_being_debugged() {
+    let peb: *mut u8;
+    std::arch::asm!("mov {}, fs:[0x30]", out(reg) peb);
+    // PEB + 0x02 = BeingDebugged (u8).
+    *peb.add(2) = 1;
+}
+
+#[cfg(not(target_arch = "x86"))]
+unsafe fn fake_being_debugged() {}
+
 /// The window class family: `+0x9C` is the draw method, `+0xF4` the per-frame update,
 /// `+0x120` open. Both the draw and the update method load the selected page into eax
 /// with a 6-byte `mov eax, [reg+0x1bf4]` and dispatch through a jump table, so both
@@ -34,6 +50,8 @@ pub unsafe extern "C" fn start() -> u32 {
     // Not Trace: the page calls p3-api lookups every frame, and their trace! lines
     // would flood the debug log.
     log::set_max_level(log::LevelFilter::Info);
+
+    fake_being_debugged();
 
     match hook_function_pointer(WINDOW_OPEN_POINTER_OFFSET, window_open_hook as usize as u32) {
         Ok(hook) => WINDOW_OPEN_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
@@ -63,6 +81,11 @@ pub unsafe extern "C" fn start() -> u32 {
     {
         error!("failed to detour the tavern draw function");
         return 3;
+    }
+
+    if let Err(what) = crate::letter_popups::install() {
+        error!("failed to hook {what}");
+        return 4;
     }
 
     0

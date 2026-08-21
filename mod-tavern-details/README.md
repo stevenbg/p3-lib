@@ -67,6 +67,30 @@ are number keys rather than function keys because `mod-auto-supply` installs a
 `WH_KEYBOARD` hook whose F3 builds a trade route from anywhere - an OS keyboard hook sees
 every key regardless of what is on screen, so the two would both act on one press.
 
+## Letter popups name their town
+
+Folded in from `mod-ui-tweaks`, whose one tweak was about the same thing this page is
+about - knowing where a mission wants the ship without opening every letter. The
+incoming-letter notifications on the top right read "Personal letter: Patrol -
+Stockholm" instead of "Personal letter: Patrol".
+
+Simple letters carry a usable town byte. Scripted letters do not: their town byte is
+the low byte of whatever script variable the letter was created with, which need not be
+the town the letter is about - and for a patrol letter it is garbage unless the
+corrected `patrouille.p2m` from `mod-fix-patrol-letter-crash` is installed. For those
+the town is recovered from the formatted text instead: the last town name occurring in
+it, which is the one the letter tells the player to sail to.
+
+Two call hooks do it (`src/letter_popups.rs`): the mailbox insert's announcer call
+(`0x004D66E0`) stashes the message being announced, and the announcer's right-ticker
+enqueue call (`0x004D7D12`) rebuilds the popup string with the town appended. The
+enqueue takes its string by value and releases it, so the hook releases the incoming
+one and hands the original a fresh one.
+
+This mod also fakes the PEB BeingDebugged flag at load, which is what unlocks the gated
+`win_dbg_logger` output of **every** mod for DebugView - it came along with
+`mod-ui-tweaks` and stays here, in one obvious place, until it is no longer wanted.
+
 ## How it works
 
 The tavern window works like the other building windows: constructed once at startup
