@@ -38,8 +38,8 @@ pub static MISSIONS_HINT: &CStr = c"2: missions";
 /// column, so a long town name reaches further left than a short one. `TRADE_X` and
 /// `VALUE_X` are shared by the sailors and missions views; the captains table has its own
 /// tighter columns below.
-const TOWN_X: i32 = 155;
-const TRADE_X: i32 = 245;
+const TOWN_X: i32 = 135;
+const TRADE_X: i32 = 225;
 const VALUE_X: i32 = 345;
 /// Icons are 16x16, and heading a column with one instead of a word lets the skill columns
 /// of the captains table sit closer together than the shared positions above.
