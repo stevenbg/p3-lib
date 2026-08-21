@@ -248,7 +248,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             // and route probes are global.
             let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
             match wparam.0 {
-                w if w == CURRENT_TOWN_KEY => on_current_town_hotkey(),
+                w if w == CURRENT_TOWN_KEY => on_speed_probe_hotkey(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
                 w if w == TOWN_DUMP_KEY => on_town_dump_hotkey(),
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
@@ -392,11 +392,56 @@ const MISSIONS_PER_TOWN: [u8; 24] = [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 1
 
 /// F9 (THROWAWAY): dump the inline symbol strings the UI's rich-text markup splices in.
 ///
-/// The layout routine at `0x00462520` expands `\\C`, `\\L` and `\\B` by taking the
+/// F9 (THROWAWAY): dump the tick pacer's speed block, from the sea-battle speed work
+/// (now the gitbook's basics/time.md Game Speed section).
+///
+/// The pacer (`0x00546640`) turns elapsed real ms (`[0x6DCCF8]` minus `ops+0x938`)
+/// into an advance-time operation (opcode 0xC4) sized by the pacing mode `ops+0x92C`:
+/// mode 0 = normal play, one tick per `ops+0x8D4` ms (the speed slider's divisor,
+/// cap 8/batch); 1 = fast forward, per `ops+0x8D8` (cap 256); 2 = local map, per the
+/// constant `[0x673CF8]` = 3375 (cap 1). `ops+0x914` is the master run flag.
+unsafe fn on_speed_probe_hotkey() {
+    let ops = 0x006df2f0u32;
+    let r = |off: u32| *((ops + off) as *const u32);
+    debug!(
+        "speed probe: level {} run {} advancing {} net {} | div1 {} div2 {} saved_div {} f91c {} | last_ms {} pending_c4 {} timer {} interval {} | const_ms {} clock_ms {} tick {:#x} queue {}",
+        r(0x92c),
+        r(0x914),
+        r(0x918),
+        r(0x928),
+        r(0x8d4),
+        r(0x8d8),
+        r(0x8dc),
+        r(0x91c),
+        r(0x938),
+        r(0x93c),
+        r(0x940),
+        r(0x944),
+        *(0x673cf8u32 as *const u32),
+        *(0x6dccf8u32 as *const u32),
+        *(0x6de4b4u32 as *const u32),
+        *((ops + 0x482) as *const u16),
+    );
+}
+
+/// F10 (THROWAWAY): toggle "battle time follows the speed slider".
+///
+/// A sea battle switches the tick pacer to level 2, whose branch ignores the slider
+/// and paces the world at the hard constant `[0x673CF8]` = 3375 ms per tick
+/// (`0x0054675C: mov edi,[0x673CF8]`). The patch replaces that one load - same
+/// length, in place - with `mov edi,[esi+0x8D4]`, the level-0 branch's own divisor,
+/// so battle time runs at whatever the slider was set to (3515 slowdown .. 78 very
+/// fast). The level-2 cap of 1 tick per pacer run stays: at 60 fps that allows ~60
+/// ticks/s, far above very fast's 12.8, so it never binds. (An earlier probe that
+/// enqueued the fast-forward op 0xC8 level 1 instead flickered the world view over
+/// the battle scene - level 1 is the fast-forward MODE with its own window, not a
+/// speed.)
+/// (retired F9) The layout routine at `0x00462520` expands `\\C`, `\\L` and `\\B` by taking the
 /// `char*` at `+0x4` of the objects in `0x006CC37C`, `0x006CC384` and `0x006CC380`
 /// (`0x004627F5`..`0x0046281F`), so they are text, not graphics - and can be appended to
 /// any string drawn the ordinary way. This prints them, and their neighbours in that
 /// global cluster, as bytes and as characters.
+#[allow(dead_code)]
 unsafe fn on_current_town_hotkey() {
     for global in (0x006cc370..=0x006cc394u32).step_by(4) {
         let object = *(global as *const u32);
