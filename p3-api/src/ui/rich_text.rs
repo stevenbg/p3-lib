@@ -47,3 +47,8 @@ pub unsafe fn draw_rich_text(layout_object: u32, text: &[u8], x: i32, y: i32, wi
 /// The offset of the tavern window's own text-layout object, the one its side room draws
 /// letter bodies with (`0x005D7FF7`).
 pub const TAVERN_WINDOW_LAYOUT_OFFSET: u32 = 0x1608;
+
+/// The offset of the town hall window's own text-layout object, the one its pages draw
+/// prose with (e.g. `0x005E40C2`, in a function that also writes the window's known
+/// fields `+0x1930` and `+0x1945` through the same register).
+pub const TOWN_HALL_WINDOW_LAYOUT_OFFSET: u32 = 0x18C8;
