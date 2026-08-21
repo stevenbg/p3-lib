@@ -10,43 +10,51 @@ use p3_api::{
     ships::ShipsPtr,
     town::get_town_name_bytes,
     ui::{
-        font, rect_clipper_stuff,
+        font,
+        graphics::{
+            draw_graphic, draw_graphic_frame, graphic_frame_size, GRAPHIC_ID_BONUS, GRAPHIC_ID_CAPTAIN, GRAPHIC_ID_CREW, GRAPHIC_ID_MONEY,
+            GRAPHIC_ID_PIRATE,
+        },
+        rect_clipper_stuff,
         rich_text::{draw_rich_text, TAVERN_WINDOW_LAYOUT_OFFSET},
         ui_tavern_window::UITavernWindowPtr,
     },
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_1, VK_2, VK_3, VK_MENU};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_1, VK_2, VK_MENU};
 
-pub static CAPTAINS: &CStr = c"Captains in town";
-pub static PIRATES: &CStr = c"Pirates in town";
-pub static SAILORS: &CStr = c"Sailors in town";
+pub static CREW: &CStr = c"Crew in town";
 /// The filtered views only cover the towns the player may enter, so their headings say
 /// "Known": what they list is what he can see, not what exists.
-pub static KNOWN_CAPTAINS: &CStr = c"Known captains in town";
-pub static KNOWN_PIRATES: &CStr = c"Known pirates in town";
-pub static KNOWN_SAILORS: &CStr = c"Known sailors in town";
+pub static KNOWN_CREW: &CStr = c"Known crew in town";
 pub static NONE: &CStr = c"none";
-pub static NAVIGATION: &CStr = c"Nav";
-pub static TRADE: &CStr = c"Trade";
-pub static COMBAT: &CStr = c"Comb";
-pub static WAGE: &CStr = c"Wage";
-pub static SHARE: &CStr = c"Share";
-pub static AVAILABLE: &CStr = c"Available";
 pub static MISSIONS: &CStr = c"Missions in town";
 pub static KNOWN_MISSIONS: &CStr = c"Known missions in town";
 pub static OFFER: &CStr = c"Offer";
 pub static TERMS: &CStr = c"Terms";
-pub static SAILORS_HINT: &CStr = c"2: sailors";
-pub static CAPTAINS_HINT: &CStr = c"1: captains";
-pub static MISSIONS_HINT: &CStr = c"3: missions";
+pub static CREW_HINT: &CStr = c"1: crew";
+pub static MISSIONS_HINT: &CStr = c"2: missions";
 
 /// Text mode 2 draws right-aligned: every column x below is the right edge of that
-/// column, so a long town name reaches further left than a short one.
+/// column, so a long town name reaches further left than a short one. `TRADE_X` and
+/// `VALUE_X` are shared by the sailors and missions views; the captains table has its own
+/// tighter columns below.
 const TOWN_X: i32 = 155;
-const NAVIGATION_X: i32 = 200;
 const TRADE_X: i32 = 245;
-const COMBAT_X: i32 = 295;
 const VALUE_X: i32 = 345;
+/// Icons are 16x16, and heading a column with one instead of a word lets the skill columns
+/// of the captains table sit closer together than the shared positions above.
+const ICON: i32 = 16;
+/// The kind column is as wide as the widest figure in it, so a narrower one can be centred
+/// against the others rather than hugging the left.
+const KIND_WIDTH: i32 = 26;
+/// The crew table: a kind icon marks whose row it is, then the three skills, what he asks,
+/// and the town's hireable sailors - captains, pirates and sailors in one page.
+const KIND_X: i32 = TOWN_X + 6;
+const SKILL_1_X: i32 = TOWN_X + 70;
+const SKILL_2_X: i32 = TOWN_X + 100;
+const SKILL_3_X: i32 = TOWN_X + 130;
+const PAY_X: i32 = TOWN_X + 180;
+const CREW_X: i32 = TOWN_X + 220;
 const FIRST_ROW_Y: i32 = 12;
 const ROW_HEIGHT: i32 = 16;
 const BLACK: u32 = 0xff000000;
@@ -56,15 +64,13 @@ const BLACK: u32 = 0xff000000;
 /// offers, with alt selecting every town instead of only the enterable ones. Number keys
 /// rather than function keys, because mod-auto-supply's F3 builds a trade route from
 /// anywhere and its keyboard hook cannot see which page is on screen.
-static VIEW: AtomicU8 = AtomicU8::new(VIEW_CAPTAINS);
+static VIEW: AtomicU8 = AtomicU8::new(VIEW_CREW);
 static SHOW_ALL_TOWNS: AtomicBool = AtomicBool::new(false);
 static KEY_1_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static KEY_2_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static KEY_3_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
-const VIEW_CAPTAINS: u8 = 0;
-const VIEW_SAILORS: u8 = 1;
-const VIEW_MISSIONS: u8 = 2;
+const VIEW_CREW: u8 = 0;
+const VIEW_MISSIONS: u8 = 1;
 
 /// Read the page's keys, called once per frame from the update phase and only while the
 /// page is actually on screen, so nothing outside this page is affected and no global
@@ -72,9 +78,8 @@ const VIEW_MISSIONS: u8 = 2;
 /// than needing to be held.
 pub(crate) fn poll_keys() {
     for (key, was_down, view) in [
-        (VK_1, &KEY_1_WAS_DOWN, VIEW_CAPTAINS),
-        (VK_2, &KEY_2_WAS_DOWN, VIEW_SAILORS),
-        (VK_3, &KEY_3_WAS_DOWN, VIEW_MISSIONS),
+        (VK_1, &KEY_1_WAS_DOWN, VIEW_CREW),
+        (VK_2, &KEY_2_WAS_DOWN, VIEW_MISSIONS),
     ] {
         if key_pressed(key, was_down) {
             VIEW.store(view, Ordering::Relaxed);
@@ -131,32 +136,20 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     let towns = enterable_towns(all_towns);
 
     match view {
-        VIEW_SAILORS => {
-            let heading = if all_towns { SAILORS } else { KNOWN_SAILORS };
-            y = draw_sailors(x, y, last_y, heading, &towns);
-        }
         VIEW_MISSIONS => {
             let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
             y = draw_missions(window, y, last_y, heading, &towns, all_towns);
         }
         _ => {
-            let (captains, pirates) = hireable_auto_traders(&towns);
-            let (captains_heading, pirates_heading) = if all_towns { (CAPTAINS, PIRATES) } else { (KNOWN_CAPTAINS, KNOWN_PIRATES) };
-            y = draw_section(x, y, last_y, captains_heading, WAGE, &captains, false);
-            y += ROW_HEIGHT;
-            y = draw_section(x, y, last_y, pirates_heading, SHARE, &pirates, true);
+            let heading = if all_towns { CREW } else { KNOWN_CREW };
+            y = draw_crew(x, y, last_y, heading, &towns, all_towns);
         }
     }
 
     if y <= last_y {
         font::ddraw_set_font(font::get_normal_font());
-        let hints: [&CStr; 2] = match view {
-            VIEW_SAILORS => [CAPTAINS_HINT, MISSIONS_HINT],
-            VIEW_MISSIONS => [CAPTAINS_HINT, SAILORS_HINT],
-            _ => [SAILORS_HINT, MISSIONS_HINT],
-        };
-        draw_text(x + TRADE_X, y + ROW_HEIGHT, hints[0].to_bytes());
-        draw_text(x + VALUE_X, y + ROW_HEIGHT, hints[1].to_bytes());
+        let other = if view == VIEW_MISSIONS { CREW_HINT } else { MISSIONS_HINT };
+        draw_text(x + VALUE_X, y + ROW_HEIGHT, other.to_bytes());
     }
 }
 
@@ -259,69 +252,82 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
     y
 }
 
+/// A graphic's width, for placing it against right-aligned text; `ICON` covers the case
+/// where the graphic is missing.
+unsafe fn icon_width(id: u32) -> i32 {
+    graphic_frame_size(id, 0).map(|(width, _)| width).unwrap_or(ICON)
+}
+
 fn key_down(key: VIRTUAL_KEY) -> bool {
     (unsafe { GetKeyState(key.0 as i32) } as u16) & 0x8000 != 0
 }
 
-/// One table of auto traders waiting in taverns: a header row whose first cell names
-/// what the table lists, then a row per trader. `share` prints the demanded loot
-/// share instead of the wage.
-unsafe fn draw_section(x: i32, y: i32, last_y: i32, label: &CStr, value_column: &CStr, traders: &[(u8, AutoTraderPtr)], share: bool) -> i32 {
-    let mut y = y;
-    font::ddraw_set_font(font::get_header_font());
-    draw_text(x + TOWN_X, y, label.to_bytes());
-    draw_text(x + NAVIGATION_X, y, NAVIGATION.to_bytes());
-    draw_text(x + TRADE_X, y, TRADE.to_bytes());
-    draw_text(x + COMBAT_X, y, COMBAT.to_bytes());
-    draw_text(x + VALUE_X, y, value_column.to_bytes());
-    y += ROW_HEIGHT;
-
-    font::ddraw_set_font(font::get_normal_font());
-    if traders.is_empty() {
-        draw_text(x + TOWN_X, y, NONE.to_bytes());
-        return y + ROW_HEIGHT;
-    }
-
-    for (town_index, trader) in traders {
-        if y > last_y {
-            break;
-        }
-        if let Some(town) = get_town_name_bytes(*town_index) {
-            draw_text(x + TOWN_X, y, &town);
-        }
-        draw_number(x + NAVIGATION_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
-        draw_number(x + TRADE_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
-        draw_number(x + COMBAT_X, y, AutoTraderPtr::skill_level(trader.get_combat_skill()) as i32, "");
-        if share {
-            draw_number(x + VALUE_X, y, trader.get_pirate_loot_share_percent() as i32, " %");
-        } else {
-            draw_number(x + VALUE_X, y, trader.get_daily_wage() as i32, "");
-        }
-        y += ROW_HEIGHT;
-    }
-    y
-}
-
-/// One row per town: the sailors the player can hire there right now, straight from the
-/// number the tavern itself works from.
-unsafe fn draw_sailors(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8]) -> i32 {
+/// The whole hiring picture of a town in one table: a row per hireable captain or pirate,
+/// marked by the game's own figure for which he is, with his three skills and what he
+/// asks - a daily wage for a captain, a share of the loot for a pirate - and the town's
+/// hireable sailors on its first row. A town with nobody waiting still gets a row, so its
+/// sailors are visible.
+///
+/// A pirate's skills are left blank unless `all_towns`: the filtered table shows what the
+/// player could know, and only the unrestricted one gives them away.
+unsafe fn draw_crew(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
     let mut y = y;
     font::ddraw_set_font(font::get_header_font());
     draw_text(x + TOWN_X, y, heading.to_bytes());
-    draw_text(x + TRADE_X, y, AVAILABLE.to_bytes());
+    // The game's own icons head the columns: the three skill bonuses out of one sheet, the
+    // coin for what he asks, the crew figure for the sailors. Columns are right-aligned, so
+    // an icon heading one sits its own width to the left.
+    for (frame, column) in [(0, SKILL_1_X), (1, SKILL_2_X), (2, SKILL_3_X)] {
+        draw_graphic_frame(GRAPHIC_ID_BONUS, frame, x + column - icon_width(GRAPHIC_ID_BONUS), y);
+    }
+    // The icons are not one size, so each is placed by its own width to line its right edge
+    // up with the numbers under it.
+    draw_graphic(GRAPHIC_ID_MONEY, x + PAY_X - icon_width(GRAPHIC_ID_MONEY), y);
+    draw_graphic(GRAPHIC_ID_CREW, x + CREW_X - icon_width(GRAPHIC_ID_CREW), y);
+    // The blits leave the constant colour white; everything below is text again.
+    ddraw_set_constant_color(BLACK);
     y += ROW_HEIGHT;
 
     font::ddraw_set_font(font::get_normal_font());
+    let ships = ShipsPtr::new();
     let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
+
     for town_index in towns {
         if y > last_y {
             break;
         }
+        // The town's own row carries its name and its sailors; anyone waiting there follows
+        // on this row and the ones under it.
         if let Some(town) = get_town_name_bytes(*town_index) {
             draw_text(x + TOWN_X, y, &town);
         }
-        draw_number(x + TRADE_X, y, merchant.get_available_sailors(*town_index) as i32, "");
-        y += ROW_HEIGHT;
+        draw_number(x + CREW_X, y, merchant.get_available_sailors(*town_index) as i32, "");
+
+        let waiting = hireable_auto_traders(&ships, *town_index);
+        if waiting.is_empty() {
+            // Nobody waiting, so the town's own row is all it gets.
+            y += ROW_HEIGHT;
+            continue;
+        }
+        for (is_pirate, trader) in waiting {
+            if y > last_y {
+                break;
+            }
+            let kind = if is_pirate { GRAPHIC_ID_PIRATE } else { GRAPHIC_ID_CAPTAIN };
+            draw_graphic(kind, x + KIND_X + (KIND_WIDTH - icon_width(kind)) / 2, y);
+            ddraw_set_constant_color(BLACK);
+            if all_towns || !is_pirate {
+                draw_number(x + SKILL_1_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
+                draw_number(x + SKILL_2_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
+                draw_number(x + SKILL_3_X, y, AutoTraderPtr::skill_level(trader.get_combat_skill()) as i32, "");
+            }
+            if is_pirate {
+                draw_number(x + PAY_X, y, trader.get_pirate_loot_share_percent() as i32, " %");
+            } else {
+                draw_number(x + PAY_X, y, trader.get_daily_wage() as i32, "");
+            }
+            y += ROW_HEIGHT;
+        }
     }
     y
 }
@@ -347,32 +353,21 @@ unsafe fn enterable_towns(all_towns: bool) -> Vec<u8> {
         .collect()
 }
 
-/// The captains and the pirate captains nobody employs, by town: the records chained
-/// to a town are the ones sitting in its tavern, and an unemployed one (merchant
-/// `0xFF`) is the one its resolver hands out.
-unsafe fn hireable_auto_traders(towns: &[u8]) -> (Vec<(u8, AutoTraderPtr)>, Vec<(u8, AutoTraderPtr)>) {
-    let ships = ShipsPtr::new();
-    let auto_traders = ships.get_auto_traders_size();
-    let mut captains = Vec::new();
-    let mut pirates = Vec::new();
-
-    for &town_index in towns {
-        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
-        // The chain ends on an out-of-range index; the count also caps the walk.
-        for _ in 0..auto_traders {
-            let Some(trader) = ships.get_auto_trader(index) else { break };
-            if trader.get_merchant_index() == 0xff {
-                if trader.is_captain() {
-                    captains.push((town_index, trader));
-                } else {
-                    pirates.push((town_index, trader));
-                }
-            }
-            index = trader.get_next_index();
+/// The captains and pirates nobody employs in one town, with `true` marking a pirate. The
+/// records chained to a town are the ones sitting in its tavern, and an unemployed one
+/// (merchant `0xFF`) is the one its resolver hands out.
+unsafe fn hireable_auto_traders(ships: &ShipsPtr, town_index: u8) -> Vec<(bool, AutoTraderPtr)> {
+    let mut waiting = Vec::new();
+    let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
+    // The chain ends on an out-of-range index; the count also caps the walk.
+    for _ in 0..ships.get_auto_traders_size() {
+        let Some(trader) = ships.get_auto_trader(index) else { break };
+        if trader.get_merchant_index() == 0xff {
+            waiting.push((trader.is_pirate(), trader));
         }
+        index = trader.get_next_index();
     }
-
-    (captains, pirates)
+    waiting
 }
 
 /// The towns the player's ships are in, indexed by town.

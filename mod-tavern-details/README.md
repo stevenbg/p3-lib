@@ -8,25 +8,25 @@ Install: put `tavern_details.dll` into the `mods` folder (requires the modloader
 
 ## Page contents
 
-Three views, **1**, **2** and **3**.
+Two views, **1** and **2**.
 
-1 - who can be hired, by town:
+1 - everyone a town has to hire, one row per man, headed by the game's own icons - the
+three skill bonuses out of one sheet, the coin, the crew figure:
 
-- **captains for hire**: their navigation, trade and combat levels and their daily
-  wage. A captain is listed while his record is chained to a town (that is where he
-  sits) and no merchant employs him
-- **pirate captains**: their levels and the share of the loot they demand
-  (`25 + 5 * ceil(field_8 / 32)` percent). Every town keeps one pirate record
-  permanently, so this lists the pirate belonging to each town rather than the ones
-  currently sitting in a tavern; pirates out sailing for a merchant drop off the list
-  because their record leaves the town's chain
+- **captains**: their navigation, trade and combat levels and their daily wage. A captain
+  is listed while his record is chained to a town (that is where he sits) and no merchant
+  employs him
+- **pirates**, marked by the skull: the share of the loot they demand
+  (`25 + 5 * ceil(field_8 / 32)` percent). Every town keeps one pirate record permanently,
+  so this lists the pirate belonging to each town rather than the ones currently sitting in
+  a tavern; pirates out sailing for a merchant drop off the list because their record
+  leaves the town's chain. Their skill levels show only in the unrestricted view
+- **sailors**, on the town's own row: the number the tavern itself works from,
+  `0x004F6CA0` = `min(the player's sailor pool for that town, town + 0x2E4 - 1)`. Note that
+  the tavern's own page caps what it offers at 50 unless `mod-tavern-show-all-sailors` is
+  installed; this table shows the uncapped number
 
-2 - **sailors available for hire**, by town: the number the tavern itself works from,
-`0x004F6CA0` = `min(the player's sailor pool for that town, town + 0x2E4 - 1)`. Note
-that the tavern's own page caps what it offers at 50 unless
-`mod-tavern-show-all-sailors` is installed; this table shows the uncapped number.
-
-3 - the **missions** a side room offers, by town: the offer's title, the town a
+2 - the **missions** a side room offers, by town: the offer's title, the town a
 transport order delivers to, the cargo it needs a ship for in loads, and what it pays.
 Each of those comes out of the mission script's own variables (see `p3-api`'s
 `letters` module for which variable and how it was identified); a mission that states no
@@ -36,7 +36,7 @@ foiled ambush rather than a fee.
 A smuggler's order names its destination only in the message that follows acceptance, so
 the filtered view leaves that cell blank and only the unrestricted one fills it in.
 
-All three views cover the towns the player may legally enter, which is where he can hire:
+Both views cover the towns the player may legally enter, which is where he can hire:
 the ones he has a trading office in, plus the ones one of his ships is in - including a
 ship still entering the harbour, which is when the town becomes enterable and its tavern
 reachable (ship status `<= 3`, town from the ship's `+0x39`).
@@ -46,11 +46,11 @@ ship `+0x4` for the next link), the way the game's per-merchant ship census at
 `0x004F0AB1` does, so a world with a thousand ships in it costs no more than the
 player's own fleet.
 
-Each view has a filtered and an unrestricted variant: **1**/**2**/**3** list only the
-enterable towns and only what the player could know, **Alt+1**/**Alt+2**/**Alt+3** every
-town in the game and everything readable. The filtered headings say "Known
-captains/pirates/sailors/missions in town", since what they list is what the player can
-see rather than what exists; the unrestricted ones drop the word. The keys act on their
+Each view has a filtered and an unrestricted variant: **1**/**2** list only the enterable
+towns and only what the player could know, **Alt+1**/**Alt+2** every town in the game and
+everything readable - a pirate's skills and a smuggler's destination appear only there. The
+filtered headings say "Known crew/missions in town", since what they list is what the
+player can see rather than what exists; the unrestricted ones drop the word. The keys act on their
 down edge, so nothing has to be held, and the chosen view survives closing and reopening
 the tavern. The page's bottom line names the key for the other view; the alt variants
 are not advertised on the page.
