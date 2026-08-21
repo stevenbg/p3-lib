@@ -219,6 +219,11 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
             if let Some(reward) = letter.get_reward() {
                 terms.push(format!("{reward}\\C").into_bytes());
             }
+            // A treasure map is the one offer that costs money instead of paying it, so
+            // its sum goes in with a minus.
+            if let Some(price) = letter.get_asking_price() {
+                terms.push(format!("-{price}\\C").into_bytes());
+            }
             if !terms.is_empty() {
                 // Through the framework's rich-text pass, for the game's own cargo and
                 // coin symbols. `\r` offsets the line by minus its own width

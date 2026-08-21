@@ -27,11 +27,17 @@ three skill bonuses out of one sheet, the coin, the crew figure:
   installed; this table shows the uncapped number
 
 2 - the **missions** a side room offers, by town: the offer's title, the town a
-transport order delivers to, the cargo it needs a ship for in loads, and what it pays.
-Each of those comes out of the mission script's own variables (see `p3-api`'s
-`letters` module for which variable and how it was identified); a mission that states no
-sum or carries no cargo leaves those cells empty, and a patrol's figure is the bonus per
-foiled ambush rather than a fee.
+transport order delivers to, the cargo it needs a ship for in loads, and what it pays -
+or, for a treasure map, what it costs, with a minus in front of it.
+
+Each of those comes out of the mission's own script, which is a file rather than code:
+`missions_addon/*.p2m` inside `p2arch0_eng.cpr`, in the bytecode the letter-script
+interpreter runs, named per script id by `scripts/missions_eng.ini`. `p3-api`'s `letters`
+module says which variable each figure lives in and quotes the arithmetic. A patrol's
+figure is the bonus per foiled ambush rather than a fee; a trader and a smuggler keep no
+sum of their own, so theirs is the cargo times the rate their script pays on delivery (90
+and 150); the courier works its pay out only when the voyage ends, so its cell stays
+empty.
 
 A smuggler's order names its destination only in the message that follows acceptance, so
 the filtered view leaves that cell blank and only the unrestricted one fills it in.

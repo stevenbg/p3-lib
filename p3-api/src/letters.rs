@@ -134,34 +134,70 @@ impl LetterPtr {
         Some(bytes)
     }
 
-    /// The sum a tavern mission offer is worth, read from the variable its own script
-    /// computes it into, or `None` for a mission that never states one.
+    /// The sum a tavern mission offer is worth, or `None` for a mission that never states
+    /// one.
     ///
-    /// Which variable that is belongs to the script (`task+0x10`), so it takes a small
-    /// table. The scripts were decoded from their bytecode - the interpreter's arithmetic
-    /// is `0A dst imm32` (load), `0B a b dst` (add), `0C` (subtract) and `0D` (multiply),
-    /// all operating on the variable array:
+    /// The missions are script files rather than code - `missions_addon/*.p2m` inside
+    /// `p2arch0_eng.cpr`, one per script id as `scripts/missions_eng.ini` names them - in
+    /// the same bytecode the interpreter at `0x004ECF64` runs, so each mission's own
+    /// arithmetic can be read off the file:
     ///
-    /// |Script|Mission|Computation|Variable|
+    /// |Script|File|Mission|What it pays|
     /// |-|-|-|-|
-    /// |11|pirate hunter|`(var4 + 1) * 1500`|5|
-    /// |15|escort, fugitive|`var4 * 100 + 3000`|13|
-    /// |16|patrol|`(var3 + 1) * 1700`|4|
+    /// |8|`Schmuggler`|smuggler|`loads * 150` on delivery|
+    /// |9|`TransportAuftrag`|trader|`loads * 90` on delivery|
+    /// |11|`PiratVernichten`|pirate hunter|variable 5, `(rand%3 + 1) * 1500 + rand%10 * 100`|
+    /// |15|`Eskorte`|escort, fugitive|variable 13, `rand%20 * 100 + 3000`|
+    /// |16|`patrouille`|patrol|variable 4, `(rand%3 + 1) * 1700` per foiled ambush|
     ///
-    /// The patrol's figure is a rate rather than a fee: `var3` counts foiled ambushes, so
-    /// the variable holds what one ambush is worth, and its voyage pay is never stated.
-    /// The transport orders - trader (script 9), smuggler (8) and courier (13) - compute
-    /// no sum at all; their letters only promise to pay well.
+    /// Scripts 11, 15 and 16 compute their sum before they send the offer, so a pending
+    /// offer already holds it, and their letters quote the same variable (the templates
+    /// name their variables: `%c` followed by a variable byte).
     ///
-    /// Registers are reused as a script runs, so only the destination variable keeps the
-    /// value: an escort's `var4` no longer holds the distance its reward was computed
-    /// from, while `var13` still holds the reward.
+    /// The two transport orders hold no sum at all - their letters only promise to pay
+    /// well - but the rate is fixed in the script, applied to the cargo at the moment it
+    /// pays (`v3 * 150` at command 85 of the smuggler, `v3 * 90` at command 59 of the
+    /// trader), so the figure here is derived from the cargo instead of read. The rate is
+    /// the whole difference between the two, apart from the smuggler's risk of losing the
+    /// goods, which falls as the ship carries more other cargo.
+    ///
+    /// The patrol's figure is a rate rather than a fee: variable 3 counts foiled ambushes,
+    /// so the variable holds what one ambush is worth, and its voyage pay is never stated.
+    /// The courier (script 13) pays `(days_to_spare * 220) + 50` and only works it out
+    /// when the voyage ends, so it has nothing to show while it waits.
+    ///
+    /// Variables are reused as a script runs - a delivered order overwrites its answer
+    /// slot with the sum it paid - so the table only holds for an offer still on the table.
     pub unsafe fn get_reward(&self) -> Option<u32> {
         let (script, variables, count) = self.tavern_mission_script()?;
-        let variable = match script {
-            11 => 5,
-            15 => 13,
-            16 => 4,
+        // The transport orders pay a rate per load; every other mission holds the finished
+        // sum in a variable, which is the same thing with a rate of one.
+        let (variable, rate): (u16, u32) = match script {
+            8 => (3, 150),
+            9 => (3, 90),
+            11 => (5, 1),
+            15 => (13, 1),
+            16 => (4, 1),
+            _ => return None,
+        };
+        if variable >= count {
+            return None;
+        }
+        Some((*((variables + variable as u32 * 4) as *const u32)).wrapping_mul(rate))
+    }
+
+    /// What an offer asks the player to *pay*, rather than what it pays him.
+    ///
+    /// Only the treasure map (script 12, `SchatzKarte`) charges anything: it sells one
+    /// piece of a map for variable 1, `(rand%7) * 100 + 800`, so 800 to 1400. That is the
+    /// sum its letter quotes, computed before the offer goes out, and the sum the script
+    /// takes back when the player accepts - `v0 = 0; v0 = v0 - v1; pay(merchant, v0)`,
+    /// the pay command with a negative amount. What the recovered treasure is worth is a
+    /// different variable (8), and the script only fills it in at the end.
+    pub unsafe fn get_asking_price(&self) -> Option<u32> {
+        let (script, variables, count) = self.tavern_mission_script()?;
+        let variable: u16 = match script {
+            12 => 1,
             _ => return None,
         };
         if variable >= count {
@@ -195,14 +231,16 @@ impl LetterPtr {
     /// The cargo a tavern mission offer needs a ship for, in loads, or `None` for a
     /// mission that carries nothing.
     ///
-    /// Variable 3 of the transport scripts - trader (script 9) and smuggler (script 8) -
-    /// which both compute it as `<value> + 4`, so an order never asks for fewer than four
-    /// loads. Unlike the reward variables this is an empirical identification rather than
-    /// a decoded formula: across five offers the variable matched the amount the letter
-    /// asked for every time (traders 21, 12 and 13 loads, smugglers 14 and 15), and the
-    /// command that tests a ship against it sits further into the script than has been
-    /// decoded. The courier (script 13) asks for three loads in its text but keeps no such
-    /// variable, so it returns `None`.
+    /// Variable 3 of the two transport scripts - trader (9) and smuggler (8), which are
+    /// the same script with different rates and a different tone. Both roll it the same
+    /// way, `rand() % 40` then `+ 4`, so an order asks for 4 to 43 loads; the load command
+    /// later fills a ship and the script waits until the amount on board reaches this
+    /// variable. (Read from the script files, `missions_addon/TransportAuftrag.p2m` and
+    /// `Schmuggler.p2m`, commands 8..13 and 32..33 of both; it also matched the amount the
+    /// letter quoted in all five offers seen in game.)
+    ///
+    /// The courier (script 13) asks for three loads in the words of its letter, as a
+    /// literal `3 \L`, and keeps no variable for it, so it returns `None`.
     pub unsafe fn get_required_loads(&self) -> Option<u32> {
         let (script, variables, count) = self.tavern_mission_script()?;
         let variable = match script {
@@ -218,13 +256,16 @@ impl LetterPtr {
     /// The town a transport order's cargo has to reach, or `None` for a mission that has
     /// no destination.
     ///
-    /// Variable 5 of the transport scripts - trader (script 9) and smuggler (script 8) -
-    /// and variable 10 of the passenger script (15), which serves both the escort and the
-    /// fugitive. Identified the same empirical way as the cargo: the variable named the
-    /// town the letter names in all seven offers seen (traders to Malmö, Edinburgh and
-    /// Ladoga, smugglers to Edinburgh and London, an escort to Rostock and a fugitive to
-    /// Riga). For script 15 the neighbouring town-shaped variables 8 and 9 matched neither
-    /// destination, and variable 10 both.
+    /// Variable 5 of the transport scripts - trader (9) and smuggler (8) - and variable 10
+    /// of the passenger script (15), which serves both the escort and the fugitive.
+    ///
+    /// The transport scripts pick it with the random-town command and re-roll it against
+    /// the order's own town (commands 14..19 of both files), and script 15 gets it out of
+    /// its route command. Each script's letter template settles it beyond doubt: a
+    /// placeholder carries the variable it prints, and the trader's reads "ship my
+    /// `%B[v3]` goods from `%t[v0]` to `%t[v5]`" while the escort's promises to sail to
+    /// `%t[v10]`. Seven offers in game agreed (traders to Malmö, Edinburgh and Ladoga,
+    /// smugglers to Edinburgh and London, an escort to Rostock and a fugitive to Riga).
     pub unsafe fn get_destination_town_index(&self) -> Option<u8> {
         let (script, variables, count) = self.tavern_mission_script()?;
         let variable = match script {
@@ -245,10 +286,14 @@ impl LetterPtr {
 
     /// Does the offer keep its destination from the player until he accepts?
     ///
-    /// True for a smuggler (script 8), whose offer only asks for free capacity and names
-    /// the town in the message that follows acceptance, and false for a trader (script 9),
-    /// whose offer states both towns up front. A display that shows only what the player
-    /// could know has to respect that, even though the field is readable either way.
+    /// True for a smuggler (script 8), false for a trader (script 9). The two scripts are
+    /// otherwise the same, and their letter templates say exactly where the line is: an
+    /// offer's text holds the question and the reply that follows acceptance separated by
+    /// a `|`, and the smuggler asks only for "a ship with `%B[v3]` of free storage space"
+    /// before the bar, naming `%t[v5]` after it, while the trader offers to "ship my
+    /// `%B[v3]` goods from `%t[v0]` to `%t[v5]`" before it. A display that shows only what
+    /// the player could know has to respect that, even though the field is readable either
+    /// way.
     pub unsafe fn tavern_mission_conceals_destination(&self) -> bool {
         matches!(self.tavern_mission_script(), Some((8, _, _)))
     }
