@@ -8,9 +8,9 @@ Install: put `tavern_details.dll` into the `mods` folder (requires the modloader
 
 ## Page contents
 
-Three views, **F1**, **F2** and **F3**.
+Three views, **1**, **2** and **3**.
 
-F1 - who can be hired, by town:
+1 - who can be hired, by town:
 
 - **captains for hire**: their navigation, trade and combat levels and their daily
   wage. A captain is listed while his record is chained to a town (that is where he
@@ -21,12 +21,12 @@ F1 - who can be hired, by town:
   currently sitting in a tavern; pirates out sailing for a merchant drop off the list
   because their record leaves the town's chain
 
-F2 - **sailors available for hire**, by town: the number the tavern itself works from,
+2 - **sailors available for hire**, by town: the number the tavern itself works from,
 `0x004F6CA0` = `min(the player's sailor pool for that town, town + 0x2E4 - 1)`. Note
 that the tavern's own page caps what it offers at 50 unless
 `mod-tavern-show-all-sailors` is installed; this table shows the uncapped number.
 
-F3 - the **missions** a side room offers, by town: the offer's title, the town a
+3 - the **missions** a side room offers, by town: the offer's title, the town a
 transport order delivers to, the cargo it needs a ship for in loads, and what it pays.
 Each of those comes out of the mission script's own variables (see `p3-api`'s
 `letters` module for which variable and how it was identified); a mission that states no
@@ -46,19 +46,20 @@ ship `+0x4` for the next link), the way the game's per-merchant ship census at
 `0x004F0AB1` does, so a world with a thousand ships in it costs no more than the
 player's own fleet.
 
-Each view has a filtered and an unrestricted variant: **F1**/**F2**/**F3** list only the
-enterable towns and only what the player could know, **Alt+F1**/**Alt+F2**/**Alt+F3**
-every town in the game and everything readable. The filtered headings say "Known
+Each view has a filtered and an unrestricted variant: **1**/**2**/**3** list only the
+enterable towns and only what the player could know, **Alt+1**/**Alt+2**/**Alt+3** every
+town in the game and everything readable. The filtered headings say "Known
 captains/pirates/sailors/missions in town", since what they list is what the player can
 see rather than what exists; the unrestricted ones drop the word. The keys act on their
 down edge, so nothing has to be held, and the chosen view survives closing and reopening
 the tavern. The page's bottom line names the key for the other view; the alt variants
 are not advertised on the page.
 
-Scoping is what keeps this out of the way of `mod-auto-supply`, which binds F1 in the
-trading office: the keys are read in the window's update phase and only while page `-1`
-is the one on screen, so they do nothing anywhere else. No global keyboard hook is
-involved.
+The keys are read in the window's update phase and only while page `-1` is the one on
+screen, so they do nothing anywhere else, and no global keyboard hook is involved. They
+are number keys rather than function keys because `mod-auto-supply` installs a
+`WH_KEYBOARD` hook whose F3 builds a trade route from anywhere - an OS keyboard hook sees
+every key regardless of what is on screen, so the two would both act on one press.
 
 ## How it works
 

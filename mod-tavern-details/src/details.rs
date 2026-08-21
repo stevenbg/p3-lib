@@ -11,7 +11,7 @@ use p3_api::{
     town::get_town_name_bytes,
     ui::{font, rect_clipper_stuff, ui_tavern_window::UITavernWindowPtr},
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_F1, VK_F2, VK_F3, VK_MENU};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_1, VK_2, VK_3, VK_MENU};
 
 pub static CAPTAINS: &CStr = c"Captains in town";
 pub static PIRATES: &CStr = c"Pirates in town";
@@ -34,9 +34,9 @@ pub static OFFER: &CStr = c"Offer";
 pub static GOLD: &CStr = c"Gold";
 pub static LOADS: &CStr = c"Loads";
 pub static TO: &CStr = c"To";
-pub static SAILORS_HINT: &CStr = c"F2: sailors";
-pub static CAPTAINS_HINT: &CStr = c"F1: captains";
-pub static MISSIONS_HINT: &CStr = c"F3: missions";
+pub static SAILORS_HINT: &CStr = c"2: sailors";
+pub static CAPTAINS_HINT: &CStr = c"1: captains";
+pub static MISSIONS_HINT: &CStr = c"3: missions";
 
 /// Text mode 2 draws right-aligned: every column x below is the right edge of that
 /// column, so a long town name reaches further left than a short one.
@@ -50,28 +50,29 @@ const ROW_HEIGHT: i32 = 16;
 const BLACK: u32 = 0xff000000;
 
 /// What the page shows, switched by a key press rather than held, and kept across
-/// openings of the window: F1 the captains and pirates, F2 the sailor pools, with alt
-/// selecting every town instead of only the enterable ones.
+/// openings of the window: 1 the captains and pirates, 2 the sailor pools, 3 the mission
+/// offers, with alt selecting every town instead of only the enterable ones. Number keys
+/// rather than function keys, because mod-auto-supply's F3 builds a trade route from
+/// anywhere and its keyboard hook cannot see which page is on screen.
 static VIEW: AtomicU8 = AtomicU8::new(VIEW_CAPTAINS);
 static SHOW_ALL_TOWNS: AtomicBool = AtomicBool::new(false);
-static F1_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static F2_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static F3_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static KEY_1_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static KEY_2_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static KEY_3_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 const VIEW_CAPTAINS: u8 = 0;
 const VIEW_SAILORS: u8 = 1;
 const VIEW_MISSIONS: u8 = 2;
 
 /// Read the page's keys, called once per frame from the update phase and only while the
-/// page is actually on screen. That is the whole scoping: the F1 that mod-auto-supply
-/// binds in the trading office is untouched anywhere but on this page, and no global
+/// page is actually on screen, so nothing outside this page is affected and no global
 /// keyboard hook is involved. Acts on the down edge, so a key switches the view rather
 /// than needing to be held.
 pub(crate) fn poll_keys() {
     for (key, was_down, view) in [
-        (VK_F1, &F1_WAS_DOWN, VIEW_CAPTAINS),
-        (VK_F2, &F2_WAS_DOWN, VIEW_SAILORS),
-        (VK_F3, &F3_WAS_DOWN, VIEW_MISSIONS),
+        (VK_1, &KEY_1_WAS_DOWN, VIEW_CAPTAINS),
+        (VK_2, &KEY_2_WAS_DOWN, VIEW_SAILORS),
+        (VK_3, &KEY_3_WAS_DOWN, VIEW_MISSIONS),
     ] {
         if key_pressed(key, was_down) {
             VIEW.store(view, Ordering::Relaxed);
