@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 name = "fix_texture_cache_thrash"
 
 [dependencies]
+hooklet = { workspace = true }
 log = { workspace = true }
 win_dbg_logger = { workspace = true }
 
@@ -15,5 +16,9 @@ win_dbg_logger = { workspace = true }
 version = "0.48"
 features = [
     "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
 ]

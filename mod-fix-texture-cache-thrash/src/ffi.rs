@@ -23,7 +23,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 /// entering the menu at its own resolution) releases and rebuilds the cached surfaces,
 /// so a larger cache makes those switches slower. The value is patched only if the
 /// default is found, so a different ddraw_dll build is left alone.
-const CACHE_LIMIT_RVA: u32 = 0x5F734;
+pub(crate) const CACHE_LIMIT_RVA: u32 = 0x5F734;
 const DEFAULT_LIMIT: u32 = 0x0100_0000;
 const RAISED_LIMIT: u32 = 0x0300_0000;
 

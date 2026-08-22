@@ -30,3 +30,17 @@ to what is actually in use (a few dozen MB). The patch is applied only if the
 Bigger is deliberately not better: a display mode switch - alt+tab, or opening
 the menu, which runs at its own resolution - releases and rebuilds the cached
 surfaces, so an oversized cache makes those switches slower.
+
+## The profiler
+
+`src/profiler.rs` is the graphics profiler that found this bug: frame stats, per
+call site attribution of screen submissions, AIM decode time per file, texture
+frees and record destructions with their call sites, and an EIP sampler over the
+game's main thread — one block per second to DebugView and to `_perf_probe.log`.
+
+It is **dead code**: nothing in this mod calls it (5.5 KB of unreachable bytes in
+a release build). It is kept because it is the only way to measure this class of
+problem, and it belongs next to the fix it produced. To use it, call
+`profiler::install()` from `start()` and `profiler::set_enabled(true)` from a
+hotkey; `profiler::toggle_cache_budget()` A/Bs the budget live and
+`profiler::set_no_dim(true)` forces opaque constant colors.
