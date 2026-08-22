@@ -2687,17 +2687,26 @@ unsafe extern "C" fn set_constant_color_hook(color: u32) -> u32 {
     orig(color)
 }
 
-/// F9 (THROWAWAY): announce the ship currently selected on the map, through the trade
-/// ship panel's static (see `UIShipPanelPtr`), with the raw pointers logged so
-/// the chain can be checked against Cheat Engine.
+/// F9 (THROWAWAY): announce the ship currently selected on the map, through the ship
+/// panel's static (see `UIShipPanelPtr`). Every failure reports the raw selection
+/// dword and, when it can be followed, the first two words behind it, so the chain
+/// can be checked against Cheat Engine and a "none" can be told apart from a stale
+/// pointer left over from the previous selection.
 unsafe fn on_selected_ship_hotkey() {
     let panel = UIShipPanelPtr::new();
-    let selection = panel.get_selection();
+    let field = panel.address + UIShipPanelPtr::SELECTION_OFFSET;
+    if !p3_api::memory::is_readable(field, 4) {
+        notify(&format!("selected ship: none (panel {:#010x} unreadable)", panel.address));
+        return;
+    }
+    let raw = *(field as *const u32);
+    // Only the first word is written by the game; see the note on the selection object
+    // in `UIShipPanelPtr`.
+    let index = if p3_api::memory::is_readable(raw, 2) { Some(*(raw as *const u16)) } else { None };
     debug!(
-        "selection probe: panel {:#010x} selection {:?} first words {:?}",
+        "selection probe: panel {:#010x} field {field:#010x} selection {raw:#010x} index {index:?} of {} ships",
         panel.address,
-        selection,
-        selection.map(|s| (*(s as *const u16), *((s + 2) as *const u16))),
+        p3_api::ships::ShipsPtr::new().get_ships_size()
     );
     match panel.get_selected_ship() {
         Some(ship) => notify(&format!(
@@ -2705,6 +2714,9 @@ unsafe fn on_selected_ship_hotkey() {
             ship.get_name(),
             panel.get_selected_ship_index().unwrap_or_default()
         )),
-        None => notify("selected ship: none"),
+        None => match index {
+            Some(index) => notify(&format!("selected ship: none (sel {raw:#x}, index {index} out of range)")),
+            None => notify(&format!("selected ship: none (sel {raw:#010x}, unreadable)")),
+        },
     }
 }

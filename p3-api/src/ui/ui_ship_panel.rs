@@ -39,13 +39,26 @@ impl UIShipPanelPtr {
 
     /// The current selection object, whose first `u16` is the selected ship index.
     /// `None` before the panel exists or while nothing is selected.
+    ///
+    /// Observed: the field holds `0` whenever nothing is selected - it is cleared, not
+    /// left pointing at the previous selection - and selecting a convoy on the map
+    /// reports its leader ship, so the value is always a ship index and never a convoy
+    /// one. **Opening any building window clears it**, and closing the window selects
+    /// the same ship again, so a mod cannot read the selection while a building window
+    /// is on screen.
+    ///
+    /// The selection object is heap-allocated and freed when the selection changes (the
+    /// setter at `0x00487E74` frees the old one before storing the new pointer), so the
+    /// readability check is what keeps a dangling read from crashing.
+    ///
+    /// Only the leading `u16` is written: the bytes after it are uninitialised, and
+    /// re-selecting one ship yields a different value each time - values that match the
+    /// high half of neighbouring heap pointers. Do not read past the index.
     pub unsafe fn get_selection(&self) -> Option<u32> {
         if !is_readable(self.address + Self::SELECTION_OFFSET, 4) {
             return None;
         }
         let selection: u32 = self.get(Self::SELECTION_OFFSET);
-        // The field is left stale rather than nulled between selections, so the pointer
-        // has to be checked before it is followed.
         if is_readable(selection, 2) {
             Some(selection)
         } else {

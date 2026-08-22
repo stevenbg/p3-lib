@@ -9,11 +9,11 @@ pub const USER_ADDRESS_LIMIT: u32 = 0x8000_0000;
 
 /// True if `len` bytes at `address` are committed and readable.
 ///
-/// The game leaves plenty of pointer fields stale rather than nulling them, so anything
-/// that follows such a field has to check before dereferencing. A range test alone only
-/// rejects obvious garbage (zero, small integers, `0xFFFFFFFF`); this also rejects
-/// addresses whose pages are reserved, freed or guarded, which is what actually
-/// crashes.
+/// Pointers read out of live game state have to be checked before they are followed:
+/// a field can be zero before its owning object is populated, and nothing guarantees
+/// the target is still mapped. A range test alone only rejects obvious garbage (zero,
+/// small integers, `0xFFFFFFFF`); this also rejects addresses whose pages are reserved,
+/// freed or guarded, which is what actually crashes.
 pub unsafe fn is_readable(address: u32, len: usize) -> bool {
     if address == 0 || address >= USER_ADDRESS_LIMIT {
         return false;
