@@ -8,6 +8,7 @@ pub mod data;
 pub mod facility;
 pub mod game_world;
 pub mod letters;
+pub mod memory;
 pub mod merchant;
 pub mod missions;
 pub mod mods;

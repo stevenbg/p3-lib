@@ -1,8 +1,4 @@
-use crate::{
-    data::p3_ptr::P3Pointer,
-    ship::ShipPtr,
-    ships::ShipsPtr,
-};
+use crate::{data::p3_ptr::P3Pointer, memory::is_readable, ship::ShipPtr, ships::ShipsPtr};
 
 pub const STATIC_UI_SHIP_PANEL_PTR_ADDRESS: *const u32 = 0x006CE6D0 as _;
 
@@ -44,13 +40,13 @@ impl UIShipPanelPtr {
     /// The current selection object, whose first `u16` is the selected ship index.
     /// `None` before the panel exists or while nothing is selected.
     pub unsafe fn get_selection(&self) -> Option<u32> {
-        if self.address == 0 {
+        if !is_readable(self.address + Self::SELECTION_OFFSET, 4) {
             return None;
         }
         let selection: u32 = self.get(Self::SELECTION_OFFSET);
-        // The pointer is left stale rather than nulled between selections, so a plain
-        // null check is not enough - reject anything outside the heap's address range.
-        if (0x0010_0000..0x7F00_0000).contains(&selection) {
+        // The field is left stale rather than nulled between selections, so the pointer
+        // has to be checked before it is followed.
+        if is_readable(selection, 2) {
             Some(selection)
         } else {
             None

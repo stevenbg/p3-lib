@@ -7,7 +7,6 @@ use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
     data::{enums::WareId, p3_ptr::P3Pointer},
-    letters::LettersPtr,
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
