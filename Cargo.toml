@@ -16,6 +16,7 @@ members = [
     "mod-fix-new-settlement-ware-production",
     "mod-fix-patrol-letter-crash",
     "mod-fix-siege-beggar-satisfaction-bonus",
+    "mod-fix-texture-cache-thrash",
     "mod-fix-uncompressed-trade-route-loading",
     "mod-high-res",
     "mod-increase-alderman-found-settlement-mission-limit",
