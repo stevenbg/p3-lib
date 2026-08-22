@@ -13,7 +13,7 @@ use p3_api::{
     operations::{execute_operation, OPERATIONS_PTR},
     scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
     town::{get_town_name, TOWN_SIZE},
-    ui::ui_trading_office_window::UITradingOfficeWindowPtr,
+    ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
 use p3_rou::{builder, TradeRouteStop};
 use windows::Win32::{
@@ -65,7 +65,8 @@ const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
 const TOWN_DUMP_KEY: usize = VK_F11.0 as usize;
 /// F10: dump every ship's applied route chain from the route stop pool.
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
-/// F9: throwaway debug logic for the current RE task (see on_perf_probe_hotkey).
+/// F9: throwaway debug logic for the current RE task (see on_selected_ship_hotkey).
+/// Alt+F9 toggles the frame profiler, Ctrl+F9 the texture cache budget.
 const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
 /// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
 /// does the same but also buys the [NO_BUY_WARES].
@@ -131,36 +132,6 @@ static OFFICE_WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 
-/// The route-panel update method (thiscall, this=panel) is a vtable-dispatched virtual
-/// at 0x0048b3e0; the panel object has no plain static, so we hook its vtable slot to
-/// capture `this`. The panel's +0xa0 points to a struct whose first word is the
-/// selected ship index (used by the panel at 0x48c363, the Load handler at 0x48c92e).
-static PANEL_METHOD_ADDRESS: u32 = 0x0048b3e0;
-/// Module-relative offset of the vtable slot holding PANEL_METHOD_ADDRESS (abs 0x66f44c).
-const PANEL_METHOD_VTABLE_OFFSET: u32 = 0x0026f44c;
-const PANEL_SELECTION_OFFSET: u32 = 0xa0;
-/// The captured panel object pointer (set by panel_capture_hook on every panel update).
-static CACHED_PANEL: AtomicU32 = AtomicU32::new(0);
-static PANEL_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
-
-extern "C" {
-    static panel_capture_hook: core::ffi::c_void;
-}
-
-// Save the panel object pointer (ecx = this) on every call, then run the real method.
-// The jump target static holds PANEL_METHOD_ADDRESS so the vtable-installed hook runs
-// the original method with the stack and registers untouched.
-std::arch::global_asm!("
-.global {hook}
-{hook}:
-mov dword ptr [{cached}], ecx
-jmp [{method}]
-",
-    hook = sym panel_capture_hook,
-    cached = sym CACHED_PANEL,
-    method = sym PANEL_METHOD_ADDRESS,
-);
-
 /// Post an in-game popup on the event ticker (the top-left "Game speed:" boxes),
 /// mirrored to the debug log.
 unsafe fn notify(text: &str) {
@@ -206,15 +177,6 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    // Capture the route-panel object (for reading the selected ship) via its vtable slot.
-    match hook_function_pointer(PANEL_METHOD_VTABLE_OFFSET, &panel_capture_hook as *const _ as u32) {
-        Ok(hook) => PANEL_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-        Err(_) => {
-            error!("failed to hook the route panel method");
-            return 4;
-        }
-    }
-
     // F9 perf probe (see the perf probe section at the end of this file): a frame
     // counter on the clock updater's entry, a rect-submission counter on the screen
     // area submitter's entry, and timing wrappers on the shipyard window's update and
@@ -226,7 +188,7 @@ pub unsafe extern "C" fn start() -> u32 {
     MAIN_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
     start_perf_sampler();
 
-    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 perf probe toggle, F10 routes");
+    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 selected ship, alt+F9 perf probe, F10 routes");
     0
 }
 
@@ -261,8 +223,9 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             // and route probes are global.
             let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
             match wparam.0 {
-                w if w == CURRENT_TOWN_KEY && alt => on_cache_budget_hotkey(),
-                w if w == CURRENT_TOWN_KEY => on_perf_probe_hotkey(),
+                w if w == CURRENT_TOWN_KEY && ctrl => on_cache_budget_hotkey(),
+                w if w == CURRENT_TOWN_KEY && alt => on_perf_probe_hotkey(),
+                w if w == CURRENT_TOWN_KEY => on_selected_ship_hotkey(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
                 w if w == TOWN_DUMP_KEY => on_town_dump_hotkey(),
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
@@ -790,18 +753,9 @@ unsafe fn find_tavern_captains() {
     }
 }
 
-/// The ship currently shown in the route panel (map/panel selection), via the captured
-/// panel object: panel+0xa0 points to a selection struct whose first word is the index.
+/// The ship currently shown in the ship panel (the map selection).
 unsafe fn selected_ship_index() -> Option<u16> {
-    let panel = CACHED_PANEL.load(Ordering::Relaxed);
-    if panel == 0 {
-        return None;
-    }
-    let selection = *((panel + PANEL_SELECTION_OFFSET) as *const u32);
-    if !(0x0010_0000..0x7f00_0000).contains(&selection) {
-        return None;
-    }
-    Some(*(selection as *const u16))
+    UIShipPanelPtr::new().get_selected_ship_index()
 }
 
 /// True if `ship_index` belongs to the player (walk the player merchant's ship chain).
@@ -1901,8 +1855,6 @@ static SY_DRAW_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::pt
 /// Module-relative offsets of the ddraw thunk pointers (`jmp [ptr]` at 0x4BB780/0x4BB140).
 const DDRAW_SELECT_POINTER_OFFSET: u32 = 0x2DA928;
 const DDRAW_BLIT_POINTER_OFFSET: u32 = 0x2DAA8C;
-/// How many render layers the submitter loops over per rect (`[0x670F6C]`).
-const LAYER_COUNT_ADDRESS: u32 = 0x00670F6C;
 static DDRAW_SELECT_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static DDRAW_BLIT_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 /// ddraw_dll.dll's IAT slot for AIM.dll's `?AIM_CONVERT_MEMFILE@@YAHPAUAIM_IMAGE@@PBDPAEJ@Z`
@@ -2658,45 +2610,6 @@ unsafe extern "C" fn on_perf_record_dtor(record: u32) {
     }
 }
 
-/// Count the scene table's graphic-record objects (class vtable 0x670B28) and total
-/// valid objects, for the per-second perf line. Bounded walk, VirtualQuery-guarded.
-unsafe fn count_scene_records() -> (u32, u32) {
-    let scene = *(0x006E51AC as *const u32);
-    if scene == 0 {
-        return (0, 0);
-    }
-    let table = *((scene + 0x3FC) as *const u32);
-    if table == 0 || !is_readable_dword(table) {
-        return (0, 0);
-    }
-    let mut records = 0u32;
-    let mut total = 0u32;
-    let mut invalid_run = 0u32;
-    let mut index = 0u32;
-    while index < 4096 && invalid_run < 512 {
-        let slot = table + index * 4;
-        index += 1;
-        if !is_readable_dword(slot) {
-            break;
-        }
-        let entry = *(slot as *const u32);
-        if entry < 0x10000 || entry & 3 != 0 || !is_readable_dword(entry) {
-            invalid_run += 1;
-            continue;
-        }
-        let vtable = *(entry as *const u32);
-        if !(0x0066A000..0x00692000).contains(&vtable) {
-            invalid_run += 1;
-            continue;
-        }
-        invalid_run = 0;
-        total += 1;
-        if vtable == 0x00670B28 {
-            records += 1;
-        }
-    }
-    (records, total)
-}
 
 /// Snapshot every graphic definition's texture handle (def+0x34) and count changes
 /// against the previous frame. The def index is a byte, so the array holds at most
@@ -2773,4 +2686,26 @@ unsafe extern "C" fn set_constant_color_hook(color: u32) -> u32 {
     }
     let orig: extern "C" fn(u32) -> u32 = mem::transmute((*SET_CONSTANT_COLOR_HOOK_PTR.load(Ordering::Relaxed)).old_absolute);
     orig(color)
+}
+
+/// F9 (THROWAWAY): announce the ship currently selected on the map, through the trade
+/// ship panel's static (see `UIShipPanelPtr`), with the raw pointers logged so
+/// the chain can be checked against Cheat Engine.
+unsafe fn on_selected_ship_hotkey() {
+    let panel = UIShipPanelPtr::new();
+    let selection = panel.get_selection();
+    debug!(
+        "selection probe: panel {:#010x} selection {:?} first words {:?}",
+        panel.address,
+        selection,
+        selection.map(|s| (*(s as *const u16), *((s + 2) as *const u16))),
+    );
+    match panel.get_selected_ship() {
+        Some(ship) => notify(&format!(
+            "selected ship: {} (#{})",
+            ship.get_name(),
+            panel.get_selected_ship_index().unwrap_or_default()
+        )),
+        None => notify("selected ship: none"),
+    }
 }

@@ -12,6 +12,7 @@ pub mod graphics;
 pub mod rich_text;
 pub mod ui_notifications;
 pub mod ui_local_map_window;
+pub mod ui_ship_panel;
 pub mod ui_shipyard_window;
 pub mod ui_tavern_window;
 pub mod ui_town_hall_sidemenu;
