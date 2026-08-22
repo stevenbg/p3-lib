@@ -16,13 +16,16 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 /// this build of ddraw_dll never reads it: the gl.cfg section parser (+0x12190) has
 /// no callers and nothing references the "gl.cfg" filename string. Dead code.
 ///
-/// The fix is this one dword: raise the budget to 128 MiB. The counter only ever
-/// grows to the actual working set, so real memory use rises by a few dozen MB at
-/// most. The value is patched only if the default is found, so a different
-/// ddraw_dll build is left alone.
+/// The fix is this one dword: raise the budget to 48 MiB - about 2.5x the measured
+/// working set, and the same ballpark as the 48000000 GOG tried to configure. The
+/// counter only ever grows to what is actually in use, so real memory use rises by a
+/// few dozen MB at most. Bigger is not better: a display mode switch (alt+tab, or
+/// entering the menu at its own resolution) releases and rebuilds the cached surfaces,
+/// so a larger cache makes those switches slower. The value is patched only if the
+/// default is found, so a different ddraw_dll build is left alone.
 const CACHE_LIMIT_RVA: u32 = 0x5F734;
 const DEFAULT_LIMIT: u32 = 0x0100_0000;
-const RAISED_LIMIT: u32 = 0x0800_0000;
+const RAISED_LIMIT: u32 = 0x0300_0000;
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> u32 {
