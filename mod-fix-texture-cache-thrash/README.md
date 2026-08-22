@@ -22,6 +22,11 @@ file name string. The shipped setting is dead.
 ## The fix
 
 One dword: the budget at `ddraw_dll.dll+0x5F734` is raised from 16 MiB to
-128 MiB once the DLL is loaded. Memory use only grows to the actual working
-set (a few dozen MB). The patch is applied only if the 16 MiB default is
-found, so other `ddraw_dll.dll` builds are left untouched.
+48 MiB once the DLL is loaded - roughly 2.5x the measured working set, and the
+same ballpark as the `48000000` GOG tried to configure. Memory use only grows
+to what is actually in use (a few dozen MB). The patch is applied only if the
+16 MiB default is found, so other `ddraw_dll.dll` builds are left untouched.
+
+Bigger is deliberately not better: a display mode switch - alt+tab, or opening
+the menu, which runs at its own resolution - releases and rebuilds the cached
+surfaces, so an oversized cache makes those switches slower.
