@@ -4,6 +4,29 @@ pub const AUTO_TRADER_SIZE: u32 = 0x10;
 /// Raw skill points per displayed skill level: level 5 is skill byte 215.
 pub const SKILL_PER_LEVEL: u8 = 43;
 
+/// The per-skill ceiling table at `0x00673B34` (a second copy sits at `0x00672824`):
+/// 250, 200, 250, 150 raw points, i.e. displayed levels 5, 4, 5, 3.
+pub const SKILL_CAPS: [u8; 4] = [250, 200, 250, 150];
+
+/// Age in ticks at which the ten-day captain scan flags a record for retirement
+/// (`0x004DCEA9` compares `field_4` against `game_time - 0x474A00`): 18,248 days, almost
+/// exactly 50 years.
+pub const RETIREMENT_AGE_TICKS: u32 = 0x0047_4A00;
+
+/// The `(navigation, trade, combat)` ceilings for the record at `index`.
+///
+/// The skill-gain handler `0x00538A80` indexes [SKILL_CAPS] with bits of the record's
+/// **array index** - `index & 3` for navigation, `(index >> 2) & 3` for trade,
+/// `(index >> 4) & 3` for combat - so the ceiling belongs to the slot, not to the man.
+/// Records are recycled through the freelist, so a re-hire inherits whatever the
+/// allocator hands out. The handler writes the cap unconditionally when a gain would
+/// pass it, which means a skill that starts *above* its cap is pulled **down** to it by
+/// the first gain event.
+pub fn skill_caps(index: u16) -> (u8, u8, u8) {
+    let pick = |shift: u32| SKILL_CAPS[(index >> shift) as usize & 3];
+    (pick(0), pick(2), pick(4))
+}
+
 /// One record of the auto-trader array: the game's captains, administrators and
 /// pirate captains. The array pointer is the first field of the ships container
 /// (see `ShipsPtr::get_auto_trader`); towns chain their tavern captain and their
@@ -34,8 +57,11 @@ impl AutoTraderPtr {
         unsafe { self.get(0x3) }
     }
 
-    /// Stamped from the current date serial at creation (0x4fdf50: date minus a
-    /// random offset, floored at 0); exact semantics still open.
+    /// A birth stamp in game ticks: the initializer `0x004FDF50` writes
+    /// `game_time - offset` (floored at 0) with `offset = 46720 * (48..79) + 1792 *
+    /// (0..31)`, i.e. an age of 24.0 to 40.1 years at creation. The ten-day scan retires
+    /// a captain once the age passes [RETIREMENT_AGE_TICKS]; nothing else reads or
+    /// rewrites it, so it never moves.
     pub fn get_timestamp(&self) -> u32 {
         unsafe { self.get(0x4) }
     }
@@ -84,6 +110,14 @@ impl AutoTraderPtr {
 
     pub fn get_combat_skill(&self) -> u8 {
         unsafe { self.get(0xb) }
+    }
+
+    /// Set once the captain has been flagged for retirement, by the AI branch of the
+    /// ten-day scan (`0x004DCFE0`/`0x004DD023`) or by operation `0x13` (`0x00538CB5`)
+    /// for a human owner. Both then schedule task `0x27` to take him off the ship, and
+    /// the flag stops the scan from queueing a second removal.
+    pub fn get_retirement_flag(&self) -> u8 {
+        unsafe { self.get(0xe) }
     }
 
     /// The 0-5 level the game displays for a raw skill byte.

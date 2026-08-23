@@ -43,8 +43,27 @@ impl GameWorldPtr {
         Self { address: GAME_WORLD_ADDRESS }
     }
 
+    /// The calendar, all four fields rewritten once a day by `0x005310D0` from the tick
+    /// counter at `+0x14`: `+0x2 = ticks / 93440` (the year), `+0x4 = (ticks >> 8) % 365`
+    /// (the day of the year), then the month table at `0x00672D78`/`0x00672D7A` gives
+    /// `+0x1` (the month) and `+0x0` (the day of the month).
+    pub unsafe fn get_day_of_month(&self) -> u8 {
+        self.get(0x00)
+    }
+
     pub unsafe fn get_month(&self) -> u8 {
         self.get(0x01)
+    }
+
+    pub fn get_year(&self) -> u16 {
+        unsafe { self.get(0x02) }
+    }
+
+    /// Day of the year, `0..364`. The ten-day captain scan resets its round counter
+    /// while this is below 10 (`0x004DCEFB`), which is what keeps the counter from
+    /// running past the guard that would disable the scan.
+    pub fn get_day_of_year(&self) -> u16 {
+        unsafe { self.get(0x04) }
     }
 
     pub fn get_offices_count(&self) -> u16 {

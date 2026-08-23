@@ -20,6 +20,28 @@ impl OfficePtr {
         unsafe { self.get(0x2c4) }
     }
 
+    /// The town the office stands in (`office+0x2C6`, read by the administrator paths at
+    /// `0x004DD27B` and `0x0053DE9D`).
+    pub fn get_town_index(&self) -> u8 {
+        unsafe { self.get(0x2c6) }
+    }
+
+    /// The number of business buildings the owning merchant has in this town, one per
+    /// building - verified across several saves and offices. Counted in a loop over the
+    /// town's buildings (`0x004FFDD9`, `0x004FFE5A`), and added to the administrator's own
+    /// wage by `0x00500F10` wherever the interface shows what the office pays him.
+    pub fn get_business_building_count(&self) -> u16 {
+        unsafe { self.get(0x2d2) }
+    }
+
+    /// What the trading office window shows as the administrator's wage: `0x00500F10` =
+    /// the record's `field_C_daily_wage` plus [Self::get_business_building_count], or `0`
+    /// when the office has no administrator.
+    pub unsafe fn get_displayed_administrator_wage(&self) -> u32 {
+        let func: extern "thiscall" fn(u32) -> u32 = std::mem::transmute(0x00500F10u32);
+        func(self.address)
+    }
+
     pub fn get_next_office_of_merchant_index(&self) -> u16 {
         unsafe { self.get(0x2c8) }
     }

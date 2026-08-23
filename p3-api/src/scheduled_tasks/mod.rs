@@ -26,6 +26,16 @@ impl ScheduledTasksPtr {
         }
     }
 
+    /// Index of the task due first - the one the dispatcher `0x004D85C0` is executing
+    /// while a handler runs, so a recurring handler can find its own record.
+    pub unsafe fn get_earliest_task_index(&self) -> u16 {
+        self.get(0x08)
+    }
+
+    pub unsafe fn get_tasks_size(&self) -> u16 {
+        self.get(0x0c)
+    }
+
     pub unsafe fn get_scheduled_task(&self, index: u16) -> ScheduledTaskPtr {
         let base_address: u32 = unsafe { self.get(0x00) };
         ScheduledTaskPtr::new(base_address + index as u32 * SCHEDULED_TASK_SIZE)

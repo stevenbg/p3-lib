@@ -1,6 +1,6 @@
 use std::mem;
 
-use crate::data::p3_ptr::P3Pointer;
+use crate::{data::p3_ptr::P3Pointer, latin1_ptr_to_string};
 
 pub const MERCHANT_SIZE: u32 = 0x650;
 
@@ -12,6 +12,30 @@ pub struct MerchantPtr {
 impl MerchantPtr {
     pub fn new(address: u32) -> Self {
         Self { address }
+    }
+
+    pub fn get_money(&self) -> i32 {
+        unsafe { self.get(0x0) }
+    }
+
+    /// The control word. **0 is a human player**, non-zero an AI merchant (game setup
+    /// writes `0x8001`); bit `0x4` marks the AI merchants pirates leave alone. It also
+    /// picks which growth path the ten-day scan gives this merchant's captains.
+    pub fn get_control_word(&self) -> u16 {
+        unsafe { self.get(0x8) }
+    }
+
+    pub fn get_company_value(&self) -> i32 {
+        unsafe { self.get(0x46c) }
+    }
+
+    /// Given name and family name, both heap `char*` in the game's latin1 codepage.
+    pub unsafe fn get_name(&self) -> String {
+        latin1_ptr_to_string(self.get::<u32>(0xe8) as *const u8)
+    }
+
+    pub unsafe fn get_family_name(&self) -> String {
+        latin1_ptr_to_string(self.get::<u32>(0xe4) as *const u8)
     }
 
     /// The merchant's home town, as shown on the Personal screen: the town holding the
