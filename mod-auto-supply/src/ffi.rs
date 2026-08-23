@@ -215,6 +215,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 w if w == DEBUG_PROBE1_KEY && ctrl => toggle_probe1_timeline(),
                 w if w == DEBUG_PROBE1_KEY && shift => debug_probe1_ship(),
                 w if w == DEBUG_PROBE1_KEY => debug_probe1(),
+                w if w == ROUTE_DUMP_KEY && ctrl => debug_probe_dialog_modes(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
                 w if w == TOWN_DUMP_KEY => on_town_dump_hotkey(),
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
@@ -1646,6 +1647,101 @@ const ROUTE_STOP_POOL_COUNT: *const u16 = 0x006dd72a as _;
 const ROUTE_STOP_POOL: *const u32 = 0x006dd72c as _;
 const ROUTE_STOP_SIZE: u32 = 220;
 const SHIP_ROUTE_HEAD_OFFSET: u32 = 0x132;
+
+/// The auto trade goods dialog ("Automatic maritime trading in ..."); the static holds
+/// the object pointer.
+const GOODS_DIALOG_PTR: *const u32 = 0x006cba74 as _;
+/// Pool index of the stop the dialog is showing, -1 while it is closed.
+const GOODS_DIALOG_STOP_OFFSET: u32 = 0xa4;
+const GOODS_DIALOG_SHIP_OFFSET: u32 = 0xa8;
+/// The dialog's per-ware order type, one i32 per ware id - only the 20 trade wares, the
+/// dialog has no weapons rows, so reading 24 runs off the end into unrelated fields.
+const GOODS_DIALOG_MODE_OFFSET: u32 = 0x4ae0;
+const GOODS_DIALOG_MODE_COUNT: u32 = 20;
+/// The dialog's block of ten per-ware control array pointers; each holds a `new[]` array
+/// of 20 window-family widgets (constructor 0x004c6910, 0xe8 bytes each).
+const GOODS_DIALOG_ARRAY_BLOCK_OFFSET: u32 = 0xf0;
+/// The five of those the order type indexes to pick which per-ware sub window is
+/// registered.
+const GOODS_DIALOG_MODE_TABLE_OFFSET: u32 = 0xf4;
+
+/// CTRL+F10 (THROWAWAY): dump the auto trade goods dialog's per-ware order type beside
+/// the route stop record it was derived from, to settle which order type each mode value
+/// means. Open the dialog on a stop, set a few wares to different order types with the
+/// cycling button, then press: each line shows the dialog's mode value and, independently,
+/// what the record's own price/amount signs say the order is.
+unsafe fn debug_probe_dialog_modes() {
+    let dialog = *GOODS_DIALOG_PTR;
+    if dialog == 0 {
+        notify("dialog probe: goods dialog not constructed");
+        return;
+    }
+    let stop_index = *((dialog + GOODS_DIALOG_STOP_OFFSET) as *const i32);
+    let ship_index = *((dialog + GOODS_DIALOG_SHIP_OFFSET) as *const i32);
+    debug!("goods dialog at {dialog:#010x}: stop {stop_index}, ship {ship_index}");
+    if stop_index < 0 {
+        notify("dialog probe: dialog closed (stop -1) - open it on a stop first");
+        return;
+    }
+    let pool = *ROUTE_STOP_POOL;
+    let pool_count = *ROUTE_STOP_POOL_COUNT;
+    if pool == 0 || stop_index as u16 >= pool_count {
+        notify(&format!("dialog probe: stop {stop_index} outside the pool ({pool_count})"));
+        return;
+    }
+    let stop = pool + stop_index as u32 * ROUTE_STOP_SIZE;
+
+    // The dialog's ten per-ware control arrays. Five of them are what the order type
+    // indexes (+0xf4 + mode*4); the rest are other columns of the row. Every element is a
+    // window-family object, so element 0's rectangle (x +0x14, y +0x18, w +0x2c, h +0x30)
+    // says which column each array draws - sort the lines by x and they read left to
+    // right across the row.
+    for slot in 0..10u32 {
+        let offset = GOODS_DIALOG_ARRAY_BLOCK_OFFSET + slot * 4;
+        let array = *((dialog + offset) as *const u32);
+        let mode = match offset {
+            o if (GOODS_DIALOG_MODE_TABLE_OFFSET..GOODS_DIALOG_MODE_TABLE_OFFSET + 20).contains(&o) => {
+                format!("order type {}", (o - GOODS_DIALOG_MODE_TABLE_OFFSET) / 4)
+            }
+            _ => "not order-type".to_string(),
+        };
+        if array == 0 || !p3_api::memory::is_readable(array, 0x34) {
+            debug!("  array +{offset:#05x}: {array:#010x} (unreadable) {mode}");
+            continue;
+        }
+        debug!(
+            "  array +{offset:#05x}: {array:#010x} elem0 x {:4} y {:4} w {:4} h {:4}  {mode}",
+            *((array + 0x14) as *const i32),
+            *((array + 0x18) as *const i32),
+            *((array + 0x2c) as *const i32),
+            *((array + 0x30) as *const i32),
+        );
+    }
+
+    let order: Vec<String> = (0..24).map(|i| format!("{:02x}", *((stop + 4 + i) as *const u8))).collect();
+    debug!("  order array: {}", order.join(" "));
+
+    for ware in 0..24u32 {
+        let mode = if ware < GOODS_DIALOG_MODE_COUNT {
+            format!("{}", *((dialog + GOODS_DIALOG_MODE_OFFSET + ware * 4) as *const i32))
+        } else {
+            "-".to_string()
+        };
+        let price = *((stop + 28 + ware * 4) as *const i32);
+        let amount = *((stop + 124 + ware * 4) as *const i32);
+        // What the stop record itself encodes, derived without consulting the dialog.
+        let record = match (price, amount) {
+            (_, 0) => "no order",
+            (0, a) if a > 0 => "load office -> ship",
+            (0, _) => "unload ship -> office",
+            (p, _) if p > 0 => "sell to town",
+            _ => "buy from town",
+        };
+        let name = format!("{:?}", WareId::from_u32(ware).unwrap());
+        debug!("  ware {ware:2} {name:12} mode {mode:>2}  price {price:11}  amount {amount:11}  record says {record}");
+    }
+    notify(&format!("dialog probe: stop {stop_index} modes dumped to DebugView"));
+}
 
 /// F10: walk every ship's route chain and dump the stops.
 unsafe fn dump_ship_routes() {
