@@ -13,8 +13,8 @@
 //!   no weapons, although ships can carry them. The builder keeps the four weapon slots
 //!   of every amount array zero, so generated files stay within what the game itself
 //!   can produce (the game filters weapon entries, but they would be illegal).
-//! - The per-stop order array is the instruction order; [partitioned_order] puts
-//!   unloading wares first so the ship frees space before taking new cargo on.
+//! - The per-stop order array is the instruction order within each of the executor's two
+//!   passes; [cargo_order] uses it to decide what fills the hold first.
 
 use std::str::FromStr;
 
@@ -60,7 +60,7 @@ pub fn stop(town_index: u8, action: u8, price: [i32; 24], amount: [i32; 24]) -> 
     TradeRouteStop {
         town_index,
         action,
-        order: cargo_order(&price, &amount),
+        order: cargo_order(&amount),
         price,
         amount,
     }
@@ -101,28 +101,34 @@ fn value_rank(ware: u8) -> u8 {
         .unwrap_or(VALUE_ORDER_WORST_TO_BEST.len() as u8)
 }
 
-/// The instruction order for generated routes: everything that frees cargo space runs
-/// before anything that fills it, and the filling instructions take the barrel goods
-/// before the bulky loads goods (1 load = 10 barrels of hold space), each group ordered
-/// best value first - so when hold space runs out, the least valuable cargo is what
-/// gets left behind.
+/// The instruction order for generated routes: the barrel goods before the bulky loads
+/// goods (1 load = 10 barrels of hold space), each group ordered best value first - so
+/// when hold space runs out, the least valuable cargo is what gets left behind.
 ///
-/// Freeing space: selling to the town (positive price) and unloading into the office
-/// (negative amount). Filling it: buying from the town (negative price) and loading from
-/// the office (zero price, positive amount).
-pub fn cargo_order(price: &[i32; 24], amount: &[i32; 24]) -> [u8; 24] {
+/// That only bites on the instructions which *fill* the hold - buying from the town
+/// (negative price) and loading from the office (zero price, positive amount) - because
+/// only those compete for anything: the executor spends the ship's free capacity and the
+/// merchant's cash in this order (`0x004D5688` caps against the remaining capacity,
+/// `0x004D57DB` decrements it, and `0x004D5705` scales a purchase down when the money
+/// runs short). Selling and unloading compete for nothing - office stock is limited per
+/// ware, not in total - so they are keyed the same way purely to keep one rule.
+///
+/// There is deliberately **no** frees-space-before-fills-space grouping: the executor
+/// (`0x004D5200`) runs all the selling and unloading over the whole order array, then
+/// recomputes the ship's free capacity (`0x004D5600`), and only then runs the buying and
+/// loading. A load can therefore never precede an unload however this array is arranged,
+/// and the swap stops in [six_stop_middle] rely on the executor for that, not on this
+/// function. See `.claude/notes/todo/route-stop-top-up.md`.
+pub fn cargo_order(amount: &[i32; 24]) -> [u8; 24] {
     ordered_by_key(|ware| {
         let i = ware as usize;
         if amount[i] == 0 {
             return u8::MAX; // no instruction for this ware
         }
-        if amount[i] < 0 || price[i] > 0 {
-            return 0; // unload into the office, or sell to the town
-        }
-        // Buy from the town or load from the office. Barrel/loads grouping is keyed off
-        // the scaling because WareId::is_barrel_ware panics on the weapons, which occupy
-        // slots in the order array even though they never carry route orders.
-        let group = if ware_scaling(i) == BARREL_SCALING { 32 } else { 64 };
+        // The barrel/loads grouping is keyed off the scaling because
+        // WareId::is_barrel_ware panics on the weapons, which occupy slots in the order
+        // array even though they never carry route orders.
+        let group = if ware_scaling(i) == BARREL_SCALING { 0 } else { 32 };
         group + value_rank(ware)
     })
 }
@@ -179,8 +185,8 @@ pub fn bracketed_route(load_town: u8, load_amount: [i32; 24], middle: Vec<TradeR
 /// that office.
 ///
 /// Taking only the supplied wares bounds the hold space the reset needs; the collected
-/// wares ride along from the put-back stop, which has just freed space (unloads run
-/// before loads within a stop, see [cargo_order]).
+/// wares ride along from the put-back stop, which has just freed space (the executor
+/// always unloads before it loads, see [cargo_order]).
 pub fn five_stop_middle(sell_town: u8, load_amount: &[i32; 24], sell_prices: &[i32; 24]) -> Vec<TradeRouteStop> {
     let (sell_max, unload_calculated) = sell_max_and_unload(load_amount);
     let mut take_supplied = [0i32; 24];
@@ -260,7 +266,8 @@ pub fn six_stop_middle(sell_town: u8, load_amount: &[i32; 24], sell_prices: &[i3
             put_back_loads_and_collect[i] = MAX_AMOUNT;
         }
     }
-    // The unloads-before-loads ordering of the swap stops comes from [cargo_order].
+    // These stops unload and load in one go; the executor always unloads first (see
+    // [cargo_order]), so the order array does not have to arrange for it.
     vec![
         stop(sell_town, FLAG_X, *sell_prices, sell_max),
         stop(sell_town, FLAG_X, [0i32; 24], unload_loads_take_barrels),

@@ -969,7 +969,7 @@ unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares
 
     core::ptr::copy_nonoverlapping(price.as_ptr(), (record + 28) as *mut i32, 24);
     core::ptr::copy_nonoverlapping(amount.as_ptr(), (record + 124) as *mut i32, 24);
-    let order = builder::cargo_order(&price, &amount);
+    let order = builder::cargo_order(&amount);
     core::ptr::copy_nonoverlapping(order.as_ptr(), (record + 4) as *mut u8, 24);
     refresh_goods_dialog(dialog, stop_index);
 
