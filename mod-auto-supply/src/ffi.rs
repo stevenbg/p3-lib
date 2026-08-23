@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::{mem, panic, ptr};
 
@@ -11,6 +11,8 @@ use p3_api::{
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
     scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
+    ship::{ShipPtr, SHIP_SIZE},
+    ships::ShipsPtr,
     town::{get_town_name, TOWN_SIZE},
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
@@ -62,10 +64,10 @@ const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
 const TOWN_DUMP_KEY: usize = VK_F11.0 as usize;
 /// F10: dump every ship's applied route chain from the route stop pool.
 const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
-/// F9: throwaway debug logic for the current RE task (see on_selected_ship_hotkey).
-/// The frame profiler that used to hang off Alt+F9 now lives, unused, in
+/// F9: throwaway debug logic for the current RE task (see [debug_probe1]). The frame
+/// profiler that used to hang off Alt+F9 now lives, unused, in
 /// mod-fix-texture-cache-thrash's `profiler` module.
-const CURRENT_TOWN_KEY: usize = VK_F9.0 as usize;
+const DEBUG_PROBE1_KEY: usize = VK_F9.0 as usize;
 /// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
 /// does the same but also buys the [NO_BUY_WARES].
 const ADD_STOP_KEY: usize = VK_F4.0 as usize;
@@ -210,7 +212,9 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             // and route probes are global.
             let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
             match wparam.0 {
-                w if w == CURRENT_TOWN_KEY => on_selected_ship_hotkey(),
+                w if w == DEBUG_PROBE1_KEY && ctrl => toggle_probe1_timeline(),
+                w if w == DEBUG_PROBE1_KEY && shift => debug_probe1_ship(),
+                w if w == DEBUG_PROBE1_KEY => debug_probe1(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
                 w if w == TOWN_DUMP_KEY => on_town_dump_hotkey(),
                 // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
@@ -1693,36 +1697,570 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): announce the ship currently selected on the map, through the ship
-/// panel's static (see `UIShipPanelPtr`). Every failure reports the raw selection
-/// dword and, when it can be followed, the first two words behind it, so the chain
-/// can be checked against Cheat Engine and a "none" can be told apart from a stale
-/// pointer left over from the previous selection.
-unsafe fn on_selected_ship_hotkey() {
-    let panel = UIShipPanelPtr::new();
-    let field = panel.address + UIShipPanelPtr::SELECTION_OFFSET;
-    if !p3_api::memory::is_readable(field, 4) {
-        notify(&format!("selected ship: none (panel {:#010x} unreadable)", panel.address));
+/// F9 (THROWAWAY): the pirate-AI probe, for `.claude/notes/done/pirate-ai.md`. Dumps to
+/// DebugView and to `_probe1.log` in the game folder (truncated on each press):
+///
+/// - the setup byte `[[0x006CC3E8]+0x13]` that world generation turns into
+///   `2 * n + 1` pirate bands, and that the attack decision adds to its AI-prey
+///   threshold;
+/// - the five band slots at `0x006DD7AC`: hideout index, strength and behaviour class,
+///   state, the convoy id at `+0xA` and the ships still at home;
+/// - the hideout table at `0x006DDBB0` (52-byte records, `+0x0` x, `+0x4` y): runtime
+///   data, so this is the only way to read it;
+/// - every convoy record in use, decoded - the pirate AI acts at convoy granularity;
+/// - every pirate ship with its prey (named, with owner), cooldown and position;
+/// - the local player's ships, to place the prey in the world;
+/// - every merchant's control word (`merchant+0x8`) next to its ship count, to work out
+///   what the pirate-immune bit `0x4` marks.
+unsafe fn debug_probe1() {
+    let mut out: Vec<String> = Vec::new();
+    let ships = ShipsPtr::new();
+    let ship_count = ships.get_ships_size();
+    let convoy_count = ships.get_convoys_size();
+    let local: u32 = *(0x006DFC14 as *const u32);
+    // The world tick counter the ships tick is driven by ([0x006DE4B4] = world+0x14):
+    // press twice and the difference between the headers gives the elapsed ticks, so a
+    // countdown's rate can be measured without knowing where in the game we are.
+    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
+    out.push(format!("=== press {press} at tick {} ===", GAME_WORLD_PTR.get::<u32>(0x14)));
+    out.push(format!(
+        "ships {ship_count} convoys {convoy_count} local merchant {local} | hunt: acquire {} (r {:.0}) chase {} (r {:.0}) x-span {}",
+        ships.get::<u16>(0xFA),
+        (ships.get::<u16>(0xFA) as f64).sqrt(),
+        ships.get::<u16>(0xFC),
+        (ships.get::<u16>(0xFC) as f64).sqrt(),
+        ships.get::<u16>(0xFE)
+    ));
+
+    // The setup object behind [0x006CC3E8]: +0x13 scales the number of bands and the
+    // willingness to raid AI merchants.
+    let setup = *(SETUP_OBJECT_PTR_ADDRESS as *const u32);
+    let pirate_setting = if p3_api::memory::is_readable(setup + SETUP_PIRATE_LEVEL_OFFSET, 1) {
+        *((setup + SETUP_PIRATE_LEVEL_OFFSET) as *const u8) as u32
+    } else {
+        0
+    };
+    if p3_api::memory::is_readable(setup + 0x20, 1) {
+        let level = *((setup + SETUP_PIRATE_LEVEL_OFFSET) as *const u8);
+        out.push(format!("setup {setup:#010x} +0x13 = {level} -> {} bands", 2 * level as u32 + 1));
+    } else {
+        out.push(format!("setup {setup:#010x} unreadable"));
+    }
+
+    // The band slots, 24 bytes each: raw as well as decoded.
+    for slot in 0..BAND_SLOTS {
+        let band = *((BAND_SLOTS_ADDRESS + slot * 4) as *const u32);
+        if band == 0 {
+            out.push(format!("band {slot}: empty"));
+            continue;
+        }
+        if !p3_api::memory::is_readable(band, 0x18) {
+            out.push(format!("band {slot}: {band:#010x} unreadable"));
+            continue;
+        }
+        let raw: Vec<String> = (0..0x18u32).map(|i| format!("{:02x}", *((band + i) as *const u8))).collect();
+        let hideout = *((band + 0xE) as *const u8);
+        out.push(format!(
+            "band {slot}: {band:#010x} hideout {hideout} {} strength {} behaviour {} state {} convoy? {:#06x} +0x8 {:#06x} +0xC {:#06x} chain {:#06x} +0x16 {} | {}",
+            hideout_position(hideout),
+            *((band + 0xF) as *const u8),
+            *((band + 0x14) as *const u8),
+            *((band + 0x15) as *const u8),
+            *((band + 0xA) as *const u16),
+            *((band + 0x8) as *const u16),
+            *((band + 0xC) as *const u16),
+            *((band + 0x12) as *const u16),
+            *((band + 0x16) as *const u16),
+            raw.join(" ")
+        ));
+        let mut index = *((band + 0x12) as *const u16);
+        let mut hops = 0;
+        while index < ship_count && hops < 32 {
+            let ship = ships.get_ship(index).unwrap();
+            out.push(format!("  at home, ship {index}: {}", describe_pirate_ship(&ships, &ship)));
+            index = ship.get_next_ship_in_convoy();
+            hops += 1;
+        }
+    }
+
+    // The hideout table: 52-byte records, x at +0x0 and y at +0x4 (0x00505FD5 compares
+    // both against the pirate's own position to decide it is home).
+    for index in 0..HIDEOUT_DUMP_COUNT {
+        let record = HIDEOUT_TABLE_ADDRESS + index as u32 * HIDEOUT_RECORD_SIZE;
+        if !p3_api::memory::is_readable(record, HIDEOUT_RECORD_SIZE as usize) {
+            out.push(format!("hideout {index}: {record:#010x} unreadable"));
+            continue;
+        }
+        let raw: Vec<String> = (0..HIDEOUT_RECORD_SIZE).map(|i| format!("{:02x}", *((record + i) as *const u8))).collect();
+        out.push(format!("hideout {index}: {} +0x11 {} | {}", hideout_position(index), *((record + 0x11) as *const u8), raw.join(" ")));
+    }
+
+    // Convoy records: the pirate AI's unit of action.
+    for index in 0..convoy_count {
+        let convoy = ships.get_convoy(index).unwrap();
+        let status: u16 = convoy.get(0x12);
+        let first: u16 = convoy.get(0xA);
+        if status == 0 && first >= ship_count {
+            continue;
+        }
+        let raw: Vec<String> = (0..0x3Cu32).map(|i| format!("{:02x}", *((convoy.address + i) as *const u8))).collect();
+        let members: Vec<String> = {
+            let mut names = Vec::new();
+            let mut member = first;
+            let mut hops = 0;
+            while member < ship_count && hops < 16 {
+                let ship = ships.get_ship(member).unwrap();
+                names.push(format!("{member}:{}", ship.get_name()));
+                member = ship.get_next_ship_in_convoy();
+                hops += 1;
+            }
+            names
+        };
+        out.push(format!(
+            "convoy {index}: status {status:#x} merchant {:#04x} first {first:#06x} acting {:#06x} next {:#06x} flags {:#06x}/{:#010x} +0x16 {} towns {}/{}/{} | ships {} | {}",
+            convoy.get::<u8>(0x0),
+            convoy.get::<u16>(0x10),
+            convoy.get::<u16>(0x8),
+            convoy.get::<u16>(0x14),
+            convoy.get::<u32>(0x18),
+            convoy.get::<u16>(0x16),
+            convoy.get::<u8>(0x1C),
+            convoy.get::<u8>(0x1E),
+            convoy.get::<u8>(0x1F),
+            members.join(" "),
+            raw.join(" ")
+        ));
+    }
+
+    // Every pirate ship in the world, however it got that way.
+    let mut pirates = 0;
+    for index in 0..ship_count {
+        let ship = ships.get_ship(index).unwrap();
+        if ship.get_status() != 0x12 && ship.get::<u8>(0x15C) == 0 {
+            continue;
+        }
+        pirates += 1;
+        out.push(format!("pirate ship {index}: {}", describe_pirate_ship(&ships, &ship)));
+    }
+    out.push(format!("pirate ships: {pirates}"));
+
+    // The player's own ships, so the prey can be placed in the world.
+    let mut index = GAME_WORLD_PTR.get_merchant(local as u16).get_first_ship_index();
+    let mut hops = 0;
+    while index < ship_count && hops < 64 {
+        let ship = ships.get_ship(index).unwrap();
+        out.push(format!(
+            "my ship {index}: {:<20} status {:#x} pos {},{} convoy {:#06x} cooldown {} neighbours {:#06x}/{:#06x}",
+            ship.get_name(),
+            ship.get_status(),
+            ship.get::<u16>(0x1E),
+            ship.get::<u16>(0x22),
+            ship.get_convoy_id(),
+            ship.get::<u16>(0x138),
+            ship.get::<u16>(0xA),
+            ship.get::<u16>(0xC)
+        ));
+        index = ship.get_next_ship_index_of_merchant();
+        hops += 1;
+    }
+
+    // merchant+0x8: the control word. Bit 0x4 is what the pirate decision treats as
+    // immune - put it next to the ship count to see which population carries it.
+    let merchants = GAME_WORLD_PTR.get_merchants_count();
+    for index in 0..merchants {
+        let merchant = GAME_WORLD_PTR.get_merchant(index);
+        let word: u16 = merchant.get(0x8);
+        let mut owned = 0;
+        let mut ship_index = merchant.get_first_ship_index();
+        let mut first_name = "-".to_string();
+        while ship_index < ship_count && owned < 64 {
+            let ship = ships.get_ship(ship_index).unwrap();
+            if owned == 0 {
+                first_name = ship.get_name();
+            }
+            owned += 1;
+            ship_index = ship.get_next_ship_index_of_merchant();
+        }
+        // The other half of the prey gate (0x00515420 for player-owned prey, 0x0051543B
+        // for AI-owned): a byte from the per-merchant array at +0x39C, indexed by the
+        // merchant's own hometown, must satisfy byte + pirate_setting >= 2.
+        let hometown = merchant.get_hometown_index();
+        let gate: u8 = merchant.get(0x39C + hometown as u32);
+        let row: Vec<String> = (0..24u32).map(|i| format!("{:02x}", merchant.get::<u8>(0x39C + i))).collect();
+        out.push(format!(
+            "merchant {index}: control {word:#06x}{} hometown {hometown} ships {owned} gate +0x39C[{hometown}] = {gate} ({}) first \"{first_name}\" | +0x39C row {}",
+            if word & 0x4 != 0 { " IMMUNE" } else { "" },
+            if gate as u32 + pirate_setting >= 2 { "passes" } else { "BLOCKS raids" },
+            row.join(" ")
+        ));
+    }
+
+    for line in &out {
+        debug!("probe1: {line}");
+    }
+    // The first press of a session truncates, later presses append: two presses of the
+    // same run stay in one file so their headers can be diffed.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(press > 0)
+        .truncate(press == 0)
+        .open("_probe1.log");
+    if let Ok(mut file) = file {
+        use std::io::Write;
+        for line in &out {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    notify(&format!(
+        "probe1 #{press}: {pirates} pirate ships, {} lines {} _probe1.log",
+        out.len(),
+        if press == 0 { "->" } else { ">>" }
+    ));
+}
+
+/// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
+/// `_probe1.log`, later presses append their own block.
+static PROBE1_PRESSES: AtomicU32 = AtomicU32::new(0);
+
+/// SHIFT+F9 (THROWAWAY): dump the selected ship's whole struct to `_probe1_ship.log`,
+/// raw and decoded, one block per press (the file is truncated on the first press of a
+/// session). Select a ship, press, change one thing in-game - crew, cutlasses, a gun -
+/// press again, and the diff of the two hex blocks names the field that moved.
+static PROBE1_SHIP_PRESSES: AtomicU32 = AtomicU32::new(0);
+
+unsafe fn debug_probe1_ship() {
+    let ships = ShipsPtr::new();
+    let Some(index) = selected_ship_index() else {
+        notify("probe1 ship: no ship selected");
+        return;
+    };
+    let Some(ship) = ships.get_ship(index) else {
+        notify(&format!("probe1 ship: index {index} out of range"));
+        return;
+    };
+    let press = PROBE1_SHIP_PRESSES.fetch_add(1, Ordering::SeqCst);
+    let mut out = Vec::new();
+    out.push(format!(
+        "=== press {press} tick {} ship {index} \"{}\" type {} upgrade {} ===",
+        GAME_WORLD_PTR.get::<u32>(0x14),
+        ship.get_name(),
+        ship.get::<u8>(0xE),
+        ship.get::<u8>(0xF)
+    ));
+    out.push(format!(
+        "crew +0x40 {} (mirror +0x154 {}) | artillery power +0x120 {} weight +0x11C {} | capacity +0x10 {} used +0x118 {} | +0x158 {} | health {}/{}",
+        ship.get::<u16>(0x40),
+        ship.get::<u16>(0x154),
+        ship.get::<i32>(0x120),
+        ship.get::<i32>(0x11C),
+        ship.get::<i32>(0x10),
+        ship.get::<i32>(0x118),
+        ship.get::<i32>(0x158),
+        ship.get::<i32>(0x18),
+        ship.get::<i32>(0x14)
+    ));
+    // The 12 artillery slots at +0x13C are two bytes each (count, type).
+    let slots: Vec<String> = (0..12u32)
+        .map(|slot| format!("{:02x}{:02x}", ship.get::<u8>(0x13C + slot * 2), ship.get::<u8>(0x13D + slot * 2)))
+        .collect();
+    out.push(format!("artillery slots +0x13C: {}", slots.join(" ")));
+    // The whole struct, so any field that moves shows up in a diff.
+    for row in 0..SHIP_SIZE / 16 {
+        let base = row * 16;
+        let bytes: Vec<String> = (0..16u32).map(|i| format!("{:02x}", ship.get::<u8>(base + i))).collect();
+        out.push(format!("+{base:#05x}  {}", bytes.join(" ")));
+    }
+
+    for line in &out {
+        debug!("probe1 ship: {line}");
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(press > 0)
+        .truncate(press == 0)
+        .open("_probe1_ship.log");
+    if let Ok(mut file) = file {
+        use std::io::Write;
+        for line in &out {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    notify(&format!(
+        "probe1 ship #{press}: {} crew {} arty {} -> _probe1_ship.log",
+        ship.get_name(),
+        ship.get::<u16>(0x40),
+        ship.get::<i32>(0x120)
+    ));
+}
+
+/// CTRL+F9 (THROWAWAY): the pirate timeline. Samples the pirate convoys into
+/// `_probe1_timeline.log` while the game runs, so a multi-day observation needs no key
+/// presses: what the restraint counter does across a week, and when a convoy switches
+/// target, goes home, enters a battle or vanishes into a hideout.
+///
+/// The sampling hangs off the ships tick itself (the `call 0x00506720` at `0x00531011`
+/// inside `advance_time`), not off a timer, so it sees **every** tick no matter the game
+/// speed - including fast-forward, which advances up to a whole day per frame and would
+/// let a wall-clock sampler step clean over the transitions. Each tick it computes a
+/// cheap fingerprint of the pirate convoys and writes a line only when that changes, or
+/// every [TIMELINE_TICKS] ticks as a heartbeat.
+static TIMELINE_ON: AtomicBool = AtomicBool::new(false);
+/// A quarter of a day between heartbeat samples (a day is 256 ticks).
+const TIMELINE_TICKS: u32 = 64;
+/// `advance_time`'s call to the ships tick, module-relative for `hook_call_rel32`.
+const SHIPS_TICK_CALL_OFFSET: u32 = 0x131011;
+static TIMELINE_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+static TIMELINE_LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+unsafe fn toggle_probe1_timeline() {
+    let on = !TIMELINE_ON.load(Ordering::SeqCst);
+    if on {
+        if TIMELINE_HOOK_PTR.load(Ordering::SeqCst).is_null() {
+            match hook_call_rel32(SHIPS_TICK_CALL_OFFSET, ships_tick_timeline_hook as usize as u32) {
+                Ok(hook) => TIMELINE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+                Err(e) => {
+                    error!("probe1 timeline: hooking the ships tick failed: {e:?}");
+                    notify("probe1 timeline: hook failed");
+                    return;
+                }
+            }
+        }
+        *TIMELINE_LOG.lock().unwrap() = std::fs::File::create("_probe1_timeline.log").ok();
+    } else {
+        *TIMELINE_LOG.lock().unwrap() = None;
+    }
+    TIMELINE_ON.store(on, Ordering::SeqCst);
+    notify(&format!("probe1 timeline: {}", if on { "on -> _probe1_timeline.log" } else { "off" }));
+}
+
+/// Wraps the ships tick: the original first, so the sample shows the state the tick left
+/// behind.
+#[no_mangle]
+unsafe extern "thiscall" fn ships_tick_timeline_hook(this: u32, tick: u32) {
+    let orig: extern "thiscall" fn(u32, u32) = mem::transmute((*TIMELINE_HOOK_PTR.load(Ordering::Relaxed)).old_absolute);
+    orig(this, tick);
+    if TIMELINE_ON.load(Ordering::Relaxed) {
+        sample_probe1_timeline(tick);
+    }
+}
+
+/// The last prey each convoy latched, kept because `0x0050BC40` clears `ship+0x50` when
+/// it engages - without this the battle line cannot name who was attacked.
+static LAST_PREY: Mutex<[u16; TIMELINE_CONVOYS]> = Mutex::new([0xFFFF; TIMELINE_CONVOYS]);
+const TIMELINE_CONVOYS: usize = 64;
+
+unsafe fn sample_probe1_timeline(tick: u32) {
+    static LAST_TICK: AtomicU32 = AtomicU32::new(0);
+    static LAST_SHAPE: AtomicU32 = AtomicU32::new(0);
+    let (shape, changed_at) = (probe1_timeline_shape(), LAST_SHAPE.load(Ordering::Relaxed));
+    let due = tick.wrapping_sub(LAST_TICK.load(Ordering::Relaxed)) >= TIMELINE_TICKS;
+    let changed = shape != changed_at;
+    if !due && !changed {
         return;
     }
-    let raw = *(field as *const u32);
-    // Only the first word is written by the game; see the note on the selection object
-    // in `UIShipPanelPtr`.
-    let index = if p3_api::memory::is_readable(raw, 2) { Some(*(raw as *const u16)) } else { None };
-    debug!(
-        "selection probe: panel {:#010x} field {field:#010x} selection {raw:#010x} index {index:?} of {} ships",
-        panel.address,
-        p3_api::ships::ShipsPtr::new().get_ships_size()
-    );
-    match panel.get_selected_ship() {
-        Some(ship) => notify(&format!(
-            "selected ship: {} (#{})",
-            ship.get_name(),
-            panel.get_selected_ship_index().unwrap_or_default()
-        )),
-        None => match index {
-            Some(index) => notify(&format!("selected ship: none (sel {raw:#x}, index {index} out of range)")),
-            None => notify(&format!("selected ship: none (sel {raw:#010x}, unreadable)")),
-        },
+    LAST_TICK.store(tick, Ordering::Relaxed);
+    LAST_SHAPE.store(shape, Ordering::Relaxed);
+    let detail = probe1_timeline_detail();
+    use std::io::Write;
+    if let Ok(mut guard) = TIMELINE_LOG.lock() {
+        if let Some(file) = guard.as_mut() {
+            let _ = writeln!(
+                file,
+                "tick {tick} day {} time {:#04x} {}{detail}",
+                tick >> 8,
+                tick & 0xFF,
+                if changed { "CHANGE " } else { "" }
+            );
+            let _ = file.flush();
+        }
     }
+}
+
+/// A cheap fingerprint of every pirate convoy's shape - status, flags, prey and member
+/// count. Runs every tick, so it allocates nothing.
+unsafe fn probe1_timeline_shape() -> u32 {
+    let ships = ShipsPtr::new();
+    let ship_count = ships.get_ships_size();
+    let convoy_count = ships.get_convoys_size();
+    let mut hash: u32 = 0;
+    for index in 0..convoy_count {
+        let convoy = ships.get_convoy(index).unwrap();
+        let status: u16 = convoy.get(0x12);
+        if convoy.get::<u8>(0x0) != 0xFF || status == 0xFF {
+            continue;
+        }
+        let acting: u16 = convoy.get(0x10);
+        let prey = match ships.get_ship(acting) {
+            Some(ship) => ship.get::<u16>(0x50),
+            None => 0xFFFF,
+        };
+        let mut members = 0u32;
+        let mut member: u16 = convoy.get(0xA);
+        while member < ship_count && members < 8 {
+            member = ships.get_ship(member).unwrap().get_next_ship_in_convoy();
+            members += 1;
+        }
+        for value in [index as u32, status as u32, convoy.get::<u16>(0x14) as u32, acting as u32, prey as u32, members] {
+            hash = hash.rotate_left(5) ^ value;
+        }
+    }
+    hash
+}
+
+/// The line body: every pirate convoy decoded, plus the pirates outside one.
+unsafe fn probe1_timeline_detail() -> String {
+    let ships = ShipsPtr::new();
+    let ship_count = ships.get_ships_size();
+    let convoy_count = ships.get_convoys_size();
+    let mut detail = String::new();
+    for index in 0..convoy_count {
+        let convoy = ships.get_convoy(index).unwrap();
+        let status: u16 = convoy.get(0x12);
+        if convoy.get::<u8>(0x0) != 0xFF || status == 0xFF {
+            continue;
+        }
+        let acting: u16 = convoy.get(0x10);
+        let flags: u16 = convoy.get(0x14);
+        let counter: u16 = convoy.get(0x16);
+        let mut members = Vec::new();
+        let mut member: u16 = convoy.get(0xA);
+        let mut hops = 0;
+        while member < ship_count && hops < 8 {
+            members.push(member.to_string());
+            member = ships.get_ship(member).unwrap().get_next_ship_in_convoy();
+            hops += 1;
+        }
+        let (position, prey_text) = match ships.get_ship(acting) {
+            Some(ship) => {
+                let prey: u16 = ship.get(0x50);
+                let prey_text = match ships.get_ship(prey) {
+                    Some(prey_ship) => format!(
+                        "{prey}:{} m{:#04x} at {},{}",
+                        prey_ship.get_name(),
+                        prey_ship.get_merchant_index(),
+                        prey_ship.get::<u16>(0x1E),
+                        prey_ship.get::<u16>(0x22)
+                    ),
+                    None => "none".to_string(),
+                };
+                (format!("{},{}", ship.get::<u16>(0x1E), ship.get::<u16>(0x22)), prey_text)
+            }
+            None => ("?".to_string(), "?".to_string()),
+        };
+        // Remember the prey while it is still there, and name it once a battle starts.
+        let victim = {
+            let mut last = LAST_PREY.lock().unwrap();
+            let slot = (index as usize).min(TIMELINE_CONVOYS - 1);
+            let prey: u16 = match ships.get_ship(acting) {
+                Some(ship) => ship.get(0x50),
+                None => 0xFFFF,
+            };
+            if prey != 0xFFFF {
+                last[slot] = prey;
+            }
+            match ships.get_ship(last[slot]) {
+                Some(ship) => format!(
+                    "{}:{} m{:#04x}{}",
+                    last[slot],
+                    ship.get_name(),
+                    ship.get_merchant_index(),
+                    if ship.get_merchant_index() as u32 == *(0x006DFC14 as *const u32) { " MINE" } else { "" }
+                ),
+                None => "unknown".to_string(),
+            }
+        };
+        detail.push_str(&format!(
+            "| convoy {index} status {status:#x} flags {flags:#06x} counter {counter} ({:.2}d) acting {acting} at {position} ships {} prey {prey_text} {}",
+            counter as f64 / 256.0,
+            members.join(","),
+            if status == 0x14 { format!("ENGAGED victim {victim} ") } else { String::new() }
+        ));
+    }
+    // Pirate ships outside a convoy: at a hideout, or waiting to be dispatched.
+    let mut loose = Vec::new();
+    for index in 0..ship_count {
+        let ship = ships.get_ship(index).unwrap();
+        if ship.get_status() != 0x12 || ship.get_convoy_id() < convoy_count {
+            continue;
+        }
+        loose.push(format!(
+            "{index}@{},{} hp{}",
+            ship.get::<u16>(0x1E),
+            ship.get::<u16>(0x22),
+            ship.get::<i32>(0x18)
+        ));
+    }
+    detail.push_str(&format!("| loose {}", loose.join(" ")));
+    detail
+}
+
+/// `[0x006CC3E8]` is the game-setup object; `+0x13` is the byte world generation
+/// (`0x0054A480`) turns into `2 * n + 1` pirate bands.
+const SETUP_OBJECT_PTR_ADDRESS: u32 = 0x006CC3E8;
+const SETUP_PIRATE_LEVEL_OFFSET: u32 = 0x13;
+/// The pirate band slots: five pointers at ships container `+0x0C`, of which world
+/// generation fills the first `2 * setup + 1`.
+const BAND_SLOTS_ADDRESS: u32 = 0x006DD7AC;
+const BAND_SLOTS: u32 = 5;
+/// The hideout records: 52-byte stride, `+0x0` x and `+0x4` y (read at `0x00505FD5` /
+/// `0x00505FE6` to test whether a pirate is home, and at `0x0051516D` / `0x0051518A`
+/// as a spawn position). Runtime data, so the layout beyond that is what this dumps.
+const HIDEOUT_TABLE_ADDRESS: u32 = 0x006DDBB0;
+const HIDEOUT_RECORD_SIZE: u32 = 52;
+const HIDEOUT_DUMP_COUNT: u8 = 48;
+
+/// One hideout's coordinates, as the game reads them.
+unsafe fn hideout_position(index: u8) -> String {
+    let record = HIDEOUT_TABLE_ADDRESS + index as u32 * HIDEOUT_RECORD_SIZE;
+    if !p3_api::memory::is_readable(record, 8) {
+        return format!("({record:#010x} unreadable)");
+    }
+    format!("({},{})", *(record as *const u16), *((record + 4) as *const u16))
+}
+
+/// The pirate-relevant state of one ship: what the hunt reads and writes.
+unsafe fn describe_pirate_ship(ships: &ShipsPtr, ship: &ShipPtr) -> String {
+    let captain = ship.get_captain_index();
+    let captain_kind = match ships.get_auto_trader(captain) {
+        Some(record) => {
+            if record.is_pirate() {
+                "pirate"
+            } else {
+                "captain"
+            }
+        }
+        None => "none",
+    };
+    let prey: u16 = ship.get(0x50);
+    let prey_text = match ships.get_ship(prey) {
+        Some(prey_ship) => format!(
+            "{} of merchant {:#04x} status {:#x} at {},{}",
+            prey_ship.get_name(),
+            prey_ship.get_merchant_index(),
+            prey_ship.get_status(),
+            prey_ship.get::<u16>(0x1E),
+            prey_ship.get::<u16>(0x22)
+        ),
+        None => "-".to_string(),
+    };
+    format!(
+        "{:<20} merchant {:#04x} owner {:#04x} pirate {} status {:#x} pos {},{} health {}/{} cooldown {} convoy {:#06x} neighbours {:#06x}/{:#06x} captain {captain} ({captain_kind}) str {}/{} | prey {prey:#06x} = {prey_text}",
+        ship.get_name(),
+        ship.get_merchant_index(),
+        ship.get::<u8>(0x15D),
+        ship.get::<u8>(0x15C),
+        ship.get_status(),
+        ship.get::<u16>(0x1E),
+        ship.get::<u16>(0x22),
+        ship.get::<i32>(0x18),
+        ship.get::<i32>(0x14),
+        ship.get::<u16>(0x138),
+        ship.get_convoy_id(),
+        ship.get::<u16>(0xA),
+        ship.get::<u16>(0xC),
+        ship.get::<u16>(0x40),
+        ship.get::<i32>(0x120),
+    )
 }
