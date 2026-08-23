@@ -6,12 +6,16 @@ use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hoo
 use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::{enums::WareId, p3_ptr::P3Pointer},
-    game_world::GAME_WORLD_PTR,
+    auto_trader::skill_caps,
+    data::{enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
+    game_world::{GAME_WORLD_PTR, TICKS_PER_YEAR},
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
-    ship::{ShipPtr, SHIP_SIZE},
+    scheduled_tasks::{
+        scheduled_task::{SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE, SCHEDULED_TASK_SIZE},
+        SCHEDULED_TASKS_PTR,
+    },
+    ship::SHIP_SIZE,
     ships::ShipsPtr,
     town::{get_town_name, TOWN_SIZE},
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
@@ -214,6 +218,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
             match wparam.0 {
                 w if w == DEBUG_PROBE1_KEY && ctrl => toggle_probe1_timeline(),
                 w if w == DEBUG_PROBE1_KEY && shift => debug_probe1_ship(),
+                w if w == DEBUG_PROBE1_KEY && alt => debug_probe_administrators(),
                 w if w == DEBUG_PROBE1_KEY => debug_probe1(),
                 w if w == ROUTE_DUMP_KEY && ctrl => debug_probe_dialog_modes(),
                 w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
@@ -1793,215 +1798,240 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): the pirate-AI probe, for `.claude/notes/done/pirate-ai.md`. Dumps to
-/// DebugView and to `_probe1.log` in the game folder (truncated on each press):
+/// F9 (THROWAWAY): the captain-experience census, for
+/// `.claude/notes/todo/captain-experience.md`. Dumps to DebugView and to `_probe1.log`
+/// in the game folder - truncated on the first press of a session and appended
+/// afterwards, so two presses days apart sit in one file and can be diffed.
 ///
-/// - the setup byte `[[0x006CC3E8]+0x13]` that world generation turns into
-///   `2 * n + 1` pirate bands, and that the attack decision adds to its AI-prey
-///   threshold;
-/// - the five band slots at `0x006DD7AC`: hideout index, strength and behaviour class,
-///   state, the convoy id at `+0xA` and the ships still at home;
-/// - the hideout table at `0x006DDBB0` (52-byte records, `+0x0` x, `+0x4` y): runtime
-///   data, so this is the only way to read it;
-/// - every convoy record in use, decoded - the pirate AI acts at convoy granularity;
-/// - every pirate ship with its prey (named, with owner), cooldown and position;
-/// - the local player's ships, to place the prey in the world;
-/// - every merchant's control word (`merchant+0x8`) next to its ship count, to work out
-///   what the pirate-immune bit `0x4` marks.
+/// Every skill byte in the game is written by operation `0x12` (`0x00538A80`), which
+/// clamps each skill to a ceiling taken from bits of the record's **array index**, and
+/// the only producer that runs continuously is the ten-day scan `0x004DCEA0`. So the
+/// dump prints, per record, the three skills against the three ceilings
+/// [p3_api::auto_trader::skill_caps] derives, where the record sits (tavern, ship,
+/// office) and who owns it - the scan gives a human owner's captains a random 0..50 on
+/// one skill and an AI owner's a flat +8, told apart by `merchant+0x8`.
+///
+/// What to check in a dump:
+///
+/// - **no skill above its cap.** The handler writes the cap unconditionally when a gain
+///   would pass it, so an `OVER` row is a record no gain event has ever touched.
+/// - **`trade - combat` constant** for the same captain across two presses a year apart:
+///   the handler reads one payload field for both skills.
+/// - **administrator trade skills exact multiples of 43** - their own path adds exactly
+///   one level at a time and stops at 215.
+/// - **the round counter between 0 and 31**, consistent with the day of the year: it is
+///   reset below day 10 and the scan returns early above `0x1F`.
 unsafe fn debug_probe1() {
     let mut out: Vec<String> = Vec::new();
     let ships = ShipsPtr::new();
+    let traders = ships.get_auto_traders_size();
     let ship_count = ships.get_ships_size();
-    let convoy_count = ships.get_convoys_size();
+    let merchants = GAME_WORLD_PTR.get_merchants_count();
+    let now = GAME_WORLD_PTR.get_game_time_raw();
     let local: u32 = *(0x006DFC14 as *const u32);
-    // The world tick counter the ships tick is driven by ([0x006DE4B4] = world+0x14):
-    // press twice and the difference between the headers gives the elapsed ticks, so a
-    // countdown's rate can be measured without knowing where in the game we are.
     let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
-    out.push(format!("=== press {press} at tick {} ===", GAME_WORLD_PTR.get::<u32>(0x14)));
+
+    // Which save this block came from. The loaded file name is not kept anywhere the mod
+    // can read, so the block is keyed by the player himself plus a hash of the world's
+    // town list - enough to group blocks by save, and the tick orders them within one.
+    // An optional `_probe1_save.txt` in the game folder adds a label of your own.
+    let label = std::fs::read_to_string("_probe1_save.txt")
+        .map(|text| text.lines().next().unwrap_or("").trim().to_string())
+        .unwrap_or_default();
+    // Which save folder the game writes to: the path builder at 0x005473A6 picks
+    // `Save\Kam`, `Save\Ein` or `Save\Mehr` off this byte of the setup object.
+    let mode = *((*(0x006CC3E8 as *const u32) + 0xd) as *const u8);
+    let campaign = match mode {
+        5 => "Kam",
+        3 => "Ein",
+        0..=2 => "Mehr",
+        _ => "?",
+    };
+    // FNV-1a over the town id list at `game_world+0x18`, which world generation fills:
+    // constant within a save, different between worlds.
+    let world = GAME_WORLD_PTR.get::<[u8; 40]>(0x18).iter().fold(0x811c_9dc5u32, |hash, &byte| {
+        (hash ^ byte as u32).wrapping_mul(0x0100_0193)
+    });
+    let player = GAME_WORLD_PTR.get_merchant(local as u16);
+
     out.push(format!(
-        "ships {ship_count} convoys {convoy_count} local merchant {local} | hunt: acquire {} (r {:.0}) chase {} (r {:.0}) x-span {}",
-        ships.get::<u16>(0xFA),
-        (ships.get::<u16>(0xFA) as f64).sqrt(),
-        ships.get::<u16>(0xFC),
-        (ships.get::<u16>(0xFC) as f64).sqrt(),
-        ships.get::<u16>(0xFE)
+        "=== press {press} | save: {} campaign {campaign}({mode}) world {world:#010x} | tick {now} year {} day-of-year {} ({}.{}) ===",
+        if label.is_empty() { "<no _probe1_save.txt>".to_string() } else { format!("\"{label}\"") },
+        GAME_WORLD_PTR.get_year(),
+        GAME_WORLD_PTR.get_day_of_year(),
+        GAME_WORLD_PTR.get_day_of_month(),
+        GAME_WORLD_PTR.get_month(),
+    ));
+    out.push(format!(
+        "player: merchant {local} {} {} of {} | money {} company value {} | traders {traders} ships {ship_count} merchants {merchants}",
+        player.get_name(),
+        player.get_family_name(),
+        get_town_name(player.get_hometown_index()).unwrap_or_else(|| "?".into()),
+        player.get_money(),
+        player.get_company_value(),
     ));
 
-    // The setup object behind [0x006CC3E8]: +0x13 scales the number of bands and the
-    // willingness to raid AI merchants.
-    let setup = *(SETUP_OBJECT_PTR_ADDRESS as *const u32);
-    let pirate_setting = if p3_api::memory::is_readable(setup + SETUP_PIRATE_LEVEL_OFFSET, 1) {
-        *((setup + SETUP_PIRATE_LEVEL_OFFSET) as *const u8) as u32
-    } else {
-        0
-    };
-    if p3_api::memory::is_readable(setup + 0x20, 1) {
-        let level = *((setup + SETUP_PIRATE_LEVEL_OFFSET) as *const u8);
-        out.push(format!("setup {setup:#010x} +0x13 = {level} -> {} bands", 2 * level as u32 + 1));
-    } else {
-        out.push(format!("setup {setup:#010x} unreadable"));
-    }
-
-    // The band slots, 24 bytes each: raw as well as decoded.
-    for slot in 0..BAND_SLOTS {
-        let band = *((BAND_SLOTS_ADDRESS + slot * 4) as *const u32);
-        if band == 0 {
-            out.push(format!("band {slot}: empty"));
+    // The scan keeps its round counter in the ten-day task's own data at `+0x8`;
+    // `counter & 7` is the `captain_index & 7` the next run will process.
+    let mut group = None;
+    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
+        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
+        if task.get_opcode() != SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE {
             continue;
         }
-        if !p3_api::memory::is_readable(band, 0x18) {
-            out.push(format!("band {slot}: {band:#010x} unreadable"));
-            continue;
-        }
-        let raw: Vec<String> = (0..0x18u32).map(|i| format!("{:02x}", *((band + i) as *const u8))).collect();
-        let hideout = *((band + 0xE) as *const u8);
+        let due = task.get_due_timestamp();
+        let counter = task.get_data_dword(0x8);
+        group = Some(counter & 7);
         out.push(format!(
-            "band {slot}: {band:#010x} hideout {hideout} {} strength {} behaviour {} state {} convoy? {:#06x} +0x8 {:#06x} +0xC {:#06x} chain {:#06x} +0x16 {} | {}",
-            hideout_position(hideout),
-            *((band + 0xF) as *const u8),
-            *((band + 0x14) as *const u8),
-            *((band + 0x15) as *const u8),
-            *((band + 0xA) as *const u16),
-            *((band + 0x8) as *const u16),
-            *((band + 0xC) as *const u16),
-            *((band + 0x12) as *const u16),
-            *((band + 0x16) as *const u16),
-            raw.join(" ")
+            "ten-day task {index}: due {due} (in {:.1} days) | data+0x0 {} counter {counter} -> group {}{}",
+            due.wrapping_sub(now) as f32 / 256.0,
+            task.get_data_dword(0),
+            counter & 7,
+            if counter > 0x1f { " | SCAN DISABLED, counter past 0x1f" } else { "" },
         ));
-        let mut index = *((band + 0x12) as *const u16);
-        let mut hops = 0;
-        while index < ship_count && hops < 32 {
-            let ship = ships.get_ship(index).unwrap();
-            out.push(format!("  at home, ship {index}: {}", describe_pirate_ship(&ships, &ship)));
-            index = ship.get_next_ship_in_convoy();
-            hops += 1;
-        }
+    }
+    if group.is_none() {
+        out.push("ten-day task: NOT FOUND in the queue".to_string());
     }
 
-    // The hideout table: 52-byte records, x at +0x0 and y at +0x4 (0x00505FD5 compares
-    // both against the pirate's own position to decide it is home).
-    for index in 0..HIDEOUT_DUMP_COUNT {
-        let record = HIDEOUT_TABLE_ADDRESS + index as u32 * HIDEOUT_RECORD_SIZE;
-        if !p3_api::memory::is_readable(record, HIDEOUT_RECORD_SIZE as usize) {
-            out.push(format!("hideout {index}: {record:#010x} unreadable"));
+    // `merchant+0x8 == 0` is a human player (verified in done/pirate-ai.md): his
+    // captains take the random path and only his administrators gain at all.
+    let human: Vec<bool> = (0..merchants).map(|i| GAME_WORLD_PTR.get_merchant(i).get_control_word() == 0).collect();
+    let words: Vec<String> = (0..merchants)
+        .map(|i| format!("{i}={:04x}{}", GAME_WORLD_PTR.get_merchant(i).get_control_word(), if human[i as usize] { "*" } else { "" }))
+        .collect();
+    out.push(format!("merchant control words (* = human, random path): {}", words.join(" ")));
+
+    // Where each record sits: chained to a town = that tavern, `ship+0x42` = that ship,
+    // `office+0x2F2` = administrator of that office, anything else unplaced.
+    // Which growth path the scan gives this owner's captains. It walks merchants and
+    // their ship chains, so a ship with no owner (0xFF - pirate ships and empty slots) is
+    // never visited at all.
+    let path_of = |owner: u16| {
+        if owner >= merchants {
+            "no owner, never scanned"
+        } else if human[owner as usize] {
+            "human 0..50"
+        } else {
+            "AI +8"
+        }
+    };
+    let mut place: Vec<String> = vec![String::new(); traders as usize];
+    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
+        let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
+        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
+        // The chain ends on an out-of-range index; cap the walk against cycles.
+        for _ in 0..traders {
+            let Some(trader) = ships.get_auto_trader(index) else { break };
+            place[index as usize] = format!("tavern {town}");
+            index = trader.get_next_index();
+        }
+    }
+    for ship_index in 0..ship_count {
+        let Some(ship) = ships.get_ship(ship_index) else { continue };
+        let captain = ship.get_captain_index();
+        if captain >= traders {
             continue;
         }
-        let raw: Vec<String> = (0..HIDEOUT_RECORD_SIZE).map(|i| format!("{:02x}", *((record + i) as *const u8))).collect();
-        out.push(format!("hideout {index}: {} +0x11 {} | {}", hideout_position(index), *((record + 0x11) as *const u8), raw.join(" ")));
+        let owner = ship.get_merchant_index();
+        place[captain as usize] = format!(
+            "ship {ship_index} {:?} owner {owner:#04x} {}{}",
+            ship.get_name(),
+            path_of(owner as u16),
+            // The one status the scan skips outright.
+            if ship.get_status() == 0x11 { " status 0x11 SKIPPED" } else { "" },
+        );
+    }
+    let mut admins: Vec<u16> = Vec::new();
+    for office_index in 0..GAME_WORLD_PTR.get_offices_count() {
+        let office = GAME_WORLD_PTR.get_office(office_index);
+        let admin = office.get_administrator_index();
+        if admin >= traders {
+            continue;
+        }
+        admins.push(admin);
+        let owner = office.get_merchant_index();
+        place[admin as usize] = format!(
+            "office {office_index} in {} owner {owner:#04x} {}",
+            get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index())),
+            path_of(owner),
+        );
     }
 
-    // Convoy records: the pirate AI's unit of action.
-    for index in 0..convoy_count {
-        let convoy = ships.get_convoy(index).unwrap();
-        let status: u16 = convoy.get(0x12);
-        let first: u16 = convoy.get(0xA);
-        if status == 0 && first >= ship_count {
+    let mut over_cap = 0;
+    let mut gated_out = 0;
+    let mut lockstep: Vec<String> = Vec::new();
+    let mut due_next: Vec<String> = Vec::new();
+    for index in 0..traders {
+        let Some(trader) = ships.get_auto_trader(index) else { break };
+        let (nav, trade, combat) = (trader.get_navigation_skill(), trader.get_trade_skill(), trader.get_combat_skill());
+        // A free slot is memset to 0xFF and linked into the freelist through +0x0.
+        if trader.get_state_byte() == 0xff && nav == 0xff && trade == 0xff && combat == 0xff {
             continue;
         }
-        let raw: Vec<String> = (0..0x3Cu32).map(|i| format!("{:02x}", *((convoy.address + i) as *const u8))).collect();
-        let members: Vec<String> = {
-            let mut names = Vec::new();
-            let mut member = first;
-            let mut hops = 0;
-            while member < ship_count && hops < 16 {
-                let ship = ships.get_ship(member).unwrap();
-                names.push(format!("{member}:{}", ship.get_name()));
-                member = ship.get_next_ship_in_convoy();
-                hops += 1;
-            }
-            names
+        let (nav_cap, trade_cap, combat_cap) = skill_caps(index);
+        let over = |skill: u8, cap: u8| if skill > cap { "!" } else { " " };
+        if nav > nav_cap || trade > trade_cap || combat > combat_cap {
+            over_cap += 1;
+        }
+        // Every gain is gated against the NAVIGATION cap, whichever skill was rolled, so
+        // a record with all three at or above it never gains again.
+        let stuck = nav >= nav_cap && trade >= nav_cap && combat >= nav_cap;
+        if stuck {
+            gated_out += 1;
+        }
+        let placed = if place[index as usize].is_empty() {
+            "unplaced".to_string()
+        } else {
+            place[index as usize].clone()
         };
         out.push(format!(
-            "convoy {index}: status {status:#x} merchant {:#04x} first {first:#06x} acting {:#06x} next {:#06x} flags {:#06x}/{:#010x} +0x16 {} towns {}/{}/{} | ships {} | {}",
-            convoy.get::<u8>(0x0),
-            convoy.get::<u16>(0x10),
-            convoy.get::<u16>(0x8),
-            convoy.get::<u16>(0x14),
-            convoy.get::<u32>(0x18),
-            convoy.get::<u16>(0x16),
-            convoy.get::<u8>(0x1C),
-            convoy.get::<u8>(0x1E),
-            convoy.get::<u8>(0x1F),
-            members.join(" "),
-            raw.join(" ")
+            "trader {index:3} {} nav {nav:3}/{nav_cap}{} trade {trade:3}/{trade_cap}{} combat {combat:3}/{combat_cap}{} | wage {:3} mer {:#04x} state {:#04x} retire {} born {} age {:.1}y | {placed}{}",
+            if trader.is_captain() { "CAPT" } else { "PIRA" },
+            over(nav, nav_cap),
+            over(trade, trade_cap),
+            over(combat, combat_cap),
+            trader.get_daily_wage(),
+            trader.get_merchant_index(),
+            trader.get_state_byte(),
+            trader.get_retirement_flag(),
+            trader.get_timestamp(),
+            now.saturating_sub(trader.get_timestamp()) as f32 / TICKS_PER_YEAR as f32,
+            if stuck { " | GATED OUT" } else { "" },
         ));
-    }
-
-    // Every pirate ship in the world, however it got that way.
-    let mut pirates = 0;
-    for index in 0..ship_count {
-        let ship = ships.get_ship(index).unwrap();
-        if ship.get_status() != 0x12 && ship.get::<u8>(0x15C) == 0 {
-            continue;
+        lockstep.push(format!("{index}:{}", trade as i32 - combat as i32));
+        if group == Some(index as u32 & 7) && !place[index as usize].is_empty() {
+            due_next.push(index.to_string());
         }
-        pirates += 1;
-        out.push(format!("pirate ship {index}: {}", describe_pirate_ship(&ships, &ship)));
-    }
-    out.push(format!("pirate ships: {pirates}"));
-
-    // The player's own ships, so the prey can be placed in the world.
-    let mut index = GAME_WORLD_PTR.get_merchant(local as u16).get_first_ship_index();
-    let mut hops = 0;
-    while index < ship_count && hops < 64 {
-        let ship = ships.get_ship(index).unwrap();
-        out.push(format!(
-            "my ship {index}: {:<20} status {:#x} pos {},{} convoy {:#06x} cooldown {} neighbours {:#06x}/{:#06x}",
-            ship.get_name(),
-            ship.get_status(),
-            ship.get::<u16>(0x1E),
-            ship.get::<u16>(0x22),
-            ship.get_convoy_id(),
-            ship.get::<u16>(0x138),
-            ship.get::<u16>(0xA),
-            ship.get::<u16>(0xC)
-        ));
-        index = ship.get_next_ship_index_of_merchant();
-        hops += 1;
     }
 
-    // merchant+0x8: the control word. Bit 0x4 is what the pirate decision treats as
-    // immune - put it next to the ship count to see which population carries it.
-    let merchants = GAME_WORLD_PTR.get_merchants_count();
-    for index in 0..merchants {
-        let merchant = GAME_WORLD_PTR.get_merchant(index);
-        let word: u16 = merchant.get(0x8);
-        let mut owned = 0;
-        let mut ship_index = merchant.get_first_ship_index();
-        let mut first_name = "-".to_string();
-        while ship_index < ship_count && owned < 64 {
-            let ship = ships.get_ship(ship_index).unwrap();
-            if owned == 0 {
-                first_name = ship.get_name();
-            }
-            owned += 1;
-            ship_index = ship.get_next_ship_index_of_merchant();
-        }
-        // The other half of the prey gate (0x00515420 for player-owned prey, 0x0051543B
-        // for AI-owned): a byte from the per-merchant array at +0x39C, indexed by the
-        // merchant's own hometown, must satisfy byte + pirate_setting >= 2.
-        let hometown = merchant.get_hometown_index();
-        let gate: u8 = merchant.get(0x39C + hometown as u32);
-        let row: Vec<String> = (0..24u32).map(|i| format!("{:02x}", merchant.get::<u8>(0x39C + i))).collect();
-        out.push(format!(
-            "merchant {index}: control {word:#06x}{} hometown {hometown} ships {owned} gate +0x39C[{hometown}] = {gate} ({}) first \"{first_name}\" | +0x39C row {}",
-            if word & 0x4 != 0 { " IMMUNE" } else { "" },
-            if gate as u32 + pirate_setting >= 2 { "passes" } else { "BLOCKS raids" },
-            row.join(" ")
-        ));
-    }
+    // The administrator path adds exactly 43 at a time from a fresh 0, so anything else
+    // means either a different writer or the record is not really an administrator.
+    let stray: Vec<String> = admins
+        .iter()
+        .filter_map(|&i| ships.get_auto_trader(i).map(|t| (i, t.get_trade_skill())))
+        .filter(|(_, trade)| trade % 43 != 0)
+        .map(|(i, trade)| format!("{i}={trade}"))
+        .collect();
+    out.push(format!(
+        "administrators: {} | trade not a multiple of 43: {}",
+        admins.len(),
+        if stray.is_empty() { "none".to_string() } else { stray.join(" ") }
+    ));
+    out.push(format!("records with a skill above its cap: {over_cap} | gated out of all further gains: {gated_out}"));
+    out.push(format!("trade-combat per record (must not move between presses): {}", lockstep.join(" ")));
+    out.push(format!(
+        "group {} is processed next run, placed records in it: {}",
+        group.map(|g| g.to_string()).unwrap_or_else(|| "?".into()),
+        if due_next.is_empty() { "none".to_string() } else { due_next.join(" ") }
+    ));
 
     for line in &out {
         debug!("probe1: {line}");
     }
-    // The first press of a session truncates, later presses append: two presses of the
-    // same run stay in one file so their headers can be diffed.
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .append(press > 0)
-        .truncate(press == 0)
-        .open("_probe1.log");
+    // Always append, never truncate: the point is to compare presses days or years apart
+    // and across saves, so every block from every session stays in the one file.
+    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe1.log");
     if let Ok(mut file) = file {
         use std::io::Write;
         for line in &out {
@@ -2009,15 +2039,127 @@ unsafe fn debug_probe1() {
         }
     }
     notify(&format!(
-        "probe1 #{press}: {pirates} pirate ships, {} lines {} _probe1.log",
-        out.len(),
-        if press == 0 { "->" } else { ">>" }
+        "probe1 #{press}: {over_cap} over cap, {gated_out} gated out, {} lines >> _probe1.log",
+        out.len()
     ));
 }
 
 /// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
 /// `_probe1.log`, later presses append their own block.
 static PROBE1_PRESSES: AtomicU32 = AtomicU32::new(0);
+
+/// ALT+F9 (THROWAWAY): dump every office of the player with its administrator record, to
+/// settle whether dismissing and re-hiring an administrator preserves his trade skill.
+///
+/// Press once with the administrator in place, once after dismissing him, once after
+/// hiring again. Appends to `_probe_admin.log`, so the three blocks diff cleanly.
+///
+/// What the code says should happen: operation `0x5E` frees the record on dismissal
+/// (`0x005098B0`) and its hire path unconditionally allocates a fresh one and writes trade
+/// `= 0` (`0x0053DA1D`). The two wage formulas tell the record apart from anything the
+/// interface computes on its own:
+///
+/// - an administrator's wage is `0x004FE160`: `20 * (trade / 43) + 10`, so only ever
+///   10, 30, 50, 70, 90 or 110;
+/// - a captain's is `0x004FE190`: `(nav + trade + combat) / 50 + (state % 11) + 10`.
+///
+/// So a wage of 14 cannot have come from an administrator record at all, and the offer
+/// shown before hiring must be computed somewhere else.
+unsafe fn debug_probe_administrators() {
+    let press = PROBE_ADMIN_PRESSES.fetch_add(1, Ordering::SeqCst);
+    let mut out: Vec<String> = Vec::new();
+    let ships = ShipsPtr::new();
+    let traders = ships.get_auto_traders_size();
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    out.push(format!(
+        "=== admin press {press} | tick {} | player merchant {merchant_index} | traders {traders} ===",
+        GAME_WORLD_PTR.get_game_time_raw()
+    ));
+
+    // The player's offices, chained from merchant+0xC through office+0x2C8.
+    let merchant = GAME_WORLD_PTR.get_merchant(merchant_index as u16);
+    let offices = GAME_WORLD_PTR.get_offices_count();
+    let mut index = merchant.get_first_office_index();
+    for _ in 0..offices {
+        if index >= offices {
+            break;
+        }
+        let office = GAME_WORLD_PTR.get_office(index);
+        let town = get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index()));
+        let admin = office.get_administrator_index();
+        let detail = match ships.get_auto_trader(admin) {
+            Some(t) => {
+                let (nav, trade, combat) = (t.get_navigation_skill(), t.get_trade_skill(), t.get_combat_skill());
+                let admin_wage = 20 * (trade as u32 / 43) + 10;
+                let captain_wage = (nav as u32 + trade as u32 + combat as u32) / 50 + (t.get_state_byte() as u32 % 11) + 10;
+                format!(
+                    "admin {admin}: names {}/{} state {:#04x} nav {nav} trade {trade} (level {}) combat {combat} | wage {} [admin formula {admin_wage}, captain formula {captain_wage}] mer {:#04x} born {}",
+                    t.get_first_name_id(),
+                    t.get_last_name_id(),
+                    t.get_state_byte(),
+                    trade / 43,
+                    t.get_daily_wage(),
+                    t.get_merchant_index(),
+                    t.get_timestamp(),
+                )
+            }
+            None => format!("admin index {admin:#06x} - no administrator"),
+        };
+        out.push(format!("office {index} in {town}: flags {:#04x} | {detail}", office.get::<u8>(0x2d6)));
+        index = office.get_next_office_of_merchant_index();
+    }
+
+    // Free records are memset to 0xFF and linked into the freelist through +0x0. Watching
+    // this list is how a dismissal's free and a hire's re-allocation become visible.
+    let free: Vec<String> = (0..traders)
+        .filter(|&i| {
+            ships
+                .get_auto_trader(i)
+                .map(|t| t.get_state_byte() == 0xff && t.get_navigation_skill() == 0xff && t.get_trade_skill() == 0xff && t.get_combat_skill() == 0xff)
+                .unwrap_or(false)
+        })
+        .map(|i| i.to_string())
+        .collect();
+    out.push(format!("free slots ({}): {}", free.len(), free.join(" ")));
+
+    // The whole office record of whatever office is on screen. If anything office-side
+    // remembers a dismissed administrator, a diff of this block across the three presses
+    // is where it shows up (the ware stock at +0x4 moves on its own, so expect noise).
+    let window = UITradingOfficeWindowPtr::new();
+    if window.get_address() != 0 {
+        let town_index = window.get_town_index() as u8;
+        match GAME_WORLD_PTR.get_office_in_of(town_index, merchant_index as _) {
+            Some(office) => {
+                let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
+                out.push(format!("--- office record in {town} at {:#010x}, {OFFICE_SIZE:#x} bytes ---", office.address));
+                let mut offset = 0;
+                while offset < OFFICE_SIZE {
+                    let row: Vec<String> = (0..16.min(OFFICE_SIZE - offset)).map(|i| format!("{:02x}", *((office.address + offset + i) as *const u8))).collect();
+                    out.push(format!("{offset:04x}: {}", row.join(" ")));
+                    offset += 16;
+                }
+            }
+            None => out.push(format!("no player office in the open window's town ({town_index})")),
+        }
+    } else {
+        out.push("no trading office window open - open one for the hex block".to_string());
+    }
+
+    for line in &out {
+        debug!("admin: {line}");
+    }
+    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe_admin.log");
+    if let Ok(mut file) = file {
+        use std::io::Write;
+        for line in &out {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    notify(&format!("admin probe #{press}: {} lines >> _probe_admin.log", out.len()));
+}
+
+/// How often ALT+F9 has been pressed since the DLL was loaded.
+static PROBE_ADMIN_PRESSES: AtomicU32 = AtomicU32::new(0);
 
 /// SHIFT+F9 (THROWAWAY): dump the selected ship's whole struct to `_probe1_ship.log`,
 /// raw and decoded, one block per press (the file is truncated on the first press of a
@@ -2290,73 +2432,4 @@ unsafe fn probe1_timeline_detail() -> String {
     }
     detail.push_str(&format!("| loose {}", loose.join(" ")));
     detail
-}
-
-/// `[0x006CC3E8]` is the game-setup object; `+0x13` is the byte world generation
-/// (`0x0054A480`) turns into `2 * n + 1` pirate bands.
-const SETUP_OBJECT_PTR_ADDRESS: u32 = 0x006CC3E8;
-const SETUP_PIRATE_LEVEL_OFFSET: u32 = 0x13;
-/// The pirate band slots: five pointers at ships container `+0x0C`, of which world
-/// generation fills the first `2 * setup + 1`.
-const BAND_SLOTS_ADDRESS: u32 = 0x006DD7AC;
-const BAND_SLOTS: u32 = 5;
-/// The hideout records: 52-byte stride, `+0x0` x and `+0x4` y (read at `0x00505FD5` /
-/// `0x00505FE6` to test whether a pirate is home, and at `0x0051516D` / `0x0051518A`
-/// as a spawn position). Runtime data, so the layout beyond that is what this dumps.
-const HIDEOUT_TABLE_ADDRESS: u32 = 0x006DDBB0;
-const HIDEOUT_RECORD_SIZE: u32 = 52;
-const HIDEOUT_DUMP_COUNT: u8 = 48;
-
-/// One hideout's coordinates, as the game reads them.
-unsafe fn hideout_position(index: u8) -> String {
-    let record = HIDEOUT_TABLE_ADDRESS + index as u32 * HIDEOUT_RECORD_SIZE;
-    if !p3_api::memory::is_readable(record, 8) {
-        return format!("({record:#010x} unreadable)");
-    }
-    format!("({},{})", *(record as *const u16), *((record + 4) as *const u16))
-}
-
-/// The pirate-relevant state of one ship: what the hunt reads and writes.
-unsafe fn describe_pirate_ship(ships: &ShipsPtr, ship: &ShipPtr) -> String {
-    let captain = ship.get_captain_index();
-    let captain_kind = match ships.get_auto_trader(captain) {
-        Some(record) => {
-            if record.is_pirate() {
-                "pirate"
-            } else {
-                "captain"
-            }
-        }
-        None => "none",
-    };
-    let prey: u16 = ship.get(0x50);
-    let prey_text = match ships.get_ship(prey) {
-        Some(prey_ship) => format!(
-            "{} of merchant {:#04x} status {:#x} at {},{}",
-            prey_ship.get_name(),
-            prey_ship.get_merchant_index(),
-            prey_ship.get_status(),
-            prey_ship.get::<u16>(0x1E),
-            prey_ship.get::<u16>(0x22)
-        ),
-        None => "-".to_string(),
-    };
-    format!(
-        "{:<20} merchant {:#04x} owner {:#04x} pirate {} status {:#x} pos {},{} health {}/{} cooldown {} convoy {:#06x} neighbours {:#06x}/{:#06x} captain {captain} ({captain_kind}) str {}/{} | prey {prey:#06x} = {prey_text}",
-        ship.get_name(),
-        ship.get_merchant_index(),
-        ship.get::<u8>(0x15D),
-        ship.get::<u8>(0x15C),
-        ship.get_status(),
-        ship.get::<u16>(0x1E),
-        ship.get::<u16>(0x22),
-        ship.get::<i32>(0x18),
-        ship.get::<i32>(0x14),
-        ship.get::<u16>(0x138),
-        ship.get_convoy_id(),
-        ship.get::<u16>(0xA),
-        ship.get::<u16>(0xC),
-        ship.get::<u16>(0x40),
-        ship.get::<i32>(0x120),
-    )
 }
