@@ -6,15 +6,11 @@ use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hoo
 use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
-    auto_trader::skill_caps,
     data::{enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
-    game_world::{GAME_WORLD_PTR, TICKS_PER_YEAR},
+    game_world::{GAME_WORLD_ADDRESS, GAME_WORLD_PTR},
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::{
-        scheduled_task::{SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE, SCHEDULED_TASK_SIZE},
-        SCHEDULED_TASKS_PTR,
-    },
+    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
     ship::SHIP_SIZE,
     ships::ShipsPtr,
     town::{get_town_name, TOWN_SIZE},
@@ -1798,250 +1794,136 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): the captain-experience census, for
-/// `.claude/notes/todo/captain-experience.md`. Dumps to DebugView and to `_probe1.log`
-/// in the game folder - truncated on the first press of a session and appended
-/// afterwards, so two presses days apart sit in one file and can be diffed.
+/// F9 (THROWAWAY): does anything *correct* the population back to four times the job
+/// count, or is the identity just a consequence of the transfers? For
+/// `.claude/notes/todo/population-growth.md`.
 ///
-/// Every skill byte in the game is written by operation `0x12` (`0x00538A80`), which
-/// clamps each skill to a ceiling taken from bits of the record's **array index**, and
-/// the only producer that runs continuously is the ten-day scan `0x004DCEA0`. So the
-/// dump prints, per record, the three skills against the three ceilings
-/// [p3_api::auto_trader::skill_caps] derives, where the record sits (tavern, ship,
-/// office) and who owns it - the scan gives a human owner's captains a random 0..50 on
-/// one skill and an AI owner's a flat +8, told apart by `merchant+0x8`.
+/// `rich + wealthy + poor == 4 * jobs` held in 48 of 48 town-presses, and the routine that
+/// would enforce it - `0x0051BF90`, which recomputes the target and rescales the three
+/// classes - turns out to be **dead code**: a byte scan of `.text` finds no call or jmp to
+/// it, and its address appears nowhere in the file. So either something else normalises the
+/// classes, or nothing does and the identity falls out of the transfers alone, every one of
+/// which moves exactly four people per job (hiring `0x005108E0`, layoffs `0x0050E380`,
+/// militia, sailors).
 ///
-/// What to check in a dump:
+/// The test: break the identity by hand and see whether the game repairs it.
 ///
-/// - **no skill above its cap.** The handler writes the cap unconditionally when a gain
-///   would pass it, so an `OVER` row is a record no gain event has ever touched.
-/// - **`trade - combat` constant** for the same captain across two presses a year apart:
-///   the handler reads one payload field for both skills.
-/// - **administrator trade skills exact multiples of 43** - their own path adds exactly
-///   one level at a time and stops at 215.
-/// - **the round counter between 0 and 31**, consistent with the day of the year: it is
-///   reset below day 10 and the scan returns early above `0x1F`.
+/// - **press 0** dumps every town, then adds **1000** to one town's poor;
+/// - let the game run several days;
+/// - **press 1** (and later) dumps again without touching anything.
+///
+/// Read the `d` column - `(rich + wealthy + poor) - 4 * jobs`. On the perturbed town:
+///
+/// - still around `+1000` => nothing corrects it, the identity is maintained only by the
+///   transfers, and the note's "corrector" paragraph describes code that never runs;
+/// - back to `0` => a corrector exists somewhere that this investigation has not found.
+///
+/// The unperturbed towns are the control: their `d` should stay `0` throughout.
+///
+/// **Read the sum, never the individual classes.** `town_update_population_levels`
+/// (`0x0051C650`) moves citizens between rich, wealthy and poor every tick, so the three
+/// counts churn on their own; mistaking that churn for a correction is the exact error this
+/// investigation already made once.
+///
+/// Jobs are recomputed the way `0x0051BF90` did, so the numbers stay comparable:
+/// - `0x0051BFAF`: over the 21 facility slots, `field_4_employees + field_A`;
+/// - `0x0051BFFF`: over every office in the town, along its `+0x2CC` chain (link at
+///   `record+0x8`, bounded by `[0x006DE4A6]`), the word at `record+0x4`.
 unsafe fn debug_probe1() {
-    let mut out: Vec<String> = Vec::new();
-    let ships = ShipsPtr::new();
-    let traders = ships.get_auto_traders_size();
-    let ship_count = ships.get_ships_size();
-    let merchants = GAME_WORLD_PTR.get_merchants_count();
-    let now = GAME_WORLD_PTR.get_game_time_raw();
-    let local: u32 = *(0x006DFC14 as *const u32);
-    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
+    /// How much to add to the perturbed town's poor on press 0.
+    const BUMP: i32 = 1000;
 
-    // Which save this block came from. The loaded file name is not kept anywhere the mod
-    // can read, so the block is keyed by the player himself plus a hash of the world's
-    // town list - enough to group blocks by save, and the tick orders them within one.
-    // An optional `_probe1_save.txt` in the game folder adds a label of your own.
-    let label = std::fs::read_to_string("_probe1_save.txt")
-        .map(|text| text.lines().next().unwrap_or("").trim().to_string())
-        .unwrap_or_default();
-    // Which save folder the game writes to: the path builder at 0x005473A6 picks
-    // `Save\Kam`, `Save\Ein` or `Save\Mehr` off this byte of the setup object.
-    let mode = *((*(0x006CC3E8 as *const u32) + 0xd) as *const u8);
-    let campaign = match mode {
-        5 => "Kam",
-        3 => "Ein",
-        0..=2 => "Mehr",
-        _ => "?",
-    };
-    // FNV-1a over the town id list at `game_world+0x18`, which world generation fills:
-    // constant within a save, different between worlds.
-    let world = GAME_WORLD_PTR.get::<[u8; 40]>(0x18).iter().fold(0x811c_9dc5u32, |hash, &byte| {
-        (hash ^ byte as u32).wrapping_mul(0x0100_0193)
-    });
-    let player = GAME_WORLD_PTR.get_merchant(local as u16);
+    let mut out: Vec<String> = Vec::new();
+    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
+    let town_count = GAME_WORLD_PTR.get_towns_count();
+    let office_count = GAME_WORLD_PTR.get_offices_count();
+    let chain_bound: u16 = *(0x006de4a6 as *const u16);
 
     out.push(format!(
-        "=== press {press} | save: {} campaign {campaign}({mode}) world {world:#010x} | tick {now} year {} day-of-year {} ({}.{}) ===",
-        if label.is_empty() { "<no _probe1_save.txt>".to_string() } else { format!("\"{label}\"") },
-        GAME_WORLD_PTR.get_year(),
-        GAME_WORLD_PTR.get_day_of_year(),
+        "=== press {press} | tick {} | {}.{}.{} | {town_count} towns, {office_count} offices ===",
+        GAME_WORLD_PTR.get_game_time_raw(),
         GAME_WORLD_PTR.get_day_of_month(),
         GAME_WORLD_PTR.get_month(),
+        GAME_WORLD_PTR.get_year(),
     ));
-    out.push(format!(
-        "player: merchant {local} {} {} of {} | money {} company value {} | traders {traders} ships {ship_count} merchants {merchants}",
-        player.get_name(),
-        player.get_family_name(),
-        get_town_name(player.get_hometown_index()).unwrap_or_else(|| "?".into()),
-        player.get_money(),
-        player.get_company_value(),
-    ));
+    out.push("town              jobs     4*jobs   rich  wealthy     poor     sum3        d   beggars    total  satP".to_string());
 
-    // The scan keeps its round counter in the ten-day task's own data at `+0x8`;
-    // `counter & 7` is the `captain_index & 7` the next run will process.
-    let mut group = None;
-    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
-        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
-        if task.get_opcode() != SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE {
-            continue;
+    // 0x005303B0(this = game world, index) resolves one merchant-building record.
+    let record: extern "thiscall" fn(u32, u32) -> u32 = mem::transmute(0x005303b0u32);
+    let mut rows: Vec<(u8, i32, i32)> = Vec::new(); // (town, jobs, poor)
+
+    for town_index in 0..town_count as u8 {
+        let town = GAME_WORLD_PTR.get_town(town_index);
+
+        // Jobs: the town's own facilities, posts filled or merely allotted.
+        let mut jobs: i32 = 0;
+        for slot in 0..p3_api::facility::FACILITY_COUNT {
+            let f = town.get_facility(slot);
+            jobs += f.get_employees() as i32 + f.get_field_a() as i32;
         }
-        let due = task.get_due_timestamp();
-        let counter = task.get_data_dword(0x8);
-        group = Some(counter & 7);
+        // Jobs: every merchant building in the town, reached office by office.
+        let mut office_index = town.get_first_office_index();
+        while office_index < office_count {
+            let office = GAME_WORLD_PTR.get_office(office_index);
+            let mut building_index: u16 = office.get_first_building_index();
+            while building_index < chain_bound {
+                let r = record(GAME_WORLD_ADDRESS, building_index as u32);
+                if r == 0 {
+                    break;
+                }
+                jobs += *((r + 0x4) as *const u16) as i32;
+                building_index = *((r + 0x8) as *const u16);
+            }
+            office_index = office.get_next_office_in_town_index();
+        }
+
+        let rich: i32 = town.get(0x2d8);
+        let wealthy: i32 = town.get(0x2dc);
+        let poor: i32 = town.get(0x2e0);
+        let beggars: i32 = town.get(0x2e4);
+        let total: i32 = town.get(0x2d4);
+        let sat_poor: i16 = town.get(0x304);
+        let sum3 = rich + wealthy + poor;
+
         out.push(format!(
-            "ten-day task {index}: due {due} (in {:.1} days) | data+0x0 {} counter {counter} -> group {}{}",
-            due.wrapping_sub(now) as f32 / 256.0,
-            task.get_data_dword(0),
-            counter & 7,
-            if counter > 0x1f { " | SCAN DISABLED, counter past 0x1f" } else { "" },
+            "{:<16} {jobs:>6} {:>10} {rich:>6} {wealthy:>8} {poor:>8} {sum3:>8} {:>8} {beggars:>9} {total:>8} {sat_poor:>5}",
+            get_town_name(town_index).unwrap_or_default(),
+            jobs * 4,
+            sum3 - jobs * 4,
         ));
-    }
-    if group.is_none() {
-        out.push("ten-day task: NOT FOUND in the queue".to_string());
+        rows.push((town_index, jobs, poor));
     }
 
-    // `merchant+0x8 == 0` is a human player (verified in done/pirate-ai.md): his
-    // captains take the random path and only his administrators gain at all.
-    let human: Vec<bool> = (0..merchants).map(|i| GAME_WORLD_PTR.get_merchant(i).get_control_word() == 0).collect();
-    let words: Vec<String> = (0..merchants)
-        .map(|i| format!("{i}={:04x}{}", GAME_WORLD_PTR.get_merchant(i).get_control_word(), if human[i as usize] { "*" } else { "" }))
-        .collect();
-    out.push(format!("merchant control words (* = human, random path): {}", words.join(" ")));
-
-    // Where each record sits: chained to a town = that tavern, `ship+0x42` = that ship,
-    // `office+0x2F2` = administrator of that office, anything else unplaced.
-    // Which growth path the scan gives this owner's captains. It walks merchants and
-    // their ship chains, so a ship with no owner (0xFF - pirate ships and empty slots) is
-    // never visited at all.
-    let path_of = |owner: u16| {
-        if owner >= merchants {
-            "no owner, never scanned"
-        } else if human[owner as usize] {
-            "human 0..50"
-        } else {
-            "AI +8"
-        }
-    };
-    let mut place: Vec<String> = vec![String::new(); traders as usize];
-    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
-        let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
-        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
-        // The chain ends on an out-of-range index; cap the walk against cycles.
-        for _ in 0..traders {
-            let Some(trader) = ships.get_auto_trader(index) else { break };
-            place[index as usize] = format!("tavern {town}");
-            index = trader.get_next_index();
-        }
-    }
-    for ship_index in 0..ship_count {
-        let Some(ship) = ships.get_ship(ship_index) else { continue };
-        let captain = ship.get_captain_index();
-        if captain >= traders {
-            continue;
-        }
-        let owner = ship.get_merchant_index();
-        place[captain as usize] = format!(
-            "ship {ship_index} {:?} owner {owner:#04x} {}{}",
-            ship.get_name(),
-            path_of(owner as u16),
-            // The one status the scan skips outright.
-            if ship.get_status() == 0x11 { " status 0x11 SKIPPED" } else { "" },
-        );
-    }
-    let mut admins: Vec<u16> = Vec::new();
-    for office_index in 0..GAME_WORLD_PTR.get_offices_count() {
-        let office = GAME_WORLD_PTR.get_office(office_index);
-        let admin = office.get_administrator_index();
-        if admin >= traders {
-            continue;
-        }
-        admins.push(admin);
-        let owner = office.get_merchant_index();
-        place[admin as usize] = format!(
-            "office {office_index} in {} owner {owner:#04x} {}",
-            get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index())),
-            path_of(owner),
-        );
-    }
-
-    let mut over_cap = 0;
-    let mut gated_out = 0;
-    let mut lockstep: Vec<String> = Vec::new();
-    let mut due_next: Vec<String> = Vec::new();
-    for index in 0..traders {
-        let Some(trader) = ships.get_auto_trader(index) else { break };
-        let (nav, trade, combat) = (trader.get_navigation_skill(), trader.get_trade_skill(), trader.get_combat_skill());
-        // A free slot is memset to 0xFF and linked into the freelist through +0x0.
-        if trader.get_state_byte() == 0xff && nav == 0xff && trade == 0xff && combat == 0xff {
-            continue;
-        }
-        let (nav_cap, trade_cap, combat_cap) = skill_caps(index);
-        let over = |skill: u8, cap: u8| if skill > cap { "!" } else { " " };
-        if nav > nav_cap || trade > trade_cap || combat > combat_cap {
-            over_cap += 1;
-        }
-        // Every gain is gated against the NAVIGATION cap, whichever skill was rolled, so
-        // a record with all three at or above it never gains again.
-        let stuck = nav >= nav_cap && trade >= nav_cap && combat >= nav_cap;
-        if stuck {
-            gated_out += 1;
-        }
-        let placed = if place[index as usize].is_empty() {
-            "unplaced".to_string()
-        } else {
-            place[index as usize].clone()
-        };
-        out.push(format!(
-            "trader {index:3} {} nav {nav:3}/{nav_cap}{} trade {trade:3}/{trade_cap}{} combat {combat:3}/{combat_cap}{} | wage {:3} mer {:#04x} state {:#04x} retire {} born {} age {:.1}y | {placed}{}",
-            if trader.is_captain() { "CAPT" } else { "PIRA" },
-            over(nav, nav_cap),
-            over(trade, trade_cap),
-            over(combat, combat_cap),
-            trader.get_daily_wage(),
-            trader.get_merchant_index(),
-            trader.get_state_byte(),
-            trader.get_retirement_flag(),
-            trader.get_timestamp(),
-            now.saturating_sub(trader.get_timestamp()) as f32 / TICKS_PER_YEAR as f32,
-            if stuck { " | GATED OUT" } else { "" },
-        ));
-        lockstep.push(format!("{index}:{}", trade as i32 - combat as i32));
-        if group == Some(index as u32 & 7) && !place[index as usize].is_empty() {
-            due_next.push(index.to_string());
+    // Press 0 breaks the identity in exactly one town: the one with the most jobs, so the
+    // bump is small next to its churn and the levels routine has room to move people around.
+    if press == 0 {
+        if let Some(&(town_index, jobs, poor)) = rows.iter().max_by_key(|&&(_, jobs, _)| jobs) {
+            let town = GAME_WORLD_PTR.get_town(town_index);
+            town.set(0x2e0, &(poor + BUMP));
+            let after: i32 = town.get(0x2e0);
+            out.push(format!(
+                "*** PERTURBED {} (town {town_index}): poor {poor} -> {after}, so sum3 - 4*jobs is now {} ***",
+                get_town_name(town_index).unwrap_or_default(),
+                after + town.get::<i32>(0x2d8) + town.get::<i32>(0x2dc) - jobs * 4,
+            ));
+            out.push("*** let several days pass, then press F9 again and read the d column for this town ***".to_string());
         }
     }
 
-    // The administrator path adds exactly 43 at a time from a fresh 0, so anything else
-    // means either a different writer or the record is not really an administrator.
-    let stray: Vec<String> = admins
-        .iter()
-        .filter_map(|&i| ships.get_auto_trader(i).map(|t| (i, t.get_trade_skill())))
-        .filter(|(_, trade)| trade % 43 != 0)
-        .map(|(i, trade)| format!("{i}={trade}"))
-        .collect();
-    out.push(format!(
-        "administrators: {} | trade not a multiple of 43: {}",
-        admins.len(),
-        if stray.is_empty() { "none".to_string() } else { stray.join(" ") }
-    ));
-    out.push(format!("records with a skill above its cap: {over_cap} | gated out of all further gains: {gated_out}"));
-    out.push(format!("trade-combat per record (must not move between presses): {}", lockstep.join(" ")));
-    out.push(format!(
-        "group {} is processed next run, placed records in it: {}",
-        group.map(|g| g.to_string()).unwrap_or_else(|| "?".into()),
-        if due_next.is_empty() { "none".to_string() } else { due_next.join(" ") }
-    ));
-
-    for line in &out {
-        debug!("probe1: {line}");
-    }
-    // Always append, never truncate: the point is to compare presses days or years apart
-    // and across saves, so every block from every session stays in the one file.
-    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe1.log");
-    if let Ok(mut file) = file {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(press > 0)
+        .write(true)
+        .truncate(press == 0)
+        .open("_probe1.log")
+    {
         use std::io::Write;
         for line in &out {
             let _ = writeln!(file, "{line}");
         }
     }
-    notify(&format!(
-        "probe1 #{press}: {over_cap} over cap, {gated_out} gated out, {} lines >> _probe1.log",
-        out.len()
-    ));
+    let drift = rows.len();
+    notify(&format!("probe1 #{press}: {drift} towns dumped >> _probe1.log"));
 }
 
 /// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
