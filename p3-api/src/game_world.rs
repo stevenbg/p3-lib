@@ -12,6 +12,17 @@ use crate::{
 };
 
 pub const GAME_WORLD_PTR: GameWorldPtr = GameWorldPtr::new();
+/// The game world object. Its array pointers and counts are what the `0x005303xx`
+/// resolvers index off, so most of the bare addresses the mods use are just fields of it:
+///
+/// |Offset|Holds|Absolute|
+/// |-|-|-|
+/// |`+0x06`|merchant building count|`0x006DE4A6`|
+/// |`+0x08`|office count|`0x006DE4A8`|
+/// |`+0x14`|the day/quarter word|`0x006DE4B4`|
+/// |`+0x68`|towns array, stride [crate::town::TOWN_SIZE]|`0x006DE508`|
+/// |`+0x70`|merchant buildings array, stride [crate::data::merchant_building::MERCHANT_BUILDING_SIZE]|`0x006DE510`|
+/// |`+0x74`|offices array, stride [crate::data::office::OFFICE_SIZE]|`0x006DE514`|
 pub const GAME_WORLD_ADDRESS: u32 = 0x006DE4A0;
 pub const TICKS_PER_YEAR: u32 = 93440;
 pub const TICKS_PER_DAY: u32 = 256;

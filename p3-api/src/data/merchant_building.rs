@@ -1,22 +1,15 @@
 use super::p3_ptr::P3Pointer;
 
-/// The game world object. Its array pointers and counts are what every `0x005303xx`
-/// resolver indexes off, and the absolute addresses the mods use are just fields of it:
-/// `+0x06` merchant building count (`0x006DE4A6`), `+0x08` office count (`0x006DE4A8`),
-/// `+0x14` the day/quarter word (`0x006DE4B4`), `+0x68` towns array (`0x006DE508`),
-/// `+0x70` merchant buildings array (`0x006DE510`), `+0x74` offices array
-/// (`0x006DE514`).
-pub const WORLD_ADDRESS: u32 = 0x006DE4A0;
-
 /// One record per (merchant, town, facility type) - a merchant's own production
 /// buildings, which are NOT entries in the town's 21-slot facility array.
 pub const MERCHANT_BUILDING_SIZE: u32 = 0x14;
 
-/// Pointer to the world-wide merchant building array (`world+0x70`).
+/// Pointer to the world-wide merchant building array: the game world's `+0x70`, see
+/// [crate::game_world::GAME_WORLD_ADDRESS].
 pub const MERCHANT_BUILDINGS_ARRAY: *const u32 = 0x006DE510 as _;
 
-/// How many slots of that array are live (`world+0x6`). 128 and 256 observed in two
-/// saves, so the array grows - re-read it, do not cache it. Every caller of
+/// How many slots of that array are live: the game world's `+0x6`. 128 and 256 observed
+/// in two saves, so the array grows - re-read it, do not cache it. Every caller of
 /// [resolve_merchant_building] bounds-checks against this itself, because the resolver
 /// does not.
 pub const MERCHANT_BUILDING_COUNT: *const u16 = 0x006DE4A6 as _;
