@@ -91,6 +91,27 @@ impl TownPtr {
         ShipyardPtr::new(self.address + 0x810)
     }
 
+    /// The town's **whaling** productivity, `1024` / `768` / `0` on the same scale as
+    /// [FacilityPtr::get_productivity] - but stored here, outside the 21-slot facility
+    /// array, because whaling has no facility record. Written by town setup at
+    /// `0x00545961` from bit `0x20000` of the scenario's two ware bitmaps, the bit
+    /// straight after the 17 that cover facility types `0x04..=0x14`; the same branch
+    /// also forces `FishermansHouse` productivity (`town+0x898`) down to `768`, which
+    /// is why a whaling town's fish output is the lower grade.
+    ///
+    /// This field stands in for the missing facility's *efficiency* as well: the
+    /// producer at `0x0050E690` computes whale oil as
+    /// `employees * whaling_productivity * 27 / 1024` off the fisherman's hut's
+    /// workforce (`0x0050E753`), while fish next to it uses
+    /// [FacilityPtr::get_efficiency]. Whale oil therefore borrows the hut's employees but
+    /// not its efficiency, and the town information window lists it on the strength of
+    /// this field alone, because both of its lists special-case
+    /// [crate::facility::PRODUCER_TYPE_NONE] and read this field directly
+    /// (`0x005B7E41`, `0x005B7FA1`, threshold `1000`).
+    pub fn get_whaling_productivity(&self) -> i32 {
+        unsafe { self.get(0x2cc) }
+    }
+
     pub fn get_facility(&self, index: u32) -> FacilityPtr {
         FacilityPtr::new(self.address + 0x840 + FACILITY_SIZE * index)
     }

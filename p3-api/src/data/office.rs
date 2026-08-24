@@ -42,6 +42,16 @@ impl OfficePtr {
         func(self.address)
     }
 
+    /// Head of this office's chain of [crate::data::merchant_building::MerchantBuildingPtr]
+    /// records - the owning merchant's production buildings in this town. Walk it with
+    /// [crate::data::merchant_building::resolve_merchant_building], following
+    /// `get_next_index`, and stop once an index reaches the array count
+    /// (`0x004DE63B` onward is the canonical walk). An empty chain is simply an
+    /// out-of-range head.
+    pub fn get_first_building_index(&self) -> u16 {
+        unsafe { self.get(0x2cc) }
+    }
+
     pub fn get_next_office_of_merchant_index(&self) -> u16 {
         unsafe { self.get(0x2c8) }
     }

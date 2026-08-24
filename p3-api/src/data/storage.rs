@@ -26,10 +26,6 @@ impl StoragePtr {
         unsafe { self.get(0xc4) }
     }
 
-    pub fn get_weird_daily_production(&self) -> [i32; 0x18] {
-        unsafe { self.get(0x490) }
-    }
-
     pub fn get_ship_weapons(&self) -> Vec<u32> {
         todo!()
         /*
