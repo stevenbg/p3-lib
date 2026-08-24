@@ -22,13 +22,13 @@ use p3_api::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_1, VK_2, VK_MENU};
 
-pub static CREW: &CStr = c"Crew in town";
+pub static CREW: &CStr = c"Crew";
 /// The filtered views only cover the towns the player may enter, so their headings say
 /// "Known": what they list is what he can see, not what exists.
-pub static KNOWN_CREW: &CStr = c"Known crew in town";
+pub static KNOWN_CREW: &CStr = c"Known crew";
 pub static NONE: &CStr = c"none";
-pub static MISSIONS: &CStr = c"Missions in town";
-pub static KNOWN_MISSIONS: &CStr = c"Known missions in town";
+pub static MISSIONS: &CStr = c"Missions";
+pub static KNOWN_MISSIONS: &CStr = c"Known missions";
 pub static OFFER: &CStr = c"Offer";
 pub static TERMS: &CStr = c"Terms";
 pub static CREW_HINT: &CStr = c"1: crew";
