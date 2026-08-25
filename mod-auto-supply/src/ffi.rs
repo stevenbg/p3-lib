@@ -363,7 +363,7 @@ const MISSIONS_PER_TOWN: [u8; 24] = [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 1
 /// F9 (THROWAWAY): dump the tick pacer's speed block, from the sea-battle speed work
 /// (now the gitbook's basics/time.md Game Speed section).
 ///
-/// The pacer (`0x00546640`) turns elapsed real ms (`[0x6DCCF8]` minus `ops+0x938`)
+/// The pacer (`0x00546620`) turns elapsed real ms (`[0x6DCCF8]` minus `ops+0x938`)
 /// into an advance-time operation (opcode 0xC4) sized by the pacing mode `ops+0x92C`:
 /// mode 0 = normal play, one tick per `ops+0x8D4` ms (the speed slider's divisor,
 /// cap 8/batch); 1 = fast forward, per `ops+0x8D8` (cap 256); 2 = local map, per the

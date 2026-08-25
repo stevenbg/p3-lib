@@ -112,12 +112,15 @@ pub enum Operation {
     /// (`ops+0x92C`) and `+0x10` `ops+0x91C`. A field of `-1` leaves that setting
     /// unchanged.
     ///
-    /// The levels, from the tick pacer at `0x00546640` (it converts elapsed real
-    /// milliseconds into an advance-time operation, opcode 0xC4): level 0 = normal,
-    /// one tick per `[0x673CF8]` ms and at most 1 tick per batch; level 1 = fast,
-    /// divisor `ops+0x8D4`, at most 8 ticks; level 2 = fastest, divisor `ops+0x8D8`,
-    /// up to 256 ticks (a day) per batch. `ops+0x914` is the master run flag the
-    /// pacer requires; the handler sets it to 1 unless a network round is pending.
+    /// The levels, from the tick pacer at `0x00546620` (it converts elapsed real
+    /// milliseconds into an advance-time operation, opcode 0xC4). The dispatch is
+    /// `sub eax,0 / je` then `dec eax / je` at `0x0054674A`: level 0 = normal play,
+    /// divisor `ops+0x8D4`, at most 8 ticks per batch; level 1 = fast forward,
+    /// divisor `ops+0x8D8`, up to 256 ticks (a day); level 2 = local map, one tick
+    /// per `[0x673CF8]` = 3375 ms and at most 1 per batch, which is why the speed
+    /// controls do nothing in town view or a sea battle. `ops+0x914` is the master
+    /// run flag the pacer requires; the handler sets it to 1 unless a network round
+    /// is pending.
     ///
     /// The scrollmap's speed buttons enqueue exactly this: `0x004202A0` with level 0,
     /// `0x00420300` with level 1, both leaving the divisors at `-1`.
