@@ -55,6 +55,16 @@ const SKILL_2_X: i32 = TOWN_X + 100;
 const SKILL_3_X: i32 = TOWN_X + 130;
 const PAY_X: i32 = TOWN_X + 180;
 const CREW_X: i32 = TOWN_X + 220;
+/// The missions table sits further left than the shared columns: its first column only
+/// has to hold a town name, and no town name is as wide as the "Known missions" heading
+/// over it, so the space it gives up is free. It goes to the terms cell, which is the one
+/// that runs out of room.
+const MISSION_SHIFT: i32 = 30;
+const MISSION_TOWN_X: i32 = TOWN_X - MISSION_SHIFT;
+const MISSION_OFFER_X: i32 = TRADE_X - MISSION_SHIFT;
+/// Between the right edge of the offer column and the left edge of the terms cell, so the
+/// two never touch.
+const TERMS_GAP: i32 = 10;
 const FIRST_ROW_Y: i32 = 12;
 const ROW_HEIGHT: i32 = 16;
 const BLACK: u32 = 0xff000000;
@@ -159,20 +169,20 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
 /// chain with the game's predicate at `0x004D7900` - type `0x71`, the town byte matching
 /// the tavern, and a descriptor date still in the future - and titles its page with the
 /// start of the letter's text, which is where "Patrol" or "Escort" comes from.
-/// The width of the terms cell, wide enough for a town, a cargo and a sum; the rich-text
-/// pass wraps at this, so too narrow a cell would spill onto a second line.
-const TERMS_WIDTH: i32 = 170;
-
 unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
     let x = window.get_x();
     // The terms hang off the window's right edge; a narrow window falls back to the
     // column position the other views share.
     let terms_right = (window.get_width() - 15).max(VALUE_X);
+    // Everything between the offer column and that edge. The rich-text pass wraps at this
+    // width, so a cell narrower than its text spills onto a second line and over the row
+    // below - which is what a long destination town did at the fixed 170 this replaces.
+    let terms_width = terms_right - MISSION_OFFER_X - TERMS_GAP;
 
     let mut y = y;
     font::ddraw_set_font(font::get_header_font());
-    draw_text(x + TOWN_X, y, heading.to_bytes());
-    draw_text(x + TRADE_X, y, OFFER.to_bytes());
+    draw_text(x + MISSION_TOWN_X, y, heading.to_bytes());
+    draw_text(x + MISSION_OFFER_X, y, OFFER.to_bytes());
     draw_text(x + terms_right, y, TERMS.to_bytes());
     y += ROW_HEIGHT;
 
@@ -198,10 +208,10 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
             }
             found = true;
             if let Some(town) = get_town_name_bytes(*town_index) {
-                draw_text(x + TOWN_X, y, &town);
+                draw_text(x + MISSION_TOWN_X, y, &town);
             }
             if let Some(title) = letter.get_title_bytes() {
-                draw_text(x + TRADE_X, y, &title);
+                draw_text(x + MISSION_OFFER_X, y, &title);
             }
             // What the offer is worth, in one cell: where the cargo goes, how much of it,
             // and the sum. A smuggler names his town only once the order is accepted, so
@@ -238,7 +248,7 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
                     &cell,
                     x + terms_right,
                     y,
-                    TERMS_WIDTH,
+                    terms_width,
                     ROW_HEIGHT,
                     BLACK,
                 );
@@ -251,7 +261,7 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
         }
     }
     if !found {
-        draw_text(x + TOWN_X, y, NONE.to_bytes());
+        draw_text(x + MISSION_TOWN_X, y, NONE.to_bytes());
         y += ROW_HEIGHT;
     }
     y
