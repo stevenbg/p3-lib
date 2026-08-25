@@ -37,7 +37,8 @@ pub static MISSIONS_HINT: &CStr = c"2: missions";
 /// Text mode 2 draws right-aligned: every column x below is the right edge of that
 /// column, so a long town name reaches further left than a short one. `TRADE_X` and
 /// `VALUE_X` are shared by the sailors and missions views; the captains table has its own
-/// tighter columns below.
+/// tighter columns below. The one exception is the missions table's offer column
+/// ([MISSION_OFFER_X]), which is drawn left-aligned and so names its left edge.
 const TOWN_X: i32 = 135;
 const TRADE_X: i32 = 225;
 const VALUE_X: i32 = 345;
@@ -61,10 +62,21 @@ const CREW_X: i32 = TOWN_X + 220;
 /// that runs out of room.
 const MISSION_SHIFT: i32 = 30;
 const MISSION_TOWN_X: i32 = TOWN_X - MISSION_SHIFT;
-const MISSION_OFFER_X: i32 = TRADE_X - MISSION_SHIFT;
-/// Between the right edge of the offer column and the left edge of the terms cell, so the
-/// two never touch.
+/// The offer column is the one **left**-aligned column on the page, so this x is its LEFT
+/// edge, not its right one. Its values are words of very different length - "Patrol" against
+/// "Pirate hunter" - and right-aligning those against the right-aligned town names beside
+/// them leaves a ragged gap in the middle of the table. It sits a gutter right of the town
+/// column's right edge.
+const MISSION_OFFER_X: i32 = MISSION_TOWN_X + 12;
+/// Where the terms cell begins - unchanged by the offer column's alignment, since the offer
+/// column no longer has a fixed right edge to measure from. It has to clear the widest offer
+/// title, which "Pirate hunter" is.
+const MISSION_TERMS_LEFT: i32 = TRADE_X - MISSION_SHIFT + TERMS_GAP;
+/// Between the offer column and the terms cell, so the two never touch.
 const TERMS_GAP: i32 = 10;
+/// The text modes the page uses: `1` draws from the x given, `2` draws back to it.
+const TEXT_MODE_LEFT: u32 = 1;
+const TEXT_MODE_RIGHT: u32 = 2;
 const FIRST_ROW_Y: i32 = 12;
 const ROW_HEIGHT: i32 = 16;
 const BLACK: u32 = 0xff000000;
@@ -134,7 +146,7 @@ pub(crate) unsafe fn invalidate(window: UITavernWindowPtr) {
 /// the tables need for rows.
 pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     ddraw_set_constant_color(BLACK);
-    ddraw_set_text_mode(2);
+    ddraw_set_text_mode(TEXT_MODE_RIGHT);
 
     let x = window.get_x();
     let mut y = window.get_y() + FIRST_ROW_Y;
@@ -177,12 +189,12 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
     // Everything between the offer column and that edge. The rich-text pass wraps at this
     // width, so a cell narrower than its text spills onto a second line and over the row
     // below - which is what a long destination town did at the fixed 170 this replaces.
-    let terms_width = terms_right - MISSION_OFFER_X - TERMS_GAP;
+    let terms_width = terms_right - MISSION_TERMS_LEFT;
 
     let mut y = y;
     font::ddraw_set_font(font::get_header_font());
     draw_text(x + MISSION_TOWN_X, y, heading.to_bytes());
-    draw_text(x + MISSION_OFFER_X, y, OFFER.to_bytes());
+    draw_text_left(x + MISSION_OFFER_X, y, OFFER.to_bytes());
     draw_text(x + terms_right, y, TERMS.to_bytes());
     y += ROW_HEIGHT;
 
@@ -211,7 +223,7 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
                 draw_text(x + MISSION_TOWN_X, y, &town);
             }
             if let Some(title) = letter.get_title_bytes() {
-                draw_text(x + MISSION_OFFER_X, y, &title);
+                draw_text_left(x + MISSION_OFFER_X, y, &title);
             }
             // What the offer is worth, in one cell: where the cargo goes, how much of it,
             // and the sum. A smuggler names his town only once the order is accepted, so
@@ -253,7 +265,7 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
                     BLACK,
                 );
                 ddraw_set_constant_color(BLACK);
-                ddraw_set_text_mode(2);
+                ddraw_set_text_mode(TEXT_MODE_RIGHT);
                 font::ddraw_set_font(font::get_normal_font());
             }
             y += ROW_HEIGHT;
@@ -418,6 +430,16 @@ unsafe fn draw_text(x: i32, y: i32, text: &[u8]) {
     let mut buffer = text.to_vec();
     buffer.push(0);
     ui_render_text_at(x, y, &buffer);
+}
+
+/// One left-aligned column on a page that is otherwise right-aligned, so the mode has to be
+/// switched and switched back: left on `x`, then straight back to the page's own mode.
+/// Leaving it on the left mode would left-align whatever the next row draws first - the town
+/// name - and the terms cell only restores the mode when a row actually has terms.
+unsafe fn draw_text_left(x: i32, y: i32, text: &[u8]) {
+    ddraw_set_text_mode(TEXT_MODE_LEFT);
+    draw_text(x, y, text);
+    ddraw_set_text_mode(TEXT_MODE_RIGHT);
 }
 
 unsafe fn draw_number(x: i32, y: i32, value: i32, suffix: &str) {
