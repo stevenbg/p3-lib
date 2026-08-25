@@ -10,6 +10,7 @@ members = [
     "mod-debug-navpoint-matrix",
     "mod-fix-bath-house-bribe-blunders",
     "mod-fix-damage-to-offside-ship-artillery",
+    "mod-fix-harbor-fill-oob",
     "mod-fix-invulnerable-ship-artillery-slots",
     "mod-fix-market-hall-production-town",
     "mod-fix-multiplayer-locks",
