@@ -25,7 +25,7 @@ pub static UTILIZATION_MARKUP: &CStr = c"Utilization Markup";
 pub static SNAIKKA: &CStr = c"Snaikka";
 pub static CRAYER: &CStr = c"Crayer";
 pub static COG: &CStr = c"Cog";
-pub static HOLK: &CStr = c"Holk";
+pub static HULK: &CStr = c"Hulk";
 pub static QUALITY_LEVEL: &CStr = c"Quality Level";
 pub static REQUIRED_XP: &CStr = c"Required XP";
 
@@ -86,9 +86,9 @@ pub unsafe extern "thiscall" fn shipyard_rendering_hook() -> i32 {
         let current_quality_levels = shipyard.get_current_quality_levels();
         let class48 = Class48Ptr::new();
         let next_snaikka_level: usize = (current_quality_levels.snaikka_level + 1) as _;
-        let next_crayer_level: usize = (current_quality_levels.craier_level + 1) as _;
+        let next_crayer_level: usize = (current_quality_levels.crayer_level + 1) as _;
         let next_cog_level: usize = (current_quality_levels.cog_level + 1) as _;
-        let next_holk_level: usize = (current_quality_levels.holk_level + 1) as _;
+        let next_hulk_level: usize = (current_quality_levels.hulk_level + 1) as _;
 
         class48.set_ignore_below_gradient(0);
         class48.set_gradient_y(200);
@@ -128,19 +128,19 @@ pub unsafe extern "thiscall" fn shipyard_rendering_hook() -> i32 {
         ui_render_text_at(table_x + COL_OFFSETS_4[0], y, SNAIKKA.to_bytes());
         ui_render_text_at(table_x + COL_OFFSETS_4[1], y, CRAYER.to_bytes());
         ui_render_text_at(table_x + COL_OFFSETS_4[2], y, COG.to_bytes());
-        ui_render_text_at(table_x + COL_OFFSETS_4[3], y, HOLK.to_bytes());
+        ui_render_text_at(table_x + COL_OFFSETS_4[3], y, HULK.to_bytes());
         y += 20;
 
         font::ddraw_set_font(get_normal_font());
         ui_render_text_at(table_x, y, QUALITY_LEVEL.to_bytes());
         let snaikka_cstring = CString::new(format!("{}", current_quality_levels.snaikka_level)).unwrap();
         ui_render_text_at(table_x + COL_OFFSETS_4[0], y, snaikka_cstring.to_bytes());
-        let crayer_cstring = CString::new(format!("{}", current_quality_levels.craier_level)).unwrap();
+        let crayer_cstring = CString::new(format!("{}", current_quality_levels.crayer_level)).unwrap();
         ui_render_text_at(table_x + COL_OFFSETS_4[1], y, crayer_cstring.to_bytes());
         let cog_cstring = CString::new(format!("{}", current_quality_levels.cog_level)).unwrap();
         ui_render_text_at(table_x + COL_OFFSETS_4[2], y, cog_cstring.to_bytes());
-        let holk_cstring = CString::new(format!("{}", current_quality_levels.holk_level)).unwrap();
-        ui_render_text_at(table_x + COL_OFFSETS_4[3], y, holk_cstring.to_bytes());
+        let hulk_cstring = CString::new(format!("{}", current_quality_levels.hulk_level)).unwrap();
+        ui_render_text_at(table_x + COL_OFFSETS_4[3], y, hulk_cstring.to_bytes());
         y += 20;
 
         ui_render_text_at(table_x, y, REQUIRED_XP.to_bytes());
@@ -148,7 +148,7 @@ pub unsafe extern "thiscall" fn shipyard_rendering_hook() -> i32 {
             let snaikka_cstring = CString::new(format!("{}", reqs.snaikka[next_snaikka_level])).unwrap();
             ui_render_text_at(table_x + COL_OFFSETS_4[0], y, snaikka_cstring.to_bytes());
         }
-        if current_quality_levels.craier_level < 3 {
+        if current_quality_levels.crayer_level < 3 {
             let crayer_cstring = CString::new(format!("{}", reqs.crayer[next_crayer_level])).unwrap();
             ui_render_text_at(table_x + COL_OFFSETS_4[1], y, crayer_cstring.to_bytes());
         }
@@ -156,9 +156,9 @@ pub unsafe extern "thiscall" fn shipyard_rendering_hook() -> i32 {
             let cog_cstring = CString::new(format!("{}", reqs.cog[next_cog_level])).unwrap();
             ui_render_text_at(table_x + COL_OFFSETS_4[2], y, cog_cstring.to_bytes());
         }
-        if current_quality_levels.holk_level < 3 {
-            let holk_cstring = CString::new(format!("{}", reqs.holk[next_holk_level])).unwrap();
-            ui_render_text_at(table_x + COL_OFFSETS_4[3], y, holk_cstring.to_bytes());
+        if current_quality_levels.hulk_level < 3 {
+            let hulk_cstring = CString::new(format!("{}", reqs.hulk[next_hulk_level])).unwrap();
+            ui_render_text_at(table_x + COL_OFFSETS_4[3], y, hulk_cstring.to_bytes());
         }
     }
 

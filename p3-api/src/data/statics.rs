@@ -15,7 +15,7 @@ pub struct ShipCost {
 #[repr(C)]
 pub struct ShipCosts {
     pub snaikka: [ShipCost; 3],
-    pub craier: [ShipCost; 3],
+    pub crayer: [ShipCost; 3],
     pub cog: [ShipCost; 3],
     pub hulk: [ShipCost; 3],
 }
@@ -24,7 +24,7 @@ pub struct ShipCosts {
 #[repr(C)]
 pub struct ShipCapacityRaw {
     pub snaikka: [u8; 4],
-    pub craier: [u8; 4],
+    pub crayer: [u8; 4],
     pub cog: [u8; 4],
     pub hulk: [u8; 4],
 }
@@ -35,7 +35,7 @@ pub struct ShipyardLevelRequirements {
     pub snaikka: [u16; 4],
     pub crayer: [u16; 4],
     pub cog: [u16; 4],
-    pub holk: [u16; 4],
+    pub hulk: [u16; 4],
 }
 
 pub fn get_ship_costs() -> ShipCosts {

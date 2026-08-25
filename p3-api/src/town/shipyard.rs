@@ -4,9 +4,9 @@ use crate::data::p3_ptr::P3Pointer;
 #[repr(C)]
 pub struct ShipLevels {
     pub snaikka_level: i8,
-    pub craier_level: i8,
+    pub crayer_level: i8,
     pub cog_level: i8,
-    pub holk_level: i8,
+    pub hulk_level: i8,
 }
 
 #[derive(Debug)]

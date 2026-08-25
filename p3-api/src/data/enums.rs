@@ -115,7 +115,7 @@ pub enum ShipWeaponId {
 #[repr(u8)]
 pub enum ShipType {
     Snaikkka = 0x00,
-    Craier = 0x01,
+    Crayer = 0x01,
     Cog = 0x02,
     Hulk = 0x03,
 }
