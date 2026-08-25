@@ -7,7 +7,7 @@ use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
     data::{enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
-    game_world::{GAME_WORLD_ADDRESS, GAME_WORLD_PTR},
+    game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
     scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
@@ -1794,137 +1794,240 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): does anything *correct* the population back to four times the job
-/// count, or is the identity just a consequence of the transfers? For
-/// `.claude/notes/todo/population-growth.md`.
+/// F9 (THROWAWAY): are the three `town + 0x2C8` bits the crops scale their output by
+/// **seasonal**? For `.claude/notes/todo/town-production.md`, question 1.
 ///
-/// `rich + wealthy + poor == 4 * jobs` held in 48 of 48 town-presses, and the routine that
-/// would enforce it - `0x0051BF90`, which recomputes the target and rescales the three
-/// classes - turns out to be **dead code**: a byte scan of `.text` finds no call or jmp to
-/// it, and its address appears nowhere in the file. So either something else normalises the
-/// classes, or nothing does and the identity falls out of the transfers alone, every one of
-/// which moves exactly four people per job (hiring `0x005108E0`, layoffs `0x0050E380`,
-/// militia, sailors).
+/// Four of the twenty-one producers - and only those four, the crops - fold a factor read
+/// from `town + 0x2C8` into their divisor. FarmGrain (`0x0050EAD0`) is the clearest:
 ///
-/// The test: break the identity by hand and see whether the game repairs it.
+/// ```text
+/// 50eafe  eax = [town+0x2C8]        ; a DWORD of flags
+/// 50eb05  dl  = ~al
+/// 50eb0c  esi = dl & 2              ; bit 0x2 SET -> 0, clear -> 2
+/// 50eb0f  esi |= 4                  ; so factor = 4 with the bit set, 6 without
+/// 50eb12  test ah,0x20              ; bit 0x2000 -> factor /= 3
+/// 50eb29  test ah,0x40              ; else bit 0x4000 -> factor *= 2
+/// ```
 ///
-/// - **press 0** dumps every town, then adds **1000** to one town's poor;
-/// - let the game run several days;
-/// - **press 1** (and later) dumps again without touching anything.
+/// Every `k` measured so far came out at the all-bits-clear value in all 24 towns of one
+/// save, so the bits have never been seen set. Two possibilities, and this probe separates
+/// them:
 ///
-/// Read the `d` column - `(rich + wealthy + poor) - 4 * jobs`. On the perturbed town:
+/// - **seasonal** - a bit flips with the calendar, and the long-known winter farm penalty
+///   is finally located;
+/// - **static** - they are climate or region bits of the scenario, and the winter penalty
+///   lives somewhere else entirely (consumption, or the month read at `0x005281F4` inside
+///   `update_town_price_thresholds`).
 ///
-/// - still around `+1000` => nothing corrects it, the identity is maintained only by the
-///   transfers, and the note's "corrector" paragraph describes code that never runs;
-/// - back to `0` => a corrector exists somewhere that this investigation has not found.
+/// The protocol: press once in **summer**, fast-forward past **January**, press again.
+/// Every press appends a block to `_probe_crops.log` and, from press 1 on, prints an
+/// explicit CHANGED/unchanged verdict against the previous press. A brand-new save with no
+/// player buildings is the ideal subject: the town's own facility is then the only producer
+/// of each crop, so `+0xC4` is that facility's output alone.
 ///
-/// The unperturbed towns are the control: their `d` should stay `0` throughout.
+/// Each row carries both the mechanism and its effect, so neither has to be trusted alone:
 ///
-/// **Read the sum, never the individual classes.** `town_update_population_levels`
-/// (`0x0051C650`) moves citizens between rich, wealthy and poor every tick, so the three
-/// counts churn on their own; mistaking that churn for a correction is the exact error this
-/// investigation already made once.
+/// - `flags` and the three decoded bits - the mechanism;
+/// - `fac` = the decoded factor, per that producer's own ladder (they differ: grain's
+///   `0x2000` divides by 3 where the apiary's divides by 2, and hemp picks a value
+///   outright);
+/// - `eff`, `emp` - the facility's efficiency and staff;
+/// - `C4` = the embedded storage struct's `+0xC4`, the day's **actual** staffing-scaled
+///   output, and `490` = `town + 0x490`, the **nominal** full-staff figure. Watch that
+///   these are different arrays: `TownPtr::get_production_values()` is the nominal one,
+///   and reading it for both columns is a mistake this probe made once - it hides any
+///   effect that reaches staffing rather than the factor.
 ///
-/// Jobs are recomputed the way `0x0051BF90` did, so the numbers stay comparable:
-/// - `0x0051BFAF`: over the 21 facility slots, `field_4_employees + field_A`;
-/// - `0x0051BFFF`: over every office in the town, along its `+0x2CC` chain (link at
-///   `record+0x8`, bounded by `[0x006DE4A6]`), the word at `record+0x4`.
+/// Read it as: any bit or factor that differs between the two presses closes the question.
+/// If the flags are identical but `C4` moved, the season is reaching production by some
+/// other route - and if both are identical across summer and winter, the crops are not
+/// where the penalty is applied at all.
 unsafe fn debug_probe1() {
-    /// How much to add to the perturbed town's poor on press 0.
-    const BUMP: i32 = 1000;
+    /// The four crops whose producers read `town + 0x2C8`. Every other ware is dumped too -
+    /// the point of covering all 24 is that a seasonal effect reaching production by any
+    /// other route (staffing, efficiency, a field nobody has looked at) shows up as
+    /// movement in its own row. Skins is the standing question: its producer
+    /// `0x0050ED70` has a constant factor and reads neither the flags nor the calendar, so
+    /// statically it cannot be seasonal - this is what would prove that wrong.
+    const CROPS: [usize; 4] = [0, 5, 7, 17];
 
     let mut out: Vec<String> = Vec::new();
     let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
     let town_count = GAME_WORLD_PTR.get_towns_count();
-    let office_count = GAME_WORLD_PTR.get_offices_count();
-    let chain_bound: u16 = *(0x006de4a6 as *const u16);
 
     out.push(format!(
-        "=== press {press} | tick {} | {}.{}.{} | {town_count} towns, {office_count} offices ===",
+        "=== press {press} | tick {} | {}.{}.{} | {town_count} towns ===",
         GAME_WORLD_PTR.get_game_time_raw(),
         GAME_WORLD_PTR.get_day_of_month(),
         GAME_WORLD_PTR.get_month(),
         GAME_WORLD_PTR.get_year(),
     ));
-    out.push("town              jobs     4*jobs   rich  wealthy     poor     sum3        d   beggars    total  satP".to_string());
+    out.push("town             ware         flags  0x2 typ  fac  eff  emp        C4       490".to_string());
 
-    // 0x005303B0(this = game world, index) resolves one merchant-building record.
-    let record: extern "thiscall" fn(u32, u32) -> u32 = mem::transmute(0x005303b0u32);
-    let mut rows: Vec<(u8, i32, i32)> = Vec::new(); // (town, jobs, poor)
+    let producer_type = &*p3_api::facility::PRODUCER_TYPE;
+    // (town, ware) -> the decoded factor and the raw numbers, so the next press can diff.
+    let mut snapshot: Vec<(u8, usize, u32, i32, i32, i32)> = Vec::new();
 
     for town_index in 0..town_count as u8 {
         let town = GAME_WORLD_PTR.get_town(town_index);
+        let flags: u32 = town.get(0x2c8);
+        let bit_2 = flags & 0x2 != 0;
+        let bit_2000 = flags & 0x2000 != 0;
+        let bit_4000 = flags & 0x4000 != 0;
+        // `get_production_values()` is the NOMINAL array at `+0x490`; the actual,
+        // staffing-scaled output is the embedded storage struct's `+0xC4`.
+        let nominal_all = town.get_production_values();
+        let actual_all: [i32; 0x18] = town.get(0xc4);
 
-        // Jobs: the town's own facilities, posts filled or merely allotted.
-        let mut jobs: i32 = 0;
-        for slot in 0..p3_api::facility::FACILITY_COUNT {
-            let f = town.get_facility(slot);
-            jobs += f.get_employees() as i32 + f.get_field_a() as i32;
-        }
-        // Jobs: every merchant building in the town, reached office by office.
-        let mut office_index = town.get_first_office_index();
-        while office_index < office_count {
-            let office = GAME_WORLD_PTR.get_office(office_index);
-            let mut building_index: u16 = office.get_first_building_index();
-            while building_index < chain_bound {
-                let r = record(GAME_WORLD_ADDRESS, building_index as u32);
-                if r == 0 {
-                    break;
-                }
-                jobs += *((r + 0x4) as *const u16) as i32;
-                building_index = *((r + 0x8) as *const u16);
+        for ware in 0..24usize {
+            // 0xFF = no producer at all (whale oil, which the fisherman's hut pays off a
+            // town field instead). Nothing to read and nothing to compare.
+            let facility_type = producer_type[ware];
+            if facility_type == p3_api::facility::PRODUCER_TYPE_NONE {
+                continue;
             }
-            office_index = office.get_next_office_in_town_index();
-        }
+            let facility = town.get_facility(facility_type as u32);
+            let eff = facility.get_efficiency();
+            let emp = facility.get_employees() as i32;
+            let nominal = nominal_all[ware];
+            let actual = actual_all[ware];
+            // A ware this town does not make at all says nothing, and most rows are that.
+            if nominal == 0 && actual == 0 {
+                continue;
+            }
 
-        let rich: i32 = town.get(0x2d8);
-        let wealthy: i32 = town.get(0x2dc);
-        let poor: i32 = town.get(0x2e0);
-        let beggars: i32 = town.get(0x2e4);
-        let total: i32 = town.get(0x2d4);
-        let sat_poor: i16 = town.get(0x304);
-        let sum3 = rich + wealthy + poor;
+            // The predicted factor, for the four crop producers whose ladder is known from
+            // their disassembly: grain and the apiary share the "base, then scale" shape
+            // with different scales, hemp selects a value outright. Every other producer
+            // folds a constant and has no flag-derived factor to predict - shown as `-`,
+            // and for those rows any movement at all is the finding.
+            let factor: Option<i32> = match ware {
+                0 => Some({
+                    let base = if bit_2 { 4 } else { 6 };
+                    if bit_2000 {
+                        base / 3
+                    } else if bit_4000 {
+                        base * 2
+                    } else {
+                        base
+                    }
+                }),
+                5 | 7 => Some({
+                    let base = if bit_2 { 2 } else { 4 };
+                    if bit_2000 {
+                        base / 2
+                    } else if bit_4000 {
+                        // The apiary triples here, the vineyard only doubles.
+                        if ware == 5 {
+                            base * 3
+                        } else {
+                            base * 2
+                        }
+                    } else {
+                        base
+                    }
+                }),
+                17 => Some(if bit_2 {
+                    3
+                } else if bit_2000 {
+                    4
+                } else if bit_4000 {
+                    9
+                } else {
+                    6
+                }),
+                _ => None,
+            };
 
-        out.push(format!(
-            "{:<16} {jobs:>6} {:>10} {rich:>6} {wealthy:>8} {poor:>8} {sum3:>8} {:>8} {beggars:>9} {total:>8} {sat_poor:>5}",
-            get_town_name(town_index).unwrap_or_default(),
-            jobs * 4,
-            sum3 - jobs * 4,
-        ));
-        rows.push((town_index, jobs, poor));
-    }
-
-    // Press 0 breaks the identity in exactly one town: the one with the most jobs, so the
-    // bump is small next to its churn and the levels routine has room to move people around.
-    if press == 0 {
-        if let Some(&(town_index, jobs, poor)) = rows.iter().max_by_key(|&&(_, jobs, _)| jobs) {
-            let town = GAME_WORLD_PTR.get_town(town_index);
-            town.set(0x2e0, &(poor + BUMP));
-            let after: i32 = town.get(0x2e0);
             out.push(format!(
-                "*** PERTURBED {} (town {town_index}): poor {poor} -> {after}, so sum3 - 4*jobs is now {} ***",
+                "{:<16} {:<10} {flags:#010x} {:>4} {facility_type:>4} {:>4} {eff:>5} {emp:>4} {actual:>9} {nominal:>9}{}",
                 get_town_name(town_index).unwrap_or_default(),
-                after + town.get::<i32>(0x2d8) + town.get::<i32>(0x2dc) - jobs * 4,
+                format!("{:?}", WareId::from_usize(ware).unwrap()),
+                bit_2 as u8,
+                factor.map(|f| f.to_string()).unwrap_or_else(|| "-".to_string()),
+                if CROPS.contains(&ware) { "  <- crop" } else { "" },
             ));
-            out.push("*** let several days pass, then press F9 again and read the d column for this town ***".to_string());
+            snapshot.push((town_index, ware, flags, factor.unwrap_or(0), actual, nominal));
         }
     }
+
+    // The verdict, so the answer does not depend on eyeballing 96 rows.
+    let mut verdict: Vec<String> = Vec::new();
+    if let Ok(previous) = PROBE_CROPS_PREVIOUS.lock() {
+        if let Some(before) = previous.as_ref() {
+            // Match rows by (town, ware) rather than by position: a town that starts or
+            // stops making a ware changes the row set between presses.
+            let index: std::collections::HashMap<(u8, usize), &(u8, usize, u32, i32, i32, i32)> =
+                before.iter().map(|r| ((r.0, r.1), r)).collect();
+            // Per ware: rows compared, rows whose output moved, and the extreme nominal
+            // ratios - so a seasonal effect on ANY ware shows up, not just the four whose
+            // mechanism is already known.
+            let mut per_ware: std::collections::BTreeMap<usize, (u32, u32, f64, f64)> = std::collections::BTreeMap::new();
+            let mut flag_changes = 0;
+            for now in &snapshot {
+                let Some(was) = index.get(&(now.0, now.1)) else { continue };
+                if now.2 != was.2 {
+                    flag_changes += 1;
+                }
+                let entry = per_ware.entry(now.1).or_insert((0, 0, f64::MAX, 0.0));
+                entry.0 += 1;
+                if now.4 != was.4 || now.5 != was.5 {
+                    entry.1 += 1;
+                }
+                // The ratio is taken off the nominal figure, which ignores staffing, so it
+                // reports the producer's own scaling rather than a town that grew.
+                if was.5 != 0 {
+                    let ratio = now.5 as f64 / was.5 as f64;
+                    entry.2 = entry.2.min(ratio);
+                    entry.3 = entry.3.max(ratio);
+                }
+            }
+            verdict.push(format!("VERDICT: {flag_changes} of {} rows changed flags", snapshot.len()));
+            verdict.push("ware         rows  moved  nominal ratio  min     max".to_string());
+            for (ware, (rows, moved, lo, hi)) in &per_ware {
+                verdict.push(format!(
+                    "{:<13}{rows:>4}{moved:>7}{}   {:>8.4}{:>8.4}{}",
+                    format!("{:?}", WareId::from_usize(*ware).unwrap()),
+                    if CROPS.contains(ware) { "  crop" } else { "      " },
+                    if *lo == f64::MAX { 0.0 } else { *lo },
+                    hi,
+                    if *moved > 0 { "  *** MOVED" } else { "" },
+                ));
+            }
+            verdict.push("  A NON-CROP ware on a MOVED line is a seasonal effect outside the four known".to_string());
+            verdict.push("  producers - which is what would settle the claim about skins in winter.".to_string());
+        }
+        // Not `if let Ok(mut)` above, so take the lock again to store.
+    }
+    if let Ok(mut previous) = PROBE_CROPS_PREVIOUS.lock() {
+        *previous = Some(snapshot);
+    }
+    out.extend(verdict.iter().cloned());
 
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(press > 0)
         .write(true)
         .truncate(press == 0)
-        .open("_probe1.log")
+        .open("_probe_crops.log")
     {
         use std::io::Write;
         for line in &out {
             let _ = writeln!(file, "{line}");
         }
     }
-    let drift = rows.len();
-    notify(&format!("probe1 #{press}: {drift} towns dumped >> _probe1.log"));
+    for line in &verdict {
+        info!("{line}");
+    }
+    notify(&format!(
+        "crops #{press}: {town_count} towns >> _probe_crops.log{}",
+        if verdict.is_empty() { "" } else { " (verdict inside)" }
+    ));
 }
+
+/// The previous F9 press, so a second press can report what moved instead of leaving the
+/// diff to the reader: `(town, ware, flags, factor, actual, nominal)` per row.
+static PROBE_CROPS_PREVIOUS: Mutex<Option<Vec<(u8, usize, u32, i32, i32, i32)>>> = Mutex::new(None);
 
 /// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
 /// `_probe1.log`, later presses append their own block.
