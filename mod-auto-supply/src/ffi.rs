@@ -1794,244 +1794,120 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): are the three `town + 0x2C8` bits the crops scale their output by
-/// **seasonal**? For `.claude/notes/todo/town-production.md`, question 1.
+/// F9 (THROWAWAY): log what the "feeding the poor" donation actually passes to the game,
+/// instead of predicting it. For `.claude/notes/done/feeding-the-poor.md`, where three
+/// in-game observations contradicted the arithmetic I derived statically.
 ///
-/// Four of the twenty-one producers - and only those four, the crops - fold a factor read
-/// from `town + 0x2C8` into their divisor. FarmGrain (`0x0050EAD0`) is the clearest:
+/// The first press installs a hook on the call at `0x00535D3C` - operation `0x30`'s jump
+/// into `handle_feeding_the_poor` (`0x004FE557`) - and every donation from then on logs the
+/// four arguments the game computed:
 ///
-/// ```text
-/// 50eafe  eax = [town+0x2C8]        ; a DWORD of flags
-/// 50eb05  dl  = ~al
-/// 50eb0c  esi = dl & 2              ; bit 0x2 SET -> 0, clear -> 2
-/// 50eb0f  esi |= 4                  ; so factor = 4 with the bit set, 6 without
-/// 50eb12  test ah,0x20              ; bit 0x2000 -> factor /= 3
-/// 50eb29  test ah,0x40              ; else bit 0x4000 -> factor *= 2
-/// ```
+/// - the merchant and town bytes,
+/// - **the gate byte** at `op+0x6`, which is what the handler compares against 10 and 50,
+/// - and the five donation amounts, in table order: grain, beer, fish, meat, wine.
 ///
-/// Every `k` measured so far came out at the all-bits-clear value in all 24 towns of one
-/// save, so the bits have never been seen set. Two possibilities, and this probe separates
-/// them:
-///
-/// - **seasonal** - a bit flips with the calendar, and the long-known winter farm penalty
-///   is finally located;
-/// - **static** - they are climate or region bits of the scenario, and the winter penalty
-///   lives somewhere else entirely (consumption, or the month read at `0x005281F4` inside
-///   `update_town_price_thresholds`).
-///
-/// The protocol: press once in **summer**, fast-forward past **January**, press again.
-/// Every press appends a block to `_probe_crops.log` and, from press 1 on, prints an
-/// explicit CHANGED/unchanged verdict against the previous press. A brand-new save with no
-/// player buildings is the ideal subject: the town's own facility is then the only producer
-/// of each crop, so `+0xC4` is that facility's output alone.
-///
-/// Each row carries both the mechanism and its effect, so neither has to be trusted alone:
-///
-/// - `flags` and the three decoded bits - the mechanism;
-/// - `fac` = the decoded factor, per that producer's own ladder (they differ: grain's
-///   `0x2000` divides by 3 where the apiary's divides by 2, and hemp picks a value
-///   outright);
-/// - `eff`, `emp` - the facility's efficiency and staff;
-/// - `C4` = the embedded storage struct's `+0xC4`, the day's **actual** staffing-scaled
-///   output, and `490` = `town + 0x490`, the **nominal** full-staff figure. Watch that
-///   these are different arrays: `TownPtr::get_production_values()` is the nominal one,
-///   and reading it for both columns is a mistake this probe made once - it hides any
-///   effect that reaches staffing rather than the factor.
-///
-/// Read it as: any bit or factor that differs between the two presses closes the question.
-/// If the flags are identical but `C4` moved, the season is reaching production by some
-/// other route - and if both are identical across summer and winter, the crops are not
-/// where the penalty is applied at all.
+/// Donate, read the gate byte, note which of the three replies appeared. That pins the real
+/// thresholds and the real bands without any guessing about price curves or divisors, and it
+/// settles directly whether the wine row is under-counted.
 unsafe fn debug_probe1() {
-    /// The four crops whose producers read `town + 0x2C8`. Every other ware is dumped too -
-    /// the point of covering all 24 is that a seasonal effect reaching production by any
-    /// other route (staffing, efficiency, a field nobody has looked at) shows up as
-    /// movement in its own row. Skins is the standing question: its producer
-    /// `0x0050ED70` has a constant factor and reads neither the flags nor the calendar, so
-    /// statically it cannot be seasonal - this is what would prove that wrong.
-    const CROPS: [usize; 4] = [0, 5, 7, 17];
-
-    let mut out: Vec<String> = Vec::new();
-    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
-    let town_count = GAME_WORLD_PTR.get_towns_count();
-
-    out.push(format!(
-        "=== press {press} | tick {} | {}.{}.{} | {town_count} towns ===",
-        GAME_WORLD_PTR.get_game_time_raw(),
-        GAME_WORLD_PTR.get_day_of_month(),
-        GAME_WORLD_PTR.get_month(),
-        GAME_WORLD_PTR.get_year(),
-    ));
-    out.push("town             ware         flags  0x2 typ  fac  eff  emp        C4       490".to_string());
-
-    let producer_type = &*p3_api::facility::PRODUCER_TYPE;
-    // (town, ware) -> the decoded factor and the raw numbers, so the next press can diff.
-    let mut snapshot: Vec<(u8, usize, u32, i32, i32, i32)> = Vec::new();
-
-    for town_index in 0..town_count as u8 {
-        let town = GAME_WORLD_PTR.get_town(town_index);
-        let flags: u32 = town.get(0x2c8);
-        let bit_2 = flags & 0x2 != 0;
-        let bit_2000 = flags & 0x2000 != 0;
-        let bit_4000 = flags & 0x4000 != 0;
-        // `get_production_values()` is the NOMINAL array at `+0x490`; the actual,
-        // staffing-scaled output is the embedded storage struct's `+0xC4`.
-        let nominal_all = town.get_production_values();
-        let actual_all: [i32; 0x18] = town.get(0xc4);
-
-        for ware in 0..24usize {
-            // 0xFF = no producer at all (whale oil, which the fisherman's hut pays off a
-            // town field instead). Nothing to read and nothing to compare.
-            let facility_type = producer_type[ware];
-            if facility_type == p3_api::facility::PRODUCER_TYPE_NONE {
-                continue;
+    if !FEED_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
+        match hook_call_rel32(0x00135D3C, feed_the_poor_hook as usize as u32) {
+            Ok(hook) => FEED_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+            Err(_) => {
+                FEED_HOOK_INSTALLED.store(false, Ordering::SeqCst);
+                notify("feed-the-poor logger FAILED to install");
             }
-            let facility = town.get_facility(facility_type as u32);
-            let eff = facility.get_efficiency();
-            let emp = facility.get_employees() as i32;
-            let nominal = nominal_all[ware];
-            let actual = actual_all[ware];
-            // A ware this town does not make at all says nothing, and most rows are that.
-            if nominal == 0 && actual == 0 {
-                continue;
-            }
-
-            // The predicted factor, for the four crop producers whose ladder is known from
-            // their disassembly: grain and the apiary share the "base, then scale" shape
-            // with different scales, hemp selects a value outright. Every other producer
-            // folds a constant and has no flag-derived factor to predict - shown as `-`,
-            // and for those rows any movement at all is the finding.
-            let factor: Option<i32> = match ware {
-                0 => Some({
-                    let base = if bit_2 { 4 } else { 6 };
-                    if bit_2000 {
-                        base / 3
-                    } else if bit_4000 {
-                        base * 2
-                    } else {
-                        base
-                    }
-                }),
-                5 | 7 => Some({
-                    let base = if bit_2 { 2 } else { 4 };
-                    if bit_2000 {
-                        base / 2
-                    } else if bit_4000 {
-                        // The apiary triples here, the vineyard only doubles.
-                        if ware == 5 {
-                            base * 3
-                        } else {
-                            base * 2
-                        }
-                    } else {
-                        base
-                    }
-                }),
-                17 => Some(if bit_2 {
-                    3
-                } else if bit_2000 {
-                    4
-                } else if bit_4000 {
-                    9
-                } else {
-                    6
-                }),
-                _ => None,
-            };
-
-            out.push(format!(
-                "{:<16} {:<10} {flags:#010x} {:>4} {facility_type:>4} {:>4} {eff:>5} {emp:>4} {actual:>9} {nominal:>9}{}",
-                get_town_name(town_index).unwrap_or_default(),
-                format!("{:?}", WareId::from_usize(ware).unwrap()),
-                bit_2 as u8,
-                factor.map(|f| f.to_string()).unwrap_or_else(|| "-".to_string()),
-                if CROPS.contains(&ware) { "  <- crop" } else { "" },
-            ));
-            snapshot.push((town_index, ware, flags, factor.unwrap_or(0), actual, nominal));
         }
     }
+    predict_generous_donation();
+}
 
-    // The verdict, so the answer does not depend on eyeballing 96 rows.
-    let mut verdict: Vec<String> = Vec::new();
-    if let Ok(previous) = PROBE_CROPS_PREVIOUS.lock() {
-        if let Some(before) = previous.as_ref() {
-            // Match rows by (town, ware) rather than by position: a town that starts or
-            // stops making a ware changes the row set between presses.
-            let index: std::collections::HashMap<(u8, usize), &(u8, usize, u32, i32, i32, i32)> =
-                before.iter().map(|r| ((r.0, r.1), r)).collect();
-            // Per ware: rows compared, rows whose output moved, and the extreme nominal
-            // ratios - so a seasonal effect on ANY ware shows up, not just the four whose
-            // mechanism is already known.
-            let mut per_ware: std::collections::BTreeMap<usize, (u32, u32, f64, f64)> = std::collections::BTreeMap::new();
-            let mut flag_changes = 0;
-            for now in &snapshot {
-                let Some(was) = index.get(&(now.0, now.1)) else { continue };
-                if now.2 != was.2 {
-                    flag_changes += 1;
-                }
-                let entry = per_ware.entry(now.1).or_insert((0, 0, f64::MAX, 0.0));
-                entry.0 += 1;
-                if now.4 != was.4 || now.5 != was.5 {
-                    entry.1 += 1;
-                }
-                // The ratio is taken off the nominal figure, which ignores staffing, so it
-                // reports the producer's own scaling rather than a town that grew.
-                if was.5 != 0 {
-                    let ratio = now.5 as f64 / was.5 as f64;
-                    entry.2 = entry.2.min(ratio);
-                    entry.3 = entry.3.max(ratio);
-                }
-            }
-            verdict.push(format!("VERDICT: {flag_changes} of {} rows changed flags", snapshot.len()));
-            verdict.push("ware         rows  moved  nominal ratio  min     max".to_string());
-            for (ware, (rows, moved, lo, hi)) in &per_ware {
-                verdict.push(format!(
-                    "{:<13}{rows:>4}{moved:>7}{}   {:>8.4}{:>8.4}{}",
-                    format!("{:?}", WareId::from_usize(*ware).unwrap()),
-                    if CROPS.contains(ware) { "  crop" } else { "      " },
-                    if *lo == f64::MAX { 0.0 } else { *lo },
-                    hi,
-                    if *moved > 0 { "  *** MOVED" } else { "" },
-                ));
-            }
-            verdict.push("  A NON-CROP ware on a MOVED line is a seasonal effect outside the four known".to_string());
-            verdict.push("  producers - which is what would settle the claim about skins in winter.".to_string());
-        }
-        // Not `if let Ok(mut)` above, so take the lock again to store.
-    }
-    if let Ok(mut previous) = PROBE_CROPS_PREVIOUS.lock() {
-        *previous = Some(snapshot);
-    }
-    out.extend(verdict.iter().cloned());
+/// The barrel counts the arithmetic predicts, for the town whose view is loaded.
+///
+/// The beer figure has been confirmed in game to the barrel, including at one below the
+/// threshold, so the value routine, the divisor and the `>= 50` gate are all right. The wine
+/// pair is the open question: the dialog prices the wine row as **salt**, and the two numbers
+/// below bracket what that costs.
+unsafe fn predict_generous_donation() {
+    const GENEROUS_GATE: i32 = 0x32;
+    const RAW_PER_BARREL: i32 = 200;
 
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(press > 0)
-        .write(true)
-        .truncate(press == 0)
-        .open("_probe_crops.log")
-    {
-        use std::io::Write;
-        for line in &out {
-            let _ = writeln!(file, "{line}");
-        }
+    let scene = *(0x006E51AC as *const u32);
+    if scene == 0 {
+        notify("feed-the-poor: no town view loaded");
+        return;
     }
-    for line in &verdict {
-        info!("{line}");
+    let map_id: u32 = *((scene + 0xC324) as *const u32);
+    let town_index = (map_id & 0x7F) as u8;
+    if town_index as u16 >= GAME_WORLD_PTR.get_towns_count() {
+        notify(&format!("feed-the-poor: map {map_id:#04x} is not a town"));
+        return;
     }
+    let town = GAME_WORLD_PTR.get_town(town_index);
+    let citizens: i32 = town.get(0x2d4);
+    let poor_satisfaction: i16 = town.get(0x304);
+
+    // `0x005CB020`: poor satisfaction times citizens, divided by 18, then sqrt and truncate.
+    // A negative product cannot reach `fsqrt` - `0x0063AB05` branches away from it on the
+    // sign bit and lands in the CRT's domain-error path - and donations demonstrably still
+    // work in a town with negative poor satisfaction, so the term contributes nothing there
+    // and the divisor is just the constant 8.
+    let product = (poor_satisfaction as i32).wrapping_mul(citizens) / 18;
+    let divisor = if product > 0 { (product as f64).sqrt() as i32 + 8 } else { 8 };
+
+    let value: extern "thiscall" fn(u32, u32, u32, i32) -> i32 = mem::transmute(0x0052E1D0u32);
+    let barrels = |ware: u32| -> String {
+        (1..=999)
+            .find(|n| (value(0x006DE3D8, ware, town_index as u32, n * RAW_PER_BARREL) / divisor).min(255) >= GENEROUS_GATE)
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| ">999".into())
+    };
+
     notify(&format!(
-        "crops #{press}: {town_count} towns >> _probe_crops.log{}",
-        if verdict.is_empty() { "" } else { " (verdict inside)" }
+        "{}: {} beer = extremely generous (divisor {divisor}, pop {citizens}, poorSat {poor_satisfaction})",
+        get_town_name(town_index).unwrap_or_default(),
+        barrels(WareId::Beer as u32),
+    ));
+    notify(&format!(
+        "wine: {} if priced as salt (the bug), {} if priced as wine",
+        barrels(WareId::Salt as u32),
+        barrels(WareId::Wine as u32),
     ));
 }
 
-/// The previous F9 press, so a second press can report what moved instead of leaving the
-/// diff to the reader: `(town, ware, flags, factor, actual, nominal)` per row.
-static PROBE_CROPS_PREVIOUS: Mutex<Option<Vec<(u8, usize, u32, i32, i32, i32)>>> = Mutex::new(None);
+static FEED_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+static FEED_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 
-/// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
-/// `_probe1.log`, later presses append their own block.
-static PROBE1_PRESSES: AtomicU32 = AtomicU32::new(0);
+/// Same shape as `handle_feeding_the_poor`: thiscall on the town's church object at
+/// `town+0x794`, four stack arguments, `ret 0x10`.
+#[no_mangle]
+unsafe extern "thiscall" fn feed_the_poor_hook(church: u32, merchant: u32, town: u32, gate: u32, amounts: u32) {
+    // Table order, from the ware list at 0x006734CC.
+    let a: [u16; 5] = std::array::from_fn(|i| *((amounts + i as u32 * 2) as *const u16));
+    let town_index = (town & 0xff) as u8;
+    let t = GAME_WORLD_PTR.get_town(town_index);
+    let citizens: i32 = t.get(0x2d4);
+    let poor: i16 = t.get(0x304);
+    let beggars: i32 = t.get(0x2e4);
+    let beggar_satisfaction: i16 = t.get(0x306);
+    let line = format!(
+        "FEED {}: GATE BYTE {} (>=10? {}, >=50? {}) | grain {} beer {} fish {} meat {} wine {} \
+         | pop {citizens} poorSat {poor} beggars {beggars} beggarSat {beggar_satisfaction} \
+         | merchant {:#x} church {church:#010x}",
+        get_town_name(town_index).unwrap_or_default(),
+        gate & 0xff,
+        gate & 0xff >= 10,
+        gate & 0xff >= 50,
+        a[0], a[1], a[2], a[3], a[4],
+        merchant & 0xff,
+    );
+    notify(&line);
+
+    let original: extern "thiscall" fn(u32, u32, u32, u32, u32) =
+        mem::transmute((*FEED_HOOK.load(Ordering::SeqCst)).old_absolute);
+    original(church, merchant, town, gate, amounts);
+}
+
 
 /// ALT+F9 (THROWAWAY): dump every office of the player with its administrator record, to
 /// settle whether dismissing and re-hiring an administrator preserves his trade skill.
