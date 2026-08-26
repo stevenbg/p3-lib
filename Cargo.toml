@@ -9,6 +9,7 @@ members = [
     "mod-crash-reporter",
     "mod-debug-navpoint-matrix",
     "mod-fix-bath-house-bribe-blunders",
+    "mod-fix-church-anim-crash",
     "mod-fix-damage-to-offside-ship-artillery",
     "mod-fix-feeding-the-poor-wine-price",
     "mod-fix-harbor-fill-oob",
