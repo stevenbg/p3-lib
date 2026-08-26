@@ -3,6 +3,8 @@ use std::ffi::CStr;
 use p3_api::{
     auto_trader::AutoTraderPtr,
     data::{class48::Class48Ptr, ddraw_set_constant_color, ddraw_set_text_mode, screen_rectangle::Rect, ui_render_text_at},
+    facility,
+    game_setup,
     game_world::GAME_WORLD_PTR,
     operations::OPERATIONS_PTR,
     ships::ShipsPtr,
@@ -14,6 +16,7 @@ pub static NO_ADMINISTRATOR: &CStr = c"No administrator employed";
 /// Text mode 2 draws right-aligned, so this x is the line's right edge.
 const VALUE_X: i32 = 345;
 const FIRST_ROW_Y: i32 = 12;
+const ROW_HEIGHT: i32 = 16;
 const BLACK: u32 = 0xff000000;
 
 /// Called when the window opens, like the other details mods do it, so the page's
@@ -45,7 +48,91 @@ pub(crate) unsafe fn draw_page(window: UITradingOfficeWindowPtr) {
     ddraw_set_constant_color(BLACK);
     ddraw_set_text_mode(2);
 
-    draw_administrator(window.get_x(), window.get_y() + FIRST_ROW_Y, window);
+    let x = window.get_x();
+    let mut y = window.get_y() + FIRST_ROW_Y;
+    draw_administrator(x, y, window);
+    y += ROW_HEIGHT;
+    y = draw_pirates(x, y);
+    draw_winter(x, y, window.get_town_index() as u8);
+}
+
+/// The two pirate facts the game never states, both driven by the single "Pirates activity"
+/// setting rather than by the difficulty preset (which merely writes that setting along with
+/// every other one).
+unsafe fn draw_pirates(x: i32, y: i32) -> i32 {
+    font::ddraw_set_font(font::get_normal_font());
+    let mut y = y;
+
+    let Some(activity) = game_setup::get_pirate_activity() else {
+        return y;
+    };
+    let level = match activity {
+        0 => "low",
+        1 => "normal",
+        2 => "high",
+        _ => "?",
+    };
+
+    // Band count is a world-generation figure: 2 * activity + 1 bands were created when the
+    // game started, and changing the setting later cannot add or remove any.
+    if let Some(bands) = game_setup::pirate_band_count() {
+        let line = format!("Pirate bands roaming: {bands} (activity {level})");
+        draw_text(x + VALUE_X, y, line.as_bytes());
+        y += ROW_HEIGHT;
+    }
+
+    // A free pirate robs a merchant once `rank_in_home_town + activity >= 2`, so the higher
+    // the setting the lower the rank it settles for. Showing the player's own rank next to
+    // the threshold makes it clear whether he is already fair game.
+    if let Some(threshold) = game_setup::pirate_attack_rank_threshold() {
+        let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
+        let rank = merchant.get_rank_in(merchant.get_hometown_index());
+        let verdict = if rank >= threshold { "you qualify" } else { "you are beneath notice" };
+        let line = format!("Pirates rob from home rank {threshold} (yours {rank}: {verdict})");
+        draw_text(x + VALUE_X, y, line.as_bytes());
+        y += ROW_HEIGHT;
+    }
+    y
+}
+
+/// Which months carry the crop penalty, whether one of them is running, and what it costs.
+/// The game shows none of this, and the size of it is worth knowing before planning a
+/// farming town's supply.
+unsafe fn draw_winter(x: i32, y: i32, town_index: u8) -> i32 {
+    font::ddraw_set_font(font::get_normal_font());
+    let mut y = y;
+
+    // The month list is `GameWorldPtr::WINTER_MONTHS` (11, 0, 1 - the field is zero-based).
+    let now = if GAME_WORLD_PTR.is_winter() { " - in force now" } else { "" };
+    draw_text(x + VALUE_X, y, format!("Crop winter: Dec, Jan, Feb{now}").as_bytes());
+    y += ROW_HEIGHT;
+
+    // Computed from this town's own flag word rather than hardcoded, so the line stays
+    // honest if the two unidentified crop bits ever turn out to be set somewhere: each
+    // producer's ladder is asked for its factor with the winter bit forced off and forced
+    // on, and the ratio of the two is the penalty.
+    let flags = GAME_WORLD_PTR.get_town(town_index).get_flags();
+    let mut by_percent: Vec<(u32, Vec<&str>)> = Vec::new();
+    for (ware, name) in facility::CROP_WARES.iter().zip(["grain", "honey", "wine", "hemp"]) {
+        let Some(percent) = facility::crop_winter_percent(*ware, flags) else {
+            continue;
+        };
+        match by_percent.iter_mut().find(|(p, _)| *p == percent) {
+            Some((_, names)) => names.push(name),
+            None => by_percent.push((percent, vec![name])),
+        }
+    }
+    if !by_percent.is_empty() {
+        // Wares that lose the same share share a term, which is what keeps the line short
+        // enough for the window: "grain 66%, honey/wine/hemp 50%".
+        let parts: Vec<String> = by_percent
+            .iter()
+            .map(|(percent, names)| format!("{} {percent}%", names.join("/")))
+            .collect();
+        draw_text(x + VALUE_X, y, format!("Winter output: {}", parts.join(", ")).as_bytes());
+        y += ROW_HEIGHT;
+    }
+    y
 }
 
 /// This office's administrator pays 2% less per trade skill level on everything he

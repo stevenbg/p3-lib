@@ -140,3 +140,85 @@ impl P3Pointer for FacilityPtr {
         self.address
     }
 }
+
+/// The four crop wares whose producers read the town flags at `town + 0x2C8`: grain,
+/// honey, wine and hemp. The other seventeen producers fold a constant instead, checked
+/// over the full extent of all twenty-one routines.
+pub const CROP_WARES: [u8; 4] = [0, 5, 7, 17];
+
+/// Bit `0x2` of `town + 0x2C8` - **winter**. The town tick sets it when the month is below
+/// 2 or above 10 (`0x0051BA1C`/`0x0051BA29`), i.e. December, January and February, and
+/// clears it otherwise, every town every day.
+pub const TOWN_FLAG_WINTER: u32 = 0x2;
+/// Two further bits the crop ladders read. Never observed set in any measured save, so what
+/// they mean is unknown - only that they would deepen or invert the winter effect.
+pub const TOWN_FLAG_CROP_A: u32 = 0x2000;
+pub const TOWN_FLAG_CROP_B: u32 = 0x4000;
+
+/// The integer factor a crop producer folds into its divisor, given the town's
+/// `+0x2C8` flags. Output is proportional to this, so the ratio between two flag states is
+/// the ratio between the outputs.
+///
+/// Each of the four has its own ladder, read from its disassembly - they are not uniform:
+/// grain's [TOWN_FLAG_CROP_A] divides by 3 where the apiary's divides by 2, the vineyard
+/// doubles where the apiary triples, and hemp selects a value outright instead of scaling a
+/// base. `None` for any ware that is not one of [CROP_WARES].
+pub fn crop_factor(ware: u8, flags: u32) -> Option<u32> {
+    let winter = flags & TOWN_FLAG_WINTER != 0;
+    let a = flags & TOWN_FLAG_CROP_A != 0;
+    let b = flags & TOWN_FLAG_CROP_B != 0;
+    Some(match ware {
+        // FarmGrain 0x0050EAD0
+        0 => {
+            let base = if winter { 4 } else { 6 };
+            if a {
+                base / 3
+            } else if b {
+                base * 2
+            } else {
+                base
+            }
+        }
+        // Apiary 0x0050EA00 and Vineyard 0x0050F100 - same base, different `b` arm.
+        5 | 7 => {
+            let base = if winter { 2 } else { 4 };
+            if a {
+                base / 2
+            } else if b {
+                if ware == 5 {
+                    base * 3
+                } else {
+                    base * 2
+                }
+            } else {
+                base
+            }
+        }
+        // FarmHemp 0x0050EBF0 - a selection, so `winter` wins outright.
+        17 => {
+            if winter {
+                3
+            } else if a {
+                4
+            } else if b {
+                9
+            } else {
+                6
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// What winter costs a crop in this town, as a percentage of its non-winter output:
+/// `crop_factor(winter) * 100 / crop_factor(summer)`, computed from the town's other flag
+/// bits as they actually stand. With those bits clear - which is every save measured so far
+/// - it is 66% for grain and 50% for honey, wine and hemp.
+pub fn crop_winter_percent(ware: u8, flags: u32) -> Option<u32> {
+    let summer = crop_factor(ware, flags & !TOWN_FLAG_WINTER)?;
+    let winter = crop_factor(ware, flags | TOWN_FLAG_WINTER)?;
+    if summer == 0 {
+        return None;
+    }
+    Some(winter * 100 / summer)
+}

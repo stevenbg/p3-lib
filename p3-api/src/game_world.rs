@@ -66,6 +66,22 @@ impl GameWorldPtr {
         self.get(0x01)
     }
 
+    /// The months in which the four crop producers halve (or two-third) their output:
+    /// the town tick sets bit `0x2` of `town+0x2C8` when the month is below 2 or above 10
+    /// (`0x0051BA1C`/`0x0051BA29`), and only FarmGrain, the Apiary, the Vineyard and
+    /// FarmHemp read it. The month field is zero-based, so this is December, January and
+    /// February.
+    pub const WINTER_MONTHS: [u8; 3] = [11, 0, 1];
+
+    /// Whether the crop penalty is in force today, by the same test the town tick makes.
+    ///
+    /// # Safety
+    /// Only meaningful once a game is loaded.
+    pub unsafe fn is_winter(&self) -> bool {
+        let month = self.get_month();
+        month < 2 || month > 10
+    }
+
     pub fn get_year(&self) -> u16 {
         unsafe { self.get(0x02) }
     }

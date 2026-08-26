@@ -45,6 +45,19 @@ impl MerchantPtr {
         unsafe { self.get(0x19) }
     }
 
+    /// This merchant's rank **in one town**, as a byte at `+0x39C + town_index`. It is
+    /// recomputed next to `update_merchant_reputation_and_value` from the per-town
+    /// reputation float at `+0x2FC + town*4` and the company value at `+0x46C` (the
+    /// `0xDBBA0` = 900,000 compare at `0x004F7AD4` is the Patrician step). Observed 3..5
+    /// for AI merchants in a live 24-town game; the value-to-title mapping is not pinned
+    /// down, so treat it as an ordinal.
+    ///
+    /// The pirate AI reads the **home town** entry as its "is this merchant worth robbing"
+    /// test - see [crate::game_setup::pirate_attack_rank_threshold].
+    pub fn get_rank_in(&self, town_index: u8) -> u8 {
+        unsafe { self.get(0x39c + town_index as u32) }
+    }
+
     pub fn get_first_office_index(&self) -> u16 {
         unsafe { self.get(0x0c) }
     }

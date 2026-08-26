@@ -54,6 +54,14 @@ impl TownPtr {
     /// verified down to 0% utilization (the market hall window shows the actual
     /// staffing-scaled output instead). Nonzero exactly for the wares the town
     /// produces; the price threshold t2 is t1 + 10 days of this.
+    /// The town's flag word. Bit `0x2` is winter, rewritten from the calendar by the town
+    /// tick every day (`0x0051BA47`); the four crop producers scale their output by it, and
+    /// nothing else in the game reads it. Bits `17..22` are masked and refilled by the same
+    /// tick (`0x0051BD04`) and are unrelated.
+    pub fn get_flags(&self) -> u32 {
+        unsafe { self.get(0x2c8) }
+    }
+
     pub fn get_production_values(&self) -> [i32; 24] {
         unsafe { self.get(0x490) }
     }

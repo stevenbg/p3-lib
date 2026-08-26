@@ -6,6 +6,7 @@ pub mod auto_trader;
 pub mod class35;
 pub mod data;
 pub mod facility;
+pub mod game_setup;
 pub mod game_world;
 pub mod letters;
 pub mod memory;
