@@ -48,6 +48,7 @@ multiply by the scale first, so everything paced by either global sees faster
 time - the battle and the world alike, which matches vanilla, where the world keeps
 running during battles anyway.
 
-The keys are polled once per frame from the clock updater's two call sites
-(`0x004B8AE2`, `0x004B8F7E`), so the mod installs no OS keyboard hook and cannot
-collide with other mods' keys.
+The keys are dispatched through the shared hotkey registry (`hotkeys.dll`, see
+`mod-hotkeys`), registered session-globally; without the registry they are inert
+while the time-scale detour itself keeps working (at whatever scale was last set,
+i.e. x1 on a fresh start).

@@ -20,7 +20,7 @@ use p3_api::{
         ui_tavern_window::UITavernWindowPtr,
     },
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_1, VK_2, VK_MENU};
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_2};
 
 pub static CREW: &CStr = c"Crew";
 /// The filtered views only cover the towns the player may enter, so their headings say
@@ -81,42 +81,29 @@ const FIRST_ROW_Y: i32 = 12;
 const ROW_HEIGHT: i32 = 16;
 const BLACK: u32 = 0xff000000;
 
-/// What the page shows, switched by a key press rather than held, and kept across
-/// openings of the window: 1 the captains and pirates, 2 the sailor pools, 3 the mission
-/// offers, with alt selecting every town instead of only the enterable ones. Number keys
-/// rather than function keys, because mod-auto-supply's F3 builds a trade route from
-/// anywhere and its keyboard hook cannot see which page is on screen.
+/// What the page shows, switched by a key press and kept across openings of the
+/// window: 1 the captains and pirates, 2 the mission offers, with alt selecting
+/// every town instead of only the enterable ones. The keys go through the shared
+/// hotkey registry, registered only while this page (the tavern's -1 page) is on
+/// screen - see ffi.rs for the scope events.
 static VIEW: AtomicU8 = AtomicU8::new(VIEW_CREW);
 static SHOW_ALL_TOWNS: AtomicBool = AtomicBool::new(false);
-static KEY_1_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static KEY_2_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 const VIEW_CREW: u8 = 0;
 const VIEW_MISSIONS: u8 = 1;
 
-/// Read the page's keys, called once per frame from the update phase and only while the
-/// page is actually on screen, so nothing outside this page is affected and no global
-/// keyboard hook is involved. Acts on the down edge, so a key switches the view rather
-/// than needing to be held.
-pub(crate) fn poll_keys() {
-    for (key, was_down, view) in [
-        (VK_1, &KEY_1_WAS_DOWN, VIEW_CREW),
-        (VK_2, &KEY_2_WAS_DOWN, VIEW_MISSIONS),
-    ] {
-        if key_pressed(key, was_down) {
-            VIEW.store(view, Ordering::Relaxed);
-            SHOW_ALL_TOWNS.store(key_down(VK_MENU), Ordering::Relaxed);
-        }
-    }
-}
+pub(crate) const PAGE_KEY_CREW: u32 = VK_1.0 as u32;
+pub(crate) const PAGE_KEY_MISSIONS: u32 = VK_2.0 as u32;
 
-/// True on the frame the key goes down, `was_down` carrying the previous state. The
-/// store has to happen on every call, release included - short-circuiting it away
-/// leaves `was_down` stuck at true and the key works exactly once.
-fn key_pressed(key: VIRTUAL_KEY, was_down: &AtomicBool) -> bool {
-    let down = key_down(key);
-    let previously_down = was_down.swap(down, Ordering::Relaxed);
-    down && !previously_down
+/// The page's key handler: registered while the details page is on screen, so no
+/// screen check is needed here. Declines (returns 0), as the polling before it
+/// effectively did - the game sees the keys too.
+#[no_mangle]
+pub(crate) unsafe extern "C" fn page_hotkeys(vk: u32, mods: u32) -> u32 {
+    let view = if vk == PAGE_KEY_MISSIONS { VIEW_MISSIONS } else { VIEW_CREW };
+    VIEW.store(view, Ordering::Relaxed);
+    SHOW_ALL_TOWNS.store(mods & p3_api::hotkeys::MOD_ALT != 0, Ordering::Relaxed);
+    0
 }
 
 /// Called when the window opens, like the other details mods do it, so the page's
@@ -283,10 +270,6 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
 /// where the graphic is missing.
 unsafe fn icon_width(id: u32) -> i32 {
     graphic_frame_size(id, 0).map(|(width, _)| width).unwrap_or(ICON)
-}
-
-fn key_down(key: VIRTUAL_KEY) -> bool {
-    (unsafe { GetKeyState(key.0 as i32) } as u16) & 0x8000 != 0
 }
 
 /// The whole hiring picture of a town in one table: a row per hireable captain or pirate,

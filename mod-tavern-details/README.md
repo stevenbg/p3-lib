@@ -61,11 +61,14 @@ down edge, so nothing has to be held, and the chosen view survives closing and r
 the tavern. The page's bottom line names the key for the other view; the alt variants
 are not advertised on the page.
 
-The keys are read in the window's update phase and only while page `-1` is the one on
-screen, so they do nothing anywhere else, and no global keyboard hook is involved. They
-are number keys rather than function keys because `mod-auto-supply` installs a
-`WH_KEYBOARD` hook whose F3 builds a trade route from anywhere - an OS keyboard hook sees
-every key regardless of what is on screen, so the two would both act on one press.
+The keys go through the shared hotkey registry (`hotkeys.dll`, see `mod-hotkeys`) and
+are registered only while page `-1` is the one on screen - armed when the window opens
+(it always opens on that page), disarmed the moment a tab is clicked (a detour on the
+window's own page switcher, `0x005CED00`) and on close. They do nothing anywhere else,
+and without the registry they are inert while the rest of the mod keeps working. The
+historical reason they are number keys - `mod-auto-supply`'s all-seeing `WH_KEYBOARD`
+hook would have acted on any F-key from anywhere - is gone now that every mod's keys
+are scoped through the registry; they simply stay 1 and 2.
 
 ## Letter popups name their town
 
