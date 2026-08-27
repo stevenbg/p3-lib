@@ -8,6 +8,7 @@ members = [
     "mod-ui-tweaks",
     "mod-crash-reporter",
     "mod-debug-navpoint-matrix",
+    "mod-debug-window-lifecycle",
     "mod-fix-bath-house-bribe-blunders",
     "mod-fix-captain-skill-cap-gate",
     "mod-fix-church-anim-crash",

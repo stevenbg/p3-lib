@@ -5,8 +5,18 @@ use crate::data::p3_ptr::P3Pointer;
 /// The game's main loop is `while (0x004B8A40(this = 0x006DA5F0) != -1)` (the loop
 /// itself at `0x004B70C0`). Each frame that method pumps messages, updates the frame
 /// clock (`0x004BD180`, 50 fps limiter included) and then calls the TOP window's
-/// vtable `+0xF4` (update) and `+0x12C` - scenes (scrollmap, sea battle, town) are
-/// window objects on the same stack as the building windows and dialogs.
+/// vtable `+0xF4` (update) and `+0x12C`.
+///
+/// The stack holds SCENES and full-screen menu screens only - the world map, the
+/// town view, the main menu, the settings screen and its dialogs. **Building
+/// windows (office, church, ...) and dialogs like the auto-trade goods dialog are
+/// NOT on the stack**: they are children of the town scene, opened and closed
+/// through their own vtable `+0x120`/`+0x118` without the manager ever seeing them
+/// (verified live with entry detours on both manager methods, 27 Aug 2026 - the
+/// depth never moved across thirteen office open/close cycles). Also verified: an
+/// in-game load (settings -> load game) keeps all UI objects alive; only the
+/// quit-to-menu teardown destroys them, without calling close - harmless, because
+/// the settings screen closes building windows before it opens.
 pub const WINDOW_MANAGER_ADDRESS: u32 = 0x006DA5F0;
 
 /// The window stack is an MFC-style list inside the manager: `+0xC` points at the
