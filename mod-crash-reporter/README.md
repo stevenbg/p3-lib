@@ -18,6 +18,15 @@ afterwards. Only fatal-severity codes are reported; C++ throws, debug prints and
 breakpoints are routine dispatch traffic and are skipped. An unhandled-exception
 filter additionally marks reports the process did not survive, when the game's
 own filter does not preempt it.
+First-chance access violations that fault inside a `C:\WINDOWS` module are not
+reported: Windows' text-services stack (CoreUIComponents, CoreMessaging,
+textinputframework, MSCTF) takes and swallows those routinely - eight consecutive
+reports proved to be that noise - while every real crash so far faulted in code
+loaded from the game folder. The skip applies only to first-chance access
+violations: wild EIPs outside any module, rarer codes (heap corruption, illegal
+instruction), and everything from the game folder still report first-chance, and
+an exception that actually kills the process always gets a full report from the
+unhandled filter, which never skips.
 
 ## Reading a report
 
@@ -63,3 +72,21 @@ never enters exception dispatch: a crash that leaves no report points at the
 heap. Enabling PageHeap (`gflags /p /enable Patrician3.exe /full`) makes the
 corruption fault at the corrupting instruction instead, which this reporter
 catches.
+
+## Debug keys
+
+The mod doubles as the debugging toolbox: F9 (with modifiers) and F10 are the
+throwaway in-game probe keys, rewritten per investigation (`src/probes.rs`).
+**Debug builds only** - a `--release` build compiles none of this in, so a
+handed-over crash reporter is reporting-only.
+Dispatched through the shared hotkey registry (`hotkeys.dll`); without it the
+probes are inert, the crash reporting is unaffected. Currently:
+
+| Key | Probe |
+|-|-|
+| F9 | Captain-experience census to `_probe1.log` |
+| Ctrl+F9 | Pirate-convoy sampling timeline toggle |
+| Shift+F9 | Selected-ship struct dump to `_probe1_ship.log` |
+| Alt+F9 | Player offices + administrator records to `_probe_admin.log` |
+| F10 | Every ship's applied route chain, to DebugView |
+| Ctrl+F10 | Goods-dialog per-ware order modes |

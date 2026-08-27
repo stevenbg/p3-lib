@@ -10,11 +10,15 @@ name="crash_reporter"
 [dependencies]
 log = { workspace = true }
 win_dbg_logger = { workspace = true }
+hooklet = { workspace = true }
+num-traits = { workspace = true }
+p3-api = { path = "../p3-api" }
 
 [dependencies.windows]
 version = "0.48"
 features = [
     "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
     "Win32_System_LibraryLoader",

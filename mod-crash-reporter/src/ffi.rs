@@ -9,8 +9,12 @@
 //! the stack for return addresses and the loaded module map (all attributed as
 //! module+offset) - before anything can swallow the exception or kill the process.
 //! Only fatal-severity codes are reported (C++ throws and debug prints are
-//! routine); a report the process survives was a handled exception, so the last
-//! report in the file is the crash. The unhandled-exception filter marks the report
+//! routine), and first-chance access violations faulting inside a C:\WINDOWS
+//! module are skipped - Windows' text-services stack takes and swallows those
+//! routinely, and every real crash so far faulted in code loaded from the game
+//! folder. An OS-module fault that actually kills the game still gets its full
+//! report from the unhandled filter, which never skips. A report the process
+//! survives was a handled exception, so the last report in the file is the crash. The unhandled-exception filter marks the report
 //! that killed the process, and repeats it in full only when it is a different
 //! fault.
 //!
@@ -50,6 +54,7 @@ use windows::Win32::{
 const REPORT_PATH: &str = "_crash_report.txt";
 /// The MSVC C++ throw code: raised and caught routinely, not a crash.
 const MSVC_CPP_EXCEPTION: u32 = 0xE06D7363;
+const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
 const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
 
 /// Bytes dumped around each register value, and how much of that sits below it.
@@ -85,6 +90,8 @@ pub unsafe extern "C" fn start() -> u32 {
     // reaching the unhandled filter.
     AddVectoredExceptionHandler(1, Some(vectored_handler));
     SetUnhandledExceptionFilter(Some(unhandled_filter));
+    #[cfg(debug_assertions)]
+    crate::probes::install();
     info!("installed");
     0
 }
@@ -106,6 +113,21 @@ unsafe fn report(info: *const EXCEPTION_POINTERS, kind: Kind) {
     // Fatal severity only (top two bits set): skips C++ throws, DBG_PRINTEXCEPTION
     // from OutputDebugString, breakpoints and other routine dispatch traffic.
     if code >> 30 != 3 || code == MSVC_CPP_EXCEPTION {
+        return;
+    }
+    // Windows' own components (the text-services stack above all: CoreUIComponents,
+    // CoreMessaging, textinputframework, MSCTF) routinely take and swallow access
+    // violations inside their SEH - eight consecutive reports proved to be that
+    // noise. Skip a FIRST-CHANCE access violation whose faulting address lies inside
+    // a C:\WINDOWS module: everything from the game folder still reports, a wild
+    // EIP in no module at all still reports (module_of is None), rarer codes like
+    // heap corruption or illegal instruction still report, and an exception that
+    // actually kills the process still gets its full report from the unhandled
+    // filter below, which is never skipped.
+    if kind == Kind::FirstChance
+        && code == STATUS_ACCESS_VIOLATION
+        && is_windows_system_code(record.ExceptionAddress as u32)
+    {
         return;
     }
     if IN_HANDLER.swap(true, Ordering::SeqCst) {
@@ -485,6 +507,20 @@ unsafe fn describe_address(addr: u32) -> String {
 }
 
 /// The module (mapped image) containing `addr`, as (basename, load base).
+/// True when `addr` sits inside a module loaded from the Windows directory - the
+/// signature of OS-internal first-chance noise, as opposed to the game, its DLLs
+/// and the mods, which all load from the game folder.
+unsafe fn is_windows_system_code(addr: u32) -> bool {
+    let Some((_, base)) = module_of(addr) else {
+        return false;
+    };
+    let Some(path) = module_path(base) else {
+        return false;
+    };
+    let upper = path.to_ascii_uppercase();
+    upper.contains(":\\WINDOWS\\") || upper.contains(":/WINDOWS/")
+}
+
 unsafe fn module_of(addr: u32) -> Option<(String, u32)> {
     let mbi = query(addr)?;
     if mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE {
