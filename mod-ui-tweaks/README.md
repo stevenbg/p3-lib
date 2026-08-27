@@ -7,12 +7,15 @@ Install: put `ui_tweaks.dll` into the `mods` folder (requires the modloader).
 
 ## Extra speed
 
-**ALT + `+`** and **ALT + `-`** (main row - deliberately NOT the numpad: the
-numpad +/- are the game's own speed-slider keys, and its handler ignores
-modifiers, so an ALT+numpad binding would trigger both at once) scale the game's
-time x1 / x2 / x4 / x8, anywhere - world map, town view, sea battle. Every change
-posts a popup on the event ticker (`extra speed: x4`). Nothing resets the scale
-behind the player's back; ALT+`-` brings it back down.
+**Numpad `*`** and **numpad `/`** scale the game's time x1 / x2 / x4 / x8,
+anywhere - world map, town view, sea battle. Every change posts a popup on the
+event ticker (`extra speed: x4`). Nothing resets the scale behind the player's
+back; numpad `/` brings it back down.
+
+They sit next to the game's own speed-slider keys (numpad `+` and `-`) without
+colliding with them, and need no modifier: the game's key dispatch
+(`0x00424B9B`) handles only numpad `+`, numpad `-`, Pause and Tab, so `*` and `/`
+reach nothing but this mod.
 
 The intended use is sea battles, which run at a fixed pace the speed slider cannot
 touch. The keys are deliberately global rather than battle-scoped: battles are not

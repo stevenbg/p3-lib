@@ -1,9 +1,10 @@
 //! Assorted quality-of-life tweaks. Current features:
 //!
-//! **Extra speed** - ALT+`+` / ALT+`-` (main row only: the numpad +/- are the
-//! game's own speed-slider keys, and its handler ignores modifiers, so binding the
-//! numpad too made ALT+numpad-+ trigger both) scale the game's time x1 / x2 / x4 /
-//! x8, anywhere: world map, town view, sea battle. The intended use
+//! **Extra speed** - numpad `*` / numpad `/` scale the game's time x1 / x2 / x4 /
+//! x8, anywhere: world map, town view, sea battle. They sit next to the game's own
+//! speed-slider keys (numpad `+` / `-`) without colliding with them: the game's key
+//! dispatch at `0x00424B9B` handles only numpad `+`, numpad `-`, Pause and Tab, so
+//! `*` and `/` are free, and no modifier is needed. The intended use
 //! is speeding up sea battles, but battles are not a map type of their own - a town
 //! attacked from the sea fights on the town's map - so the keys are deliberately
 //! global instead of scene-scoped.
@@ -32,7 +33,7 @@ use std::{
 use hooklet::windows::x86::{deploy_rel32_raw, hook_call_rel32, CallRel32Hook, X86Rel32Type};
 use log::{error, info};
 use p3_api::ui::ui_notifications::UINotificationsPtr;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_MENU, VK_OEM_MINUS, VK_OEM_PLUS};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_DIVIDE, VK_MULTIPLY};
 
 /// The frame clock updater's delta computation: `sub eax,edx; pop edi; add ecx,eax`
 /// (eax = this frame's real elapsed ms, ecx = the accumulating game clock) - 5 bytes,
@@ -52,8 +53,8 @@ const MAX_SCALE: u32 = 8;
 /// The time multiplier the detour applies. Read by the assembly stub every frame.
 static SCALE: AtomicU32 = AtomicU32::new(1);
 static CLOCK_CALL_HOOKS: [AtomicPtr<CallRel32Hook>; 2] = [AtomicPtr::new(std::ptr::null_mut()), AtomicPtr::new(std::ptr::null_mut())];
-static PLUS_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static MINUS_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static MULTIPLY_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static DIVIDE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Post an in-game popup on the event ticker (the top-left boxes), mirrored to the
 /// debug log. The ticker renders over the local map too.
@@ -94,7 +95,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    info!("loaded: ALT+plus/minus scale time x1/x2/x4/x8");
+    info!("loaded: numpad * / numpad / scale time x1/x2/x4/x8");
     0
 }
 
@@ -110,18 +111,16 @@ fn edge(down: bool, was_down: &AtomicBool) -> bool {
 }
 
 /// Runs once per frame in every message loop: forward to the game's clock updater,
-/// then poll ALT+plus / ALT+minus and step the scale through 1 / 2 / 4 / 8.
+/// then poll numpad `*` / numpad `/` and step the scale through 1 / 2 / 4 / 8.
 ///
-/// The edge state tracks the plus/minus keys regardless of ALT, so holding a key
-/// and then pressing ALT does not fire - a press is only a press if ALT was already
-/// down when the key went down.
+/// No modifier: the game's own key dispatch never looks at these two, so there is
+/// nothing to disambiguate from.
 unsafe extern "C" fn clock_update_hook() {
     let orig: extern "C" fn() = mem::transmute((*CLOCK_CALL_HOOKS[0].load(Ordering::SeqCst)).old_absolute);
     orig();
 
-    let alt = key_down(VK_MENU);
-    let up = edge(key_down(VK_OEM_PLUS), &PLUS_WAS_DOWN) && alt;
-    let down = edge(key_down(VK_OEM_MINUS), &MINUS_WAS_DOWN) && alt;
+    let up = edge(key_down(VK_MULTIPLY), &MULTIPLY_WAS_DOWN);
+    let down = edge(key_down(VK_DIVIDE), &DIVIDE_WAS_DOWN);
     if up == down {
         return;
     }
