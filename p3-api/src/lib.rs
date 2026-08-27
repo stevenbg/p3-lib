@@ -8,6 +8,7 @@ pub mod data;
 pub mod facility;
 pub mod game_setup;
 pub mod game_world;
+pub mod hotkeys;
 pub mod letters;
 pub mod memory;
 pub mod merchant;

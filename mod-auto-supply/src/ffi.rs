@@ -1,34 +1,24 @@
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::{mem, panic, ptr};
 
 use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hook, FunctionPointerHook};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use num_traits::FromPrimitive;
 use p3_api::{
-    auto_trader::skill_caps,
-    data::{enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
-    game_world::{GAME_WORLD_PTR, TICKS_PER_YEAR},
+    data::{enums::WareId, p3_ptr::P3Pointer},
+    game_world::GAME_WORLD_PTR,
+    hotkeys::{HotkeyHandler, HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::{
-        scheduled_task::{SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE, SCHEDULED_TASK_SIZE},
-        SCHEDULED_TASKS_PTR,
-    },
-    ship::SHIP_SIZE,
-    ships::ShipsPtr,
+    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
     town::{get_town_name, TOWN_SIZE},
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
 use p3_rou::{builder, TradeRouteStop};
 use windows::Win32::{
-    Foundation::{LPARAM, LRESULT, WPARAM},
     System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT},
-    System::Threading::GetCurrentThreadId,
-    UI::{
-        Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_DELETE, VK_F1, VK_F10, VK_F11, VK_F3, VK_F4, VK_F9, VK_MENU, VK_SHIFT},
-        WindowsAndMessaging::{CallNextHookEx, SetWindowsHookExW, HHOOK, WH_KEYBOARD},
-    },
+    UI::Input::KeyboardAndMouse::{VK_DELETE, VK_F1, VK_F11, VK_F3, VK_F4},
 };
 
 use crate::prices::{buy_price, sell_price, PriceLevel};
@@ -36,7 +26,7 @@ use crate::prices::{buy_price, sell_price, PriceLevel};
 /// F1: set every ware without an order to BUY (produced by the town) or SELL (rest),
 /// at the Center price levels (buy t1, sell t0). Ctrl+F1: provision and lock the
 /// celebration goods; Alt+F1: provision and lock the building materials.
-const SETUP_KEY: usize = VK_F1.0 as usize;
+const SETUP_KEY: u32 = VK_F1.0 as u32;
 /// The wares Ctrl+F1 provisions and locks in the office: what a celebration needs in
 /// stock.
 const LOCKED_STAPLES: [WareId; 6] = [WareId::Beer, WareId::Wine, WareId::Fish, WareId::Meat, WareId::Grain, WareId::Honey];
@@ -55,7 +45,7 @@ const LOCKED_BUILDING_MATERIALS: [(WareId, i32); 6] = [
 /// alt sets sell prices. Pressed without a modifier (or with both) they do nothing.
 /// Buying gets more aggressive towards Y (drains the town deeper), selling gets more
 /// restrained (only sells into scarcity); R is the natural pair, buy par / sell supply.
-const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
+const LEVEL_KEYS: [(u32, PriceLevel); 6] = [
     (0x51, PriceLevel::Upper),    // Q: buy t2          / sell t1
     (0x57, PriceLevel::UpperMid), // W: buy mid t1..t2  / sell mid t0..t1
     (0x45, PriceLevel::Upper30),  // E: buy 30% t1->t2  / sell 30% t0->t1
@@ -65,20 +55,14 @@ const LEVEL_KEYS: [(usize, PriceLevel); 6] = [
 ];
 /// F11: dump the current town's thresholds, base prices and price levels to the log and
 /// to a CSV.
-const TOWN_DUMP_KEY: usize = VK_F11.0 as usize;
-/// F10: dump every ship's applied route chain from the route stop pool.
-const ROUTE_DUMP_KEY: usize = VK_F10.0 as usize;
-/// F9: throwaway debug logic for the current RE task (see [debug_probe1]). The frame
-/// profiler that used to hang off Alt+F9 now lives, unused, in
-/// mod-fix-texture-cache-thrash's `profiler` module.
-const DEBUG_PROBE1_KEY: usize = VK_F9.0 as usize;
+const TOWN_DUMP_KEY: u32 = VK_F11.0 as u32;
 /// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
 /// does the same but also buys the [NO_BUY_WARES].
-const ADD_STOP_KEY: usize = VK_F4.0 as usize;
+const ADD_STOP_KEY: u32 = VK_F4.0 as u32;
 /// F3 sets a whole route template: plain 5stop, alt 6stop, ctrl suck.
-const ROUTE_KEY: usize = VK_F3.0 as usize;
+const ROUTE_KEY: u32 = VK_F3.0 as u32;
 /// DEL clears the selected ship's route (guarded on the goods dialog being closed).
-const CLEAR_ROUTE_KEY: usize = VK_DELETE.0 as usize;
+const CLEAR_ROUTE_KEY: u32 = VK_DELETE.0 as u32;
 /// The stop buys what the town produces at this level (the Ctrl+Y price).
 const STOP_BUY_LEVEL: PriceLevel = PriceLevel::LowerMid;
 /// The stop sells everything else at this level (the Alt+Y price).
@@ -133,12 +117,110 @@ const TOWN_SCENE_CURRENT_TOWN_OFFSET: u32 = 0xc324;
 const OFFICE_WINDOW_OPEN_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x120;
 const OFFICE_WINDOW_CLOSE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x118;
 
-/// Raw HHOOK of the keyboard hook (installed once at load, always active).
-static KEYBOARD_HOOK: AtomicIsize = AtomicIsize::new(0);
-/// True while a trading office window is open; gates F1 and the price level keys.
-static OFFICE_WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+static DIALOG_CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+static POPULATE_HOOKS: [AtomicPtr<CallRel32Hook>; 3] = [
+    AtomicPtr::new(std::ptr::null_mut()),
+    AtomicPtr::new(std::ptr::null_mut()),
+    AtomicPtr::new(std::ptr::null_mut()),
+];
+
+/// The shared hotkey registry (hotkeys.dll), bound at start(); null = unavailable,
+/// keys inert. All key dispatch goes through it - this mod installs no keyboard
+/// hook of its own any more.
+static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe fn hotkeys() -> Option<&'static HotkeysApi> {
+    HOTKEYS.load(Ordering::SeqCst).as_ref()
+}
+
+/// The three lifetime groups. Handles are 0 when unregistered; registration always
+/// unregisters a stale handle first, so a double-fired open cannot orphan one.
+const OWNER_GLOBAL: &std::ffi::CStr = c"auto-supply";
+const OWNER_OFFICE: &std::ffi::CStr = c"auto-supply office";
+const OWNER_DIALOG: &std::ffi::CStr = c"auto-supply goods dialog";
+
+/// Session-global keys, registered once at start(): the route keys and the town
+/// dump. (The F9/F10 debug probes live in mod-crash-reporter now.) The handlers
+/// never swallow, exactly like the old all-seeing hook, which always fell through
+/// to CallNextHookEx.
+const GLOBAL_KEYS: [(u32, u32); 10] = [
+    (TOWN_DUMP_KEY, 0),
+    (ADD_STOP_KEY, 0),
+    (ADD_STOP_KEY, MOD_CTRL),
+    (ROUTE_KEY, 0),
+    (ROUTE_KEY, MOD_CTRL),
+    (ROUTE_KEY, MOD_ALT),
+    (ROUTE_KEY, MOD_SHIFT),
+    (ROUTE_KEY, MOD_CTRL | MOD_SHIFT),
+    (ROUTE_KEY, MOD_ALT | MOD_SHIFT),
+    (CLEAR_ROUTE_KEY, 0),
+];
+static GLOBAL_HANDLES: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
+
+/// Office keys, registered while a trading office window is open (its vtable
+/// open/close hooks below): F1 and the price-level keys.
+const OFFICE_KEYS: [(u32, u32); 15] = [
+    (SETUP_KEY, 0),
+    (SETUP_KEY, MOD_CTRL),
+    (SETUP_KEY, MOD_ALT),
+    (LEVEL_KEYS[0].0, MOD_CTRL),
+    (LEVEL_KEYS[0].0, MOD_ALT),
+    (LEVEL_KEYS[1].0, MOD_CTRL),
+    (LEVEL_KEYS[1].0, MOD_ALT),
+    (LEVEL_KEYS[2].0, MOD_CTRL),
+    (LEVEL_KEYS[2].0, MOD_ALT),
+    (LEVEL_KEYS[3].0, MOD_CTRL),
+    (LEVEL_KEYS[3].0, MOD_ALT),
+    (LEVEL_KEYS[4].0, MOD_CTRL),
+    (LEVEL_KEYS[4].0, MOD_ALT),
+    (LEVEL_KEYS[5].0, MOD_CTRL),
+    (LEVEL_KEYS[5].0, MOD_ALT),
+];
+static OFFICE_HANDLES: [AtomicU32; 15] = [const { AtomicU32::new(0) }; 15];
+
+/// Goods-dialog keys, registered after every populate (the dialog's open - the
+/// Goods button and the dialog's own arrows) and unregistered on its close: F1 fill
+/// and the price-level keys, repricing the displayed stop.
+const DIALOG_KEYS: [(u32, u32); 14] = [
+    (SETUP_KEY, 0),
+    (SETUP_KEY, MOD_CTRL),
+    (LEVEL_KEYS[0].0, MOD_CTRL),
+    (LEVEL_KEYS[0].0, MOD_ALT),
+    (LEVEL_KEYS[1].0, MOD_CTRL),
+    (LEVEL_KEYS[1].0, MOD_ALT),
+    (LEVEL_KEYS[2].0, MOD_CTRL),
+    (LEVEL_KEYS[2].0, MOD_ALT),
+    (LEVEL_KEYS[3].0, MOD_CTRL),
+    (LEVEL_KEYS[3].0, MOD_ALT),
+    (LEVEL_KEYS[4].0, MOD_CTRL),
+    (LEVEL_KEYS[4].0, MOD_ALT),
+    (LEVEL_KEYS[5].0, MOD_CTRL),
+    (LEVEL_KEYS[5].0, MOD_ALT),
+];
+static DIALOG_HANDLES: [AtomicU32; 14] = [const { AtomicU32::new(0) }; 14];
+
+unsafe fn register_group(owner: &'static std::ffi::CStr, keys: &[(u32, u32)], handles: &[AtomicU32], handler: HotkeyHandler) {
+    let Some(api) = hotkeys() else { return };
+    for (i, &(vk, mods)) in keys.iter().enumerate() {
+        let stale = handles[i].swap(0, Ordering::SeqCst);
+        if stale != 0 {
+            api.unregister(stale);
+        }
+        handles[i].store(api.register(owner, vk, mods, handler), Ordering::SeqCst);
+    }
+}
+
+unsafe fn unregister_group(handles: &[AtomicU32]) {
+    let Some(api) = hotkeys() else { return };
+    for handle in handles {
+        let handle = handle.swap(0, Ordering::SeqCst);
+        if handle != 0 {
+            api.unregister(handle);
+        }
+    }
+}
 
 /// Post an in-game popup on the event ticker (the top-left "Game speed:" boxes),
 /// mirrored to the debug log.
@@ -157,19 +239,19 @@ pub unsafe extern "C" fn start() -> u32 {
         error!("{p}");
     }));
 
-    // start() runs on the game's main thread (the modloader calls it from its WinMain
-    // hook), which then pumps the message loop - so a thread-scoped keyboard hook
-    // installed here fires on key events at any game speed, for the process lifetime.
-    match SetWindowsHookExW(WH_KEYBOARD, Some(keyboard_hook), None, GetCurrentThreadId()) {
-        Ok(hook) => KEYBOARD_HOOK.store(hook.0, Ordering::SeqCst),
-        Err(_) => {
-            error!("installing the keyboard hook failed");
-            return 1;
+    // All keys go through the shared registry (hotkeys.dll); a missing or stale
+    // registry degrades to inert keys, never to a load failure.
+    match HotkeysApi::bind() {
+        Ok(api) => {
+            HOTKEYS.store(Box::into_raw(Box::new(api)), Ordering::SeqCst);
+            register_group(OWNER_GLOBAL, &GLOBAL_KEYS, &GLOBAL_HANDLES, global_hotkeys);
         }
+        Err(reason) => warn!("hotkeys registry unavailable ({reason}) - all keys inert"),
     }
 
-    // Track whether a trading office window is open, to gate the office-only keys. The
-    // OS keyboard hook is all-or-nothing per thread, so the scoping is done in code.
+    // The office keys are registered while a trading office window is open, off its
+    // vtable open/close (close fires on every path - play-verified for the hotkey
+    // registry design).
     match hook_function_pointer(OFFICE_WINDOW_OPEN_POINTER_OFFSET, office_window_open_hook as usize as u32) {
         Ok(hook) => OPEN_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {
@@ -185,7 +267,29 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 debug; global F4 add stop, F9 selected ship, F10 routes");
+    // The goods-dialog keys are registered after populate (the dialog's open: the
+    // panel's Goods button and the dialog's own arrows - populate's three call
+    // sites) and unregistered on the dialog's close. Registration happens AFTER the
+    // original returns because populate itself closes an already-open dialog first,
+    // which unregisters; the post-call order makes that harmless.
+    for (i, offset) in DIALOG_POPULATE_CALL_OFFSETS.iter().enumerate() {
+        match hook_call_rel32(*offset, dialog_populate_hook as usize as u32) {
+            Ok(hook) => POPULATE_HOOKS[i].store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+            Err(_) => {
+                error!("failed to hook goods dialog populate call at module+{offset:#x}");
+                return 4;
+            }
+        }
+    }
+    match hook_function_pointer(DIALOG_CLOSE_POINTER_OFFSET, dialog_close_hook as usize as u32) {
+        Ok(hook) => DIALOG_CLOSE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            error!("failed to hook the goods dialog close slot");
+            return 5;
+        }
+    }
+
+    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 town dump; global F3/F4/DEL route keys");
     0
 }
 
@@ -193,83 +297,106 @@ pub unsafe extern "C" fn start() -> u32 {
 unsafe extern "thiscall" fn office_window_open_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*OPEN_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
-    OFFICE_WINDOW_OPEN.store(true, Ordering::SeqCst);
+    register_group(OWNER_OFFICE, &OFFICE_KEYS, &OFFICE_HANDLES, office_hotkeys);
 }
 
 #[no_mangle]
 unsafe extern "thiscall" fn office_window_close_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*CLOSE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
-    OFFICE_WINDOW_OPEN.store(false, Ordering::SeqCst);
+    unregister_group(&OFFICE_HANDLES);
 }
 
-fn key_down(key: VIRTUAL_KEY) -> bool {
-    (unsafe { GetKeyState(key.0 as i32) } as u16) & 0x8000 != 0
+/// Populate = the goods dialog opening (or moving to another stop). thiscall with
+/// three stack arguments, `ret 0xC`; the original is [DIALOG_POPULATE] itself.
+#[no_mangle]
+unsafe extern "thiscall" fn dialog_populate_hook(dialog: u32, stop_index: u32, ship_index: u32, flag: u32) {
+    let original: extern "thiscall" fn(u32, u32, u32, u32) = mem::transmute(DIALOG_POPULATE);
+    original(dialog, stop_index, ship_index, flag);
+    register_group(OWNER_DIALOG, &DIALOG_KEYS, &DIALOG_HANDLES, dialog_hotkeys);
 }
 
-unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 {
-        let flags = lparam.0 as u32;
-        // Bit 31: transition state (0 = key pressed); bit 30: previous state (0 = was up).
-        // Together: fire once on the initial key-down, not on autorepeat or release.
-        if flags & 0xC000_0000 == 0 {
-            let ctrl = key_down(VK_CONTROL);
-            let alt = key_down(VK_MENU);
-            let shift = key_down(VK_SHIFT);
-            // The office keys act only while a trading office window is open; the town
-            // and route probes are global.
-            let office_open = OFFICE_WINDOW_OPEN.load(Ordering::SeqCst);
-            match wparam.0 {
-                w if w == DEBUG_PROBE1_KEY && ctrl => toggle_probe1_timeline(),
-                w if w == DEBUG_PROBE1_KEY && shift => debug_probe1_ship(),
-                w if w == DEBUG_PROBE1_KEY && alt => debug_probe_administrators(),
-                w if w == DEBUG_PROBE1_KEY => debug_probe1(),
-                w if w == ROUTE_DUMP_KEY && ctrl => debug_probe_dialog_modes(),
-                w if w == ROUTE_DUMP_KEY => dump_ship_routes(),
-                w if w == TOWN_DUMP_KEY => on_town_dump_hotkey(),
-                // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
-                // Alt+F4 is left to Windows.
-                w if w == ADD_STOP_KEY && !alt => on_add_stop_hotkey(!ctrl),
-                // Shift appends the generated route to the existing one instead of
-                // replacing it.
-                w if w == ROUTE_KEY => on_route_hotkey(
-                    if ctrl {
-                        RouteKind::Suck
-                    } else if alt {
-                        RouteKind::SixStop
-                    } else {
-                        RouteKind::FiveStop
-                    },
-                    shift,
-                ),
-                // Exactly one of ctrl (buy) / alt (sell) picks the direction. The keys
-                // target the goods dialog's stop when it is open, otherwise the office
-                // administrator view.
-                w if ctrl != alt && LEVEL_KEYS.iter().any(|&(key, _)| key == w) => {
-                    let level = LEVEL_KEYS.iter().find(|&&(key, _)| key == w).unwrap().1;
-                    let (sell, buy) = if ctrl { (None, Some(level)) } else { (Some(level), None) };
-                    if let Some((dialog, stop_index)) = goods_dialog_stop() {
-                        reprice_dialog_stop(dialog, stop_index, sell, buy);
-                    } else if office_open {
-                        apply_prices(sell, buy);
-                    }
-                }
-                w if w == CLEAR_ROUTE_KEY => on_clear_route_hotkey(),
-                // F1 in the goods dialog: fill the displayed stop's empty slots with
-                // buy/sell orders (plain skips the NO_BUY_WARES, ctrl buys everything).
-                w if w == SETUP_KEY && goods_dialog_stop().is_some() => {
-                    let (dialog, stop_index) = goods_dialog_stop().unwrap();
-                    on_dialog_setup_hotkey(dialog, stop_index, !ctrl);
-                }
-                _ if !office_open => {}
-                w if w == SETUP_KEY && ctrl => on_lock_staples_hotkey(),
-                w if w == SETUP_KEY && alt => on_lock_building_materials_hotkey(),
-                w if w == SETUP_KEY => on_setup_hotkey(),
-                _ => {}
+/// The dialog's close (vtable `+0x118` = `0x004066F0`) fires on every leave path,
+/// including defensively at the session teardown - play-verified.
+#[no_mangle]
+unsafe extern "thiscall" fn dialog_close_hook(dialog: u32) {
+    let orig: extern "thiscall" fn(u32) = mem::transmute((*DIALOG_CLOSE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
+    orig(dialog);
+    unregister_group(&DIALOG_HANDLES);
+}
+
+/// The price level a Q..Y key stands for.
+fn level_of(vk: u32) -> Option<PriceLevel> {
+    LEVEL_KEYS.iter().find(|&&(key, _)| key == vk).map(|&(_, level)| level)
+}
+
+/// Session-global keys: route keys and the town dump. Every handler in this mod
+/// returns 0 (decline): the old keyboard hook never swallowed a key, so the game
+/// and other mods keep seeing every keystroke exactly as before.
+#[no_mangle]
+unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
+    match (vk, mods) {
+        (TOWN_DUMP_KEY, 0) => on_town_dump_hotkey(),
+        // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
+        // Alt+F4 stays with Windows (never registered).
+        (ADD_STOP_KEY, m) => on_add_stop_hotkey(m & MOD_CTRL == 0),
+        // Shift appends the generated route to the existing one instead of
+        // replacing it.
+        (ROUTE_KEY, m) => on_route_hotkey(
+            if m & MOD_CTRL != 0 {
+                RouteKind::Suck
+            } else if m & MOD_ALT != 0 {
+                RouteKind::SixStop
+            } else {
+                RouteKind::FiveStop
+            },
+            m & MOD_SHIFT != 0,
+        ),
+        // Internally guarded on the goods dialog being closed, as before.
+        (CLEAR_ROUTE_KEY, 0) => on_clear_route_hotkey(),
+        _ => {}
+    }
+    0
+}
+
+/// Office keys, live only while a trading office window is open. The handlers still
+/// resolve the office themselves, so a stray press during teardown is a no-op.
+#[no_mangle]
+unsafe extern "C" fn office_hotkeys(vk: u32, mods: u32) -> u32 {
+    match (vk, mods) {
+        (SETUP_KEY, MOD_CTRL) => on_lock_staples_hotkey(),
+        (SETUP_KEY, MOD_ALT) => on_lock_building_materials_hotkey(),
+        (SETUP_KEY, 0) => on_setup_hotkey(),
+        // Ctrl = buy prices, alt = sell prices, in the administrator view.
+        _ => {
+            if let Some(level) = level_of(vk) {
+                let (sell, buy) = if mods & MOD_CTRL != 0 { (None, Some(level)) } else { (Some(level), None) };
+                apply_prices(sell, buy);
             }
         }
     }
-    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
+    0
+}
+
+/// Goods-dialog keys, live from populate to close; they act on the displayed stop,
+/// which the handler re-reads at press time.
+#[no_mangle]
+unsafe extern "C" fn dialog_hotkeys(vk: u32, mods: u32) -> u32 {
+    let Some((dialog, stop_index)) = goods_dialog_stop() else {
+        return 0;
+    };
+    match (vk, mods) {
+        // F1: fill the displayed stop's empty slots with buy/sell orders (plain
+        // skips the NO_BUY_WARES, ctrl buys everything).
+        (SETUP_KEY, m) => on_dialog_setup_hotkey(dialog, stop_index, m & MOD_CTRL == 0),
+        _ => {
+            if let Some(level) = level_of(vk) {
+                let (sell, buy) = if mods & MOD_CTRL != 0 { (None, Some(level)) } else { (Some(level), None) };
+                reprice_dialog_stop(dialog, stop_index, sell, buy);
+            }
+        }
+    }
+    0
 }
 
 /// The town whose view is open, from the town-scene object. On the world map this is the
@@ -295,6 +422,13 @@ const DIALOG_FLAG_OFFSET: u32 = 0x547c;
 /// (direction arrows, amount and price texts) from the stop record. Called by the
 /// dialog's own arrows and by the panel's Goods button (0x48c432).
 const DIALOG_POPULATE: u32 = 0x00405a20;
+/// Populate's three call sites (module-relative, as hook_call_rel32 takes them): the
+/// dialog's own arrows (0x004075E3, 0x0040763A) and the panel's Goods button
+/// (0x0048C432). Wrapping them is the dialog's "open" event.
+const DIALOG_POPULATE_CALL_OFFSETS: [u32; 3] = [0x75E3, 0x763A, 0x8C432];
+/// The dialog's close, vtable slot +0x118 of 0x0066A7F0 (module-relative pointer
+/// location, as hook_function_pointer takes it).
+const DIALOG_CLOSE_POINTER_OFFSET: u32 = 0x26A7F0 + 0x118;
 
 /// The goods dialog and the pool index of the stop it displays, if it is open.
 unsafe fn goods_dialog_stop() -> Option<(u32, u32)> {
@@ -317,6 +451,12 @@ unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
     let ship_index = *((dialog + DIALOG_SHIP_INDEX_OFFSET) as *const u32);
     let flag = *((dialog + DIALOG_FLAG_OFFSET) as *const u8) as u32;
     populate(dialog, stop_index, ship_index, flag);
+    // This direct call bypasses the three hooked call sites, but populate still
+    // closes the open dialog internally - which unregisters the dialog keys through
+    // the close hook. Re-register, exactly like the hooked sites do post-call;
+    // without this, the first dialog hotkey (whose handler refreshes the dialog)
+    // silently disarms all the others.
+    register_group(OWNER_DIALOG, &DIALOG_KEYS, &DIALOG_HANDLES, dialog_hotkeys);
 }
 
 /// F9 (THROWAWAY): install an operation logger on the queue drain's call into the
@@ -1658,789 +1798,3 @@ const ROUTE_STOP_POOL_COUNT: *const u16 = 0x006dd72a as _;
 const ROUTE_STOP_POOL: *const u32 = 0x006dd72c as _;
 const ROUTE_STOP_SIZE: u32 = 220;
 const SHIP_ROUTE_HEAD_OFFSET: u32 = 0x132;
-
-/// The auto trade goods dialog ("Automatic maritime trading in ..."); the static holds
-/// the object pointer.
-const GOODS_DIALOG_PTR: *const u32 = 0x006cba74 as _;
-/// Pool index of the stop the dialog is showing, -1 while it is closed.
-const GOODS_DIALOG_STOP_OFFSET: u32 = 0xa4;
-const GOODS_DIALOG_SHIP_OFFSET: u32 = 0xa8;
-/// The dialog's per-ware order type, one i32 per ware id - only the 20 trade wares, the
-/// dialog has no weapons rows, so reading 24 runs off the end into unrelated fields.
-const GOODS_DIALOG_MODE_OFFSET: u32 = 0x4ae0;
-const GOODS_DIALOG_MODE_COUNT: u32 = 20;
-/// The dialog's block of ten per-ware control array pointers; each holds a `new[]` array
-/// of 20 window-family widgets (constructor 0x004c6910, 0xe8 bytes each).
-const GOODS_DIALOG_ARRAY_BLOCK_OFFSET: u32 = 0xf0;
-/// The five of those the order type indexes to pick which per-ware sub window is
-/// registered.
-const GOODS_DIALOG_MODE_TABLE_OFFSET: u32 = 0xf4;
-
-/// CTRL+F10 (THROWAWAY): dump the auto trade goods dialog's per-ware order type beside
-/// the route stop record it was derived from, to settle which order type each mode value
-/// means. Open the dialog on a stop, set a few wares to different order types with the
-/// cycling button, then press: each line shows the dialog's mode value and, independently,
-/// what the record's own price/amount signs say the order is.
-unsafe fn debug_probe_dialog_modes() {
-    let dialog = *GOODS_DIALOG_PTR;
-    if dialog == 0 {
-        notify("dialog probe: goods dialog not constructed");
-        return;
-    }
-    let stop_index = *((dialog + GOODS_DIALOG_STOP_OFFSET) as *const i32);
-    let ship_index = *((dialog + GOODS_DIALOG_SHIP_OFFSET) as *const i32);
-    debug!("goods dialog at {dialog:#010x}: stop {stop_index}, ship {ship_index}");
-    if stop_index < 0 {
-        notify("dialog probe: dialog closed (stop -1) - open it on a stop first");
-        return;
-    }
-    let pool = *ROUTE_STOP_POOL;
-    let pool_count = *ROUTE_STOP_POOL_COUNT;
-    if pool == 0 || stop_index as u16 >= pool_count {
-        notify(&format!("dialog probe: stop {stop_index} outside the pool ({pool_count})"));
-        return;
-    }
-    let stop = pool + stop_index as u32 * ROUTE_STOP_SIZE;
-
-    // The dialog's ten per-ware control arrays. Five of them are what the order type
-    // indexes (+0xf4 + mode*4); the rest are other columns of the row. Every element is a
-    // window-family object, so element 0's rectangle (x +0x14, y +0x18, w +0x2c, h +0x30)
-    // says which column each array draws - sort the lines by x and they read left to
-    // right across the row.
-    for slot in 0..10u32 {
-        let offset = GOODS_DIALOG_ARRAY_BLOCK_OFFSET + slot * 4;
-        let array = *((dialog + offset) as *const u32);
-        let mode = match offset {
-            o if (GOODS_DIALOG_MODE_TABLE_OFFSET..GOODS_DIALOG_MODE_TABLE_OFFSET + 20).contains(&o) => {
-                format!("order type {}", (o - GOODS_DIALOG_MODE_TABLE_OFFSET) / 4)
-            }
-            _ => "not order-type".to_string(),
-        };
-        if array == 0 || !p3_api::memory::is_readable(array, 0x34) {
-            debug!("  array +{offset:#05x}: {array:#010x} (unreadable) {mode}");
-            continue;
-        }
-        debug!(
-            "  array +{offset:#05x}: {array:#010x} elem0 x {:4} y {:4} w {:4} h {:4}  {mode}",
-            *((array + 0x14) as *const i32),
-            *((array + 0x18) as *const i32),
-            *((array + 0x2c) as *const i32),
-            *((array + 0x30) as *const i32),
-        );
-    }
-
-    let order: Vec<String> = (0..24).map(|i| format!("{:02x}", *((stop + 4 + i) as *const u8))).collect();
-    debug!("  order array: {}", order.join(" "));
-
-    for ware in 0..24u32 {
-        let mode = if ware < GOODS_DIALOG_MODE_COUNT {
-            format!("{}", *((dialog + GOODS_DIALOG_MODE_OFFSET + ware * 4) as *const i32))
-        } else {
-            "-".to_string()
-        };
-        let price = *((stop + 28 + ware * 4) as *const i32);
-        let amount = *((stop + 124 + ware * 4) as *const i32);
-        // What the stop record itself encodes, derived without consulting the dialog.
-        let record = match (price, amount) {
-            (_, 0) => "no order",
-            (0, a) if a > 0 => "load office -> ship",
-            (0, _) => "unload ship -> office",
-            (p, _) if p > 0 => "sell to town",
-            _ => "buy from town",
-        };
-        let name = format!("{:?}", WareId::from_u32(ware).unwrap());
-        debug!("  ware {ware:2} {name:12} mode {mode:>2}  price {price:11}  amount {amount:11}  record says {record}");
-    }
-    notify(&format!("dialog probe: stop {stop_index} modes dumped to DebugView"));
-}
-
-/// F10: walk every ship's route chain and dump the stops.
-unsafe fn dump_ship_routes() {
-    let pool = *ROUTE_STOP_POOL;
-    let pool_count = *ROUTE_STOP_POOL_COUNT;
-    debug!("route stop pool at {pool:#010x}, {pool_count} entries");
-    if pool == 0 {
-        return;
-    }
-
-    let ships = p3_api::ships::ShipsPtr::new();
-    for ship_id in 0..ships.get_ships_size() {
-        let Some(ship) = ships.get_ship(ship_id) else {
-            continue;
-        };
-        let head = *((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16);
-        if head >= pool_count {
-            continue;
-        }
-        // The ship struct address is a candidate value for the map-selection global, if
-        // the selection is stored as a pointer (scan for it in Cheat Engine, 4-byte hex,
-        // while switching selected ships).
-        debug!("ship {ship_id} at {:#010x} {:?}: route head {head}", ship.address, ship.get_name());
-
-        let mut index = head;
-        for n in 0..32 {
-            let stop = pool + index as u32 * ROUTE_STOP_SIZE;
-            let next = *(stop as *const u16);
-            let town_index = *((stop + 2) as *const u8);
-            let action = *((stop + 3) as *const u8);
-            let town = get_town_name(town_index).unwrap_or_else(|| format!("<{town_index:#04x}>"));
-            let mut ops = Vec::new();
-            for i in 0..24usize {
-                let price = *((stop + 28 + i as u32 * 4) as *const i32);
-                let amount = *((stop + 124 + i as u32 * 4) as *const i32);
-                if price != 0 || amount != 0 {
-                    ops.push(format!("{:?} p{price} a{amount}", WareId::from_usize(i).unwrap()));
-                }
-            }
-            debug!(
-                "  stop {n}: pool[{index}] town {town}, action {action:#04x}, next {next}, ops [{}]",
-                ops.join(", ")
-            );
-            index = next;
-            if index == head || index >= pool_count {
-                break;
-            }
-        }
-    }
-}
-
-/// F9 (THROWAWAY): the captain-experience census, for
-/// `.claude/notes/done/captain-experience.md`. Dumps to DebugView and to `_probe1.log`
-/// in the game folder - always appended, never truncated, so presses days or years
-/// apart sit in one file and diff directly.
-///
-/// Restored to verify `mod-fix-captain-skill-cap-gate`: with that mod loaded, `GATED OUT`
-/// on the player's captains should fall to near zero, a captain whose navigation cap is
-/// below his trade or combat cap should keep gaining past it, and newly created records
-/// should never be `OVER` their caps.
-///
-/// Every skill byte in the game is written by operation `0x12` (`0x00538A80`), which
-/// clamps each skill to a ceiling taken from bits of the record's **array index**, and
-/// the only producer that runs continuously is the ten-day scan `0x004DCEA0`. So the
-/// dump prints, per record, the three skills against the three ceilings
-/// [p3_api::auto_trader::skill_caps] derives, where the record sits (tavern, ship,
-/// office) and who owns it - the scan gives a human owner's captains a random 0..50 on
-/// one skill and an AI owner's a flat +8, told apart by `merchant+0x8`.
-///
-/// What to check in a dump:
-///
-/// - **no skill above its cap.** The handler writes the cap unconditionally when a gain
-///   would pass it, so an `OVER` row is a record no gain event has ever touched.
-/// - **`trade - combat` constant** for the same captain across two presses a year apart:
-///   the handler reads one payload field for both skills.
-/// - **administrator trade skills exact multiples of 43** - their own path adds exactly
-///   one level at a time and stops at 215.
-/// - **the round counter between 0 and 31**, consistent with the day of the year: it is
-///   reset below day 10 and the scan returns early above `0x1F`.
-unsafe fn debug_probe1() {
-    let mut out: Vec<String> = Vec::new();
-    let ships = ShipsPtr::new();
-    let traders = ships.get_auto_traders_size();
-    let ship_count = ships.get_ships_size();
-    let merchants = GAME_WORLD_PTR.get_merchants_count();
-    let now = GAME_WORLD_PTR.get_game_time_raw();
-    let local: u32 = *(0x006DFC14 as *const u32);
-    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
-
-    // Which save this block came from. The loaded file name is not kept anywhere the mod
-    // can read, so the block is keyed by the player himself plus a hash of the world's
-    // town list - enough to group blocks by save, and the tick orders them within one.
-    // An optional `_probe1_save.txt` in the game folder adds a label of your own.
-    let label = std::fs::read_to_string("_probe1_save.txt")
-        .map(|text| text.lines().next().unwrap_or("").trim().to_string())
-        .unwrap_or_default();
-    // Which save folder the game writes to: the path builder at 0x005473A6 picks
-    // `Save\Kam`, `Save\Ein` or `Save\Mehr` off this byte of the setup object.
-    let mode = *((*(0x006CC3E8 as *const u32) + 0xd) as *const u8);
-    let campaign = match mode {
-        5 => "Kam",
-        3 => "Ein",
-        0..=2 => "Mehr",
-        _ => "?",
-    };
-    // FNV-1a over the town id list at `game_world+0x18`, which world generation fills:
-    // constant within a save, different between worlds.
-    let world = GAME_WORLD_PTR.get::<[u8; 40]>(0x18).iter().fold(0x811c_9dc5u32, |hash, &byte| {
-        (hash ^ byte as u32).wrapping_mul(0x0100_0193)
-    });
-    let player = GAME_WORLD_PTR.get_merchant(local as u16);
-
-    out.push(format!(
-        "=== press {press} | save: {} campaign {campaign}({mode}) world {world:#010x} | tick {now} year {} day-of-year {} ({}.{}) ===",
-        if label.is_empty() { "<no _probe1_save.txt>".to_string() } else { format!("\"{label}\"") },
-        GAME_WORLD_PTR.get_year(),
-        GAME_WORLD_PTR.get_day_of_year(),
-        GAME_WORLD_PTR.get_day_of_month(),
-        GAME_WORLD_PTR.get_month(),
-    ));
-    out.push(format!(
-        "player: merchant {local} {} {} of {} | money {} company value {} | traders {traders} ships {ship_count} merchants {merchants}",
-        player.get_name(),
-        player.get_family_name(),
-        get_town_name(player.get_hometown_index()).unwrap_or_else(|| "?".into()),
-        player.get_money(),
-        player.get_company_value(),
-    ));
-
-    // The scan keeps its round counter in the ten-day task's own data at `+0x8`;
-    // `counter & 7` is the `captain_index & 7` the next run will process.
-    let mut group = None;
-    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
-        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
-        if task.get_opcode() != SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE {
-            continue;
-        }
-        let due = task.get_due_timestamp();
-        let counter = task.get_data_dword(0x8);
-        group = Some(counter & 7);
-        out.push(format!(
-            "ten-day task {index}: due {due} (in {:.1} days) | data+0x0 {} counter {counter} -> group {}{}",
-            due.wrapping_sub(now) as f32 / 256.0,
-            task.get_data_dword(0),
-            counter & 7,
-            if counter > 0x1f { " | SCAN DISABLED, counter past 0x1f" } else { "" },
-        ));
-    }
-    if group.is_none() {
-        out.push("ten-day task: NOT FOUND in the queue".to_string());
-    }
-
-    // `merchant+0x8 == 0` is a human player (verified in done/pirate-ai.md): his
-    // captains take the random path and only his administrators gain at all.
-    let human: Vec<bool> = (0..merchants).map(|i| GAME_WORLD_PTR.get_merchant(i).get_control_word() == 0).collect();
-    let words: Vec<String> = (0..merchants)
-        .map(|i| format!("{i}={:04x}{}", GAME_WORLD_PTR.get_merchant(i).get_control_word(), if human[i as usize] { "*" } else { "" }))
-        .collect();
-    out.push(format!("merchant control words (* = human, random path): {}", words.join(" ")));
-
-    // Where each record sits: chained to a town = that tavern, `ship+0x42` = that ship,
-    // `office+0x2F2` = administrator of that office, anything else unplaced.
-    // Which growth path the scan gives this owner's captains. It walks merchants and
-    // their ship chains, so a ship with no owner (0xFF - pirate ships and empty slots) is
-    // never visited at all.
-    let path_of = |owner: u16| {
-        if owner >= merchants {
-            "no owner, never scanned"
-        } else if human[owner as usize] {
-            "human 0..50"
-        } else {
-            "AI +8"
-        }
-    };
-    let mut place: Vec<String> = vec![String::new(); traders as usize];
-    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
-        let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
-        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
-        // The chain ends on an out-of-range index; cap the walk against cycles.
-        for _ in 0..traders {
-            let Some(trader) = ships.get_auto_trader(index) else { break };
-            place[index as usize] = format!("tavern {town}");
-            index = trader.get_next_index();
-        }
-    }
-    for ship_index in 0..ship_count {
-        let Some(ship) = ships.get_ship(ship_index) else { continue };
-        let captain = ship.get_captain_index();
-        if captain >= traders {
-            continue;
-        }
-        let owner = ship.get_merchant_index();
-        place[captain as usize] = format!(
-            "ship {ship_index} {:?} owner {owner:#04x} {}{}",
-            ship.get_name(),
-            path_of(owner as u16),
-            // The one status the scan skips outright.
-            if ship.get_status() == 0x11 { " status 0x11 SKIPPED" } else { "" },
-        );
-    }
-    let mut admins: Vec<u16> = Vec::new();
-    for office_index in 0..GAME_WORLD_PTR.get_offices_count() {
-        let office = GAME_WORLD_PTR.get_office(office_index);
-        let admin = office.get_administrator_index();
-        if admin >= traders {
-            continue;
-        }
-        admins.push(admin);
-        let owner = office.get_merchant_index();
-        place[admin as usize] = format!(
-            "office {office_index} in {} owner {owner:#04x} {}",
-            get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index())),
-            path_of(owner),
-        );
-    }
-
-    let mut over_cap = 0;
-    let mut gated_out = 0;
-    let mut lockstep: Vec<String> = Vec::new();
-    let mut due_next: Vec<String> = Vec::new();
-    for index in 0..traders {
-        let Some(trader) = ships.get_auto_trader(index) else { break };
-        let (nav, trade, combat) = (trader.get_navigation_skill(), trader.get_trade_skill(), trader.get_combat_skill());
-        // A free slot is memset to 0xFF and linked into the freelist through +0x0.
-        if trader.get_state_byte() == 0xff && nav == 0xff && trade == 0xff && combat == 0xff {
-            continue;
-        }
-        let (nav_cap, trade_cap, combat_cap) = skill_caps(index);
-        let over = |skill: u8, cap: u8| if skill > cap { "!" } else { " " };
-        if nav > nav_cap || trade > trade_cap || combat > combat_cap {
-            over_cap += 1;
-        }
-        // Every gain is gated against the NAVIGATION cap, whichever skill was rolled, so
-        // a record with all three at or above it never gains again.
-        let stuck = nav >= nav_cap && trade >= nav_cap && combat >= nav_cap;
-        if stuck {
-            gated_out += 1;
-        }
-        let placed = if place[index as usize].is_empty() {
-            "unplaced".to_string()
-        } else {
-            place[index as usize].clone()
-        };
-        out.push(format!(
-            "trader {index:3} {} nav {nav:3}/{nav_cap}{} trade {trade:3}/{trade_cap}{} combat {combat:3}/{combat_cap}{} | wage {:3} mer {:#04x} state {:#04x} retire {} born {} age {:.1}y | {placed}{}",
-            if trader.is_captain() { "CAPT" } else { "PIRA" },
-            over(nav, nav_cap),
-            over(trade, trade_cap),
-            over(combat, combat_cap),
-            trader.get_daily_wage(),
-            trader.get_merchant_index(),
-            trader.get_state_byte(),
-            trader.get_retirement_flag(),
-            trader.get_timestamp(),
-            now.saturating_sub(trader.get_timestamp()) as f32 / TICKS_PER_YEAR as f32,
-            if stuck { " | GATED OUT" } else { "" },
-        ));
-        lockstep.push(format!("{index}:{}", trade as i32 - combat as i32));
-        if group == Some(index as u32 & 7) && !place[index as usize].is_empty() {
-            due_next.push(index.to_string());
-        }
-    }
-
-    // The administrator path adds exactly 43 at a time from a fresh 0, so anything else
-    // means either a different writer or the record is not really an administrator.
-    let stray: Vec<String> = admins
-        .iter()
-        .filter_map(|&i| ships.get_auto_trader(i).map(|t| (i, t.get_trade_skill())))
-        .filter(|(_, trade)| trade % 43 != 0)
-        .map(|(i, trade)| format!("{i}={trade}"))
-        .collect();
-    out.push(format!(
-        "administrators: {} | trade not a multiple of 43: {}",
-        admins.len(),
-        if stray.is_empty() { "none".to_string() } else { stray.join(" ") }
-    ));
-    out.push(format!("records with a skill above its cap: {over_cap} | gated out of all further gains: {gated_out}"));
-    out.push(format!("trade-combat per record (must not move between presses): {}", lockstep.join(" ")));
-    out.push(format!(
-        "group {} is processed next run, placed records in it: {}",
-        group.map(|g| g.to_string()).unwrap_or_else(|| "?".into()),
-        if due_next.is_empty() { "none".to_string() } else { due_next.join(" ") }
-    ));
-
-    for line in &out {
-        debug!("probe1: {line}");
-    }
-    // Always append, never truncate: the point is to compare presses days or years apart
-    // and across saves, so every block from every session stays in the one file.
-    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe1.log");
-    if let Ok(mut file) = file {
-        use std::io::Write;
-        for line in &out {
-            let _ = writeln!(file, "{line}");
-        }
-    }
-    notify(&format!(
-        "probe1 #{press}: {over_cap} over cap, {gated_out} gated out, {} lines >> _probe1.log",
-        out.len()
-    ));
-}
-
-/// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
-/// `_probe1.log`, later presses append their own block.
-static PROBE1_PRESSES: AtomicU32 = AtomicU32::new(0);
-
-/// ALT+F9 (THROWAWAY): dump every office of the player with its administrator record, to
-/// settle whether dismissing and re-hiring an administrator preserves his trade skill.
-///
-/// Press once with the administrator in place, once after dismissing him, once after
-/// hiring again. Appends to `_probe_admin.log`, so the three blocks diff cleanly.
-///
-/// What the code says should happen: operation `0x5E` frees the record on dismissal
-/// (`0x005098B0`) and its hire path unconditionally allocates a fresh one and writes trade
-/// `= 0` (`0x0053DA1D`). The two wage formulas tell the record apart from anything the
-/// interface computes on its own:
-///
-/// - an administrator's wage is `0x004FE160`: `20 * (trade / 43) + 10`, so only ever
-///   10, 30, 50, 70, 90 or 110;
-/// - a captain's is `0x004FE190`: `(nav + trade + combat) / 50 + (state % 11) + 10`.
-///
-/// So a wage of 14 cannot have come from an administrator record at all, and the offer
-/// shown before hiring must be computed somewhere else.
-unsafe fn debug_probe_administrators() {
-    let press = PROBE_ADMIN_PRESSES.fetch_add(1, Ordering::SeqCst);
-    let mut out: Vec<String> = Vec::new();
-    let ships = ShipsPtr::new();
-    let traders = ships.get_auto_traders_size();
-    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
-    out.push(format!(
-        "=== admin press {press} | tick {} | player merchant {merchant_index} | traders {traders} ===",
-        GAME_WORLD_PTR.get_game_time_raw()
-    ));
-
-    // The player's offices, chained from merchant+0xC through office+0x2C8.
-    let merchant = GAME_WORLD_PTR.get_merchant(merchant_index as u16);
-    let offices = GAME_WORLD_PTR.get_offices_count();
-    let mut index = merchant.get_first_office_index();
-    for _ in 0..offices {
-        if index >= offices {
-            break;
-        }
-        let office = GAME_WORLD_PTR.get_office(index);
-        let town = get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index()));
-        let admin = office.get_administrator_index();
-        let detail = match ships.get_auto_trader(admin) {
-            Some(t) => {
-                let (nav, trade, combat) = (t.get_navigation_skill(), t.get_trade_skill(), t.get_combat_skill());
-                let admin_wage = 20 * (trade as u32 / 43) + 10;
-                let captain_wage = (nav as u32 + trade as u32 + combat as u32) / 50 + (t.get_state_byte() as u32 % 11) + 10;
-                format!(
-                    "admin {admin}: names {}/{} state {:#04x} nav {nav} trade {trade} (level {}) combat {combat} | wage {} [admin formula {admin_wage}, captain formula {captain_wage}] mer {:#04x} born {}",
-                    t.get_first_name_id(),
-                    t.get_last_name_id(),
-                    t.get_state_byte(),
-                    trade / 43,
-                    t.get_daily_wage(),
-                    t.get_merchant_index(),
-                    t.get_timestamp(),
-                )
-            }
-            None => format!("admin index {admin:#06x} - no administrator"),
-        };
-        out.push(format!("office {index} in {town}: flags {:#04x} | {detail}", office.get::<u8>(0x2d6)));
-        index = office.get_next_office_of_merchant_index();
-    }
-
-    // Free records are memset to 0xFF and linked into the freelist through +0x0. Watching
-    // this list is how a dismissal's free and a hire's re-allocation become visible.
-    let free: Vec<String> = (0..traders)
-        .filter(|&i| {
-            ships
-                .get_auto_trader(i)
-                .map(|t| t.get_state_byte() == 0xff && t.get_navigation_skill() == 0xff && t.get_trade_skill() == 0xff && t.get_combat_skill() == 0xff)
-                .unwrap_or(false)
-        })
-        .map(|i| i.to_string())
-        .collect();
-    out.push(format!("free slots ({}): {}", free.len(), free.join(" ")));
-
-    // The whole office record of whatever office is on screen. If anything office-side
-    // remembers a dismissed administrator, a diff of this block across the three presses
-    // is where it shows up (the ware stock at +0x4 moves on its own, so expect noise).
-    let window = UITradingOfficeWindowPtr::new();
-    if window.get_address() != 0 {
-        let town_index = window.get_town_index() as u8;
-        match GAME_WORLD_PTR.get_office_in_of(town_index, merchant_index as _) {
-            Some(office) => {
-                let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
-                out.push(format!("--- office record in {town} at {:#010x}, {OFFICE_SIZE:#x} bytes ---", office.address));
-                let mut offset = 0;
-                while offset < OFFICE_SIZE {
-                    let row: Vec<String> = (0..16.min(OFFICE_SIZE - offset)).map(|i| format!("{:02x}", *((office.address + offset + i) as *const u8))).collect();
-                    out.push(format!("{offset:04x}: {}", row.join(" ")));
-                    offset += 16;
-                }
-            }
-            None => out.push(format!("no player office in the open window's town ({town_index})")),
-        }
-    } else {
-        out.push("no trading office window open - open one for the hex block".to_string());
-    }
-
-    for line in &out {
-        debug!("admin: {line}");
-    }
-    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe_admin.log");
-    if let Ok(mut file) = file {
-        use std::io::Write;
-        for line in &out {
-            let _ = writeln!(file, "{line}");
-        }
-    }
-    notify(&format!("admin probe #{press}: {} lines >> _probe_admin.log", out.len()));
-}
-
-/// How often ALT+F9 has been pressed since the DLL was loaded.
-static PROBE_ADMIN_PRESSES: AtomicU32 = AtomicU32::new(0);
-
-/// SHIFT+F9 (THROWAWAY): dump the selected ship's whole struct to `_probe1_ship.log`,
-/// raw and decoded, one block per press (the file is truncated on the first press of a
-/// session). Select a ship, press, change one thing in-game - crew, cutlasses, a gun -
-/// press again, and the diff of the two hex blocks names the field that moved.
-static PROBE1_SHIP_PRESSES: AtomicU32 = AtomicU32::new(0);
-
-unsafe fn debug_probe1_ship() {
-    let ships = ShipsPtr::new();
-    let Some(index) = selected_ship_index() else {
-        notify("probe1 ship: no ship selected");
-        return;
-    };
-    let Some(ship) = ships.get_ship(index) else {
-        notify(&format!("probe1 ship: index {index} out of range"));
-        return;
-    };
-    let press = PROBE1_SHIP_PRESSES.fetch_add(1, Ordering::SeqCst);
-    let mut out = Vec::new();
-    out.push(format!(
-        "=== press {press} tick {} ship {index} \"{}\" type {} upgrade {} ===",
-        GAME_WORLD_PTR.get::<u32>(0x14),
-        ship.get_name(),
-        ship.get::<u8>(0xE),
-        ship.get::<u8>(0xF)
-    ));
-    out.push(format!(
-        "crew +0x40 {} (mirror +0x154 {}) | artillery power +0x120 {} weight +0x11C {} | capacity +0x10 {} used +0x118 {} | +0x158 {} | health {}/{}",
-        ship.get::<u16>(0x40),
-        ship.get::<u16>(0x154),
-        ship.get::<i32>(0x120),
-        ship.get::<i32>(0x11C),
-        ship.get::<i32>(0x10),
-        ship.get::<i32>(0x118),
-        ship.get::<i32>(0x158),
-        ship.get::<i32>(0x18),
-        ship.get::<i32>(0x14)
-    ));
-    // The 12 artillery slots at +0x13C are two bytes each (count, type).
-    let slots: Vec<String> = (0..12u32)
-        .map(|slot| format!("{:02x}{:02x}", ship.get::<u8>(0x13C + slot * 2), ship.get::<u8>(0x13D + slot * 2)))
-        .collect();
-    out.push(format!("artillery slots +0x13C: {}", slots.join(" ")));
-    // The whole struct, so any field that moves shows up in a diff.
-    for row in 0..SHIP_SIZE / 16 {
-        let base = row * 16;
-        let bytes: Vec<String> = (0..16u32).map(|i| format!("{:02x}", ship.get::<u8>(base + i))).collect();
-        out.push(format!("+{base:#05x}  {}", bytes.join(" ")));
-    }
-
-    for line in &out {
-        debug!("probe1 ship: {line}");
-    }
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .append(press > 0)
-        .truncate(press == 0)
-        .open("_probe1_ship.log");
-    if let Ok(mut file) = file {
-        use std::io::Write;
-        for line in &out {
-            let _ = writeln!(file, "{line}");
-        }
-    }
-    notify(&format!(
-        "probe1 ship #{press}: {} crew {} arty {} -> _probe1_ship.log",
-        ship.get_name(),
-        ship.get::<u16>(0x40),
-        ship.get::<i32>(0x120)
-    ));
-}
-
-/// CTRL+F9 (THROWAWAY): the pirate timeline. Samples the pirate convoys into
-/// `_probe1_timeline.log` while the game runs, so a multi-day observation needs no key
-/// presses: what the restraint counter does across a week, and when a convoy switches
-/// target, goes home, enters a battle or vanishes into a hideout.
-///
-/// The sampling hangs off the ships tick itself (the `call 0x00506720` at `0x00531011`
-/// inside `advance_time`), not off a timer, so it sees **every** tick no matter the game
-/// speed - including fast-forward, which advances up to a whole day per frame and would
-/// let a wall-clock sampler step clean over the transitions. Each tick it computes a
-/// cheap fingerprint of the pirate convoys and writes a line only when that changes, or
-/// every [TIMELINE_TICKS] ticks as a heartbeat.
-static TIMELINE_ON: AtomicBool = AtomicBool::new(false);
-/// A quarter of a day between heartbeat samples (a day is 256 ticks).
-const TIMELINE_TICKS: u32 = 64;
-/// `advance_time`'s call to the ships tick, module-relative for `hook_call_rel32`.
-const SHIPS_TICK_CALL_OFFSET: u32 = 0x131011;
-static TIMELINE_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
-static TIMELINE_LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
-
-unsafe fn toggle_probe1_timeline() {
-    let on = !TIMELINE_ON.load(Ordering::SeqCst);
-    if on {
-        if TIMELINE_HOOK_PTR.load(Ordering::SeqCst).is_null() {
-            match hook_call_rel32(SHIPS_TICK_CALL_OFFSET, ships_tick_timeline_hook as usize as u32) {
-                Ok(hook) => TIMELINE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-                Err(e) => {
-                    error!("probe1 timeline: hooking the ships tick failed: {e:?}");
-                    notify("probe1 timeline: hook failed");
-                    return;
-                }
-            }
-        }
-        *TIMELINE_LOG.lock().unwrap() = std::fs::File::create("_probe1_timeline.log").ok();
-    } else {
-        *TIMELINE_LOG.lock().unwrap() = None;
-    }
-    TIMELINE_ON.store(on, Ordering::SeqCst);
-    notify(&format!("probe1 timeline: {}", if on { "on -> _probe1_timeline.log" } else { "off" }));
-}
-
-/// Wraps the ships tick: the original first, so the sample shows the state the tick left
-/// behind.
-#[no_mangle]
-unsafe extern "thiscall" fn ships_tick_timeline_hook(this: u32, tick: u32) {
-    let orig: extern "thiscall" fn(u32, u32) = mem::transmute((*TIMELINE_HOOK_PTR.load(Ordering::Relaxed)).old_absolute);
-    orig(this, tick);
-    if TIMELINE_ON.load(Ordering::Relaxed) {
-        sample_probe1_timeline(tick);
-    }
-}
-
-/// The last prey each convoy latched, kept because `0x0050BC40` clears `ship+0x50` when
-/// it engages - without this the battle line cannot name who was attacked.
-static LAST_PREY: Mutex<[u16; TIMELINE_CONVOYS]> = Mutex::new([0xFFFF; TIMELINE_CONVOYS]);
-const TIMELINE_CONVOYS: usize = 64;
-
-unsafe fn sample_probe1_timeline(tick: u32) {
-    static LAST_TICK: AtomicU32 = AtomicU32::new(0);
-    static LAST_SHAPE: AtomicU32 = AtomicU32::new(0);
-    let (shape, changed_at) = (probe1_timeline_shape(), LAST_SHAPE.load(Ordering::Relaxed));
-    let due = tick.wrapping_sub(LAST_TICK.load(Ordering::Relaxed)) >= TIMELINE_TICKS;
-    let changed = shape != changed_at;
-    if !due && !changed {
-        return;
-    }
-    LAST_TICK.store(tick, Ordering::Relaxed);
-    LAST_SHAPE.store(shape, Ordering::Relaxed);
-    let detail = probe1_timeline_detail();
-    use std::io::Write;
-    if let Ok(mut guard) = TIMELINE_LOG.lock() {
-        if let Some(file) = guard.as_mut() {
-            let _ = writeln!(
-                file,
-                "tick {tick} day {} time {:#04x} {}{detail}",
-                tick >> 8,
-                tick & 0xFF,
-                if changed { "CHANGE " } else { "" }
-            );
-            let _ = file.flush();
-        }
-    }
-}
-
-/// A cheap fingerprint of every pirate convoy's shape - status, flags, prey and member
-/// count. Runs every tick, so it allocates nothing.
-unsafe fn probe1_timeline_shape() -> u32 {
-    let ships = ShipsPtr::new();
-    let ship_count = ships.get_ships_size();
-    let convoy_count = ships.get_convoys_size();
-    let mut hash: u32 = 0;
-    for index in 0..convoy_count {
-        let convoy = ships.get_convoy(index).unwrap();
-        let status: u16 = convoy.get(0x12);
-        if convoy.get::<u8>(0x0) != 0xFF || status == 0xFF {
-            continue;
-        }
-        let acting: u16 = convoy.get(0x10);
-        let prey = match ships.get_ship(acting) {
-            Some(ship) => ship.get::<u16>(0x50),
-            None => 0xFFFF,
-        };
-        let mut members = 0u32;
-        let mut member: u16 = convoy.get(0xA);
-        while member < ship_count && members < 8 {
-            member = ships.get_ship(member).unwrap().get_next_ship_in_convoy();
-            members += 1;
-        }
-        for value in [index as u32, status as u32, convoy.get::<u16>(0x14) as u32, acting as u32, prey as u32, members] {
-            hash = hash.rotate_left(5) ^ value;
-        }
-    }
-    hash
-}
-
-/// The line body: every pirate convoy decoded, plus the pirates outside one.
-unsafe fn probe1_timeline_detail() -> String {
-    let ships = ShipsPtr::new();
-    let ship_count = ships.get_ships_size();
-    let convoy_count = ships.get_convoys_size();
-    let mut detail = String::new();
-    for index in 0..convoy_count {
-        let convoy = ships.get_convoy(index).unwrap();
-        let status: u16 = convoy.get(0x12);
-        if convoy.get::<u8>(0x0) != 0xFF || status == 0xFF {
-            continue;
-        }
-        let acting: u16 = convoy.get(0x10);
-        let flags: u16 = convoy.get(0x14);
-        let counter: u16 = convoy.get(0x16);
-        let mut members = Vec::new();
-        let mut member: u16 = convoy.get(0xA);
-        let mut hops = 0;
-        while member < ship_count && hops < 8 {
-            members.push(member.to_string());
-            member = ships.get_ship(member).unwrap().get_next_ship_in_convoy();
-            hops += 1;
-        }
-        let (position, prey_text) = match ships.get_ship(acting) {
-            Some(ship) => {
-                let prey: u16 = ship.get(0x50);
-                let prey_text = match ships.get_ship(prey) {
-                    Some(prey_ship) => format!(
-                        "{prey}:{} m{:#04x} at {},{}",
-                        prey_ship.get_name(),
-                        prey_ship.get_merchant_index(),
-                        prey_ship.get::<u16>(0x1E),
-                        prey_ship.get::<u16>(0x22)
-                    ),
-                    None => "none".to_string(),
-                };
-                (format!("{},{}", ship.get::<u16>(0x1E), ship.get::<u16>(0x22)), prey_text)
-            }
-            None => ("?".to_string(), "?".to_string()),
-        };
-        // Remember the prey while it is still there, and name it once a battle starts.
-        let victim = {
-            let mut last = LAST_PREY.lock().unwrap();
-            let slot = (index as usize).min(TIMELINE_CONVOYS - 1);
-            let prey: u16 = match ships.get_ship(acting) {
-                Some(ship) => ship.get(0x50),
-                None => 0xFFFF,
-            };
-            if prey != 0xFFFF {
-                last[slot] = prey;
-            }
-            match ships.get_ship(last[slot]) {
-                Some(ship) => format!(
-                    "{}:{} m{:#04x}{}",
-                    last[slot],
-                    ship.get_name(),
-                    ship.get_merchant_index(),
-                    if ship.get_merchant_index() as u32 == *(0x006DFC14 as *const u32) { " MINE" } else { "" }
-                ),
-                None => "unknown".to_string(),
-            }
-        };
-        detail.push_str(&format!(
-            "| convoy {index} status {status:#x} flags {flags:#06x} counter {counter} ({:.2}d) acting {acting} at {position} ships {} prey {prey_text} {}",
-            counter as f64 / 256.0,
-            members.join(","),
-            if status == 0x14 { format!("ENGAGED victim {victim} ") } else { String::new() }
-        ));
-    }
-    // Pirate ships outside a convoy: at a hideout, or waiting to be dispatched.
-    let mut loose = Vec::new();
-    for index in 0..ship_count {
-        let ship = ships.get_ship(index).unwrap();
-        if ship.get_status() != 0x12 || ship.get_convoy_id() < convoy_count {
-            continue;
-        }
-        loose.push(format!(
-            "{index}@{},{} hp{}",
-            ship.get::<u16>(0x1E),
-            ship.get::<u16>(0x22),
-            ship.get::<i32>(0x18)
-        ));
-    }
-    detail.push_str(&format!("| loose {}", loose.join(" ")));
-    detail
-}
