@@ -39,10 +39,14 @@
 //!   original, which then also sees a match. This is what the broken code was trying to
 //!   do - retire him from the ship he is actually on.
 //! - **captain on no ship at all** (dismissed, or his ship sank): return `0` without
-//!   calling the original. That is exactly what the game itself does at its own bail-out
-//!   `0x004DDE2D` (`xor eax,eax; ret`) when its search finds nothing, and the dispatcher
-//!   reads `0` as "task done, free it" (`0x004D8A12` compares against `ebp`, zeroed at
-//!   `0x004D85EB`). There is no ship to take him off, so there is nothing to do.
+//!   calling the original - exactly what the game itself does at its own bail-out
+//!   `0x004DDE2D` (`xor eax,eax; ret`), and the value the dispatcher reads as "task done,
+//!   free it" (`0x004D8A12` compares against `ebp`, zeroed at `0x004D85EB`). There is no
+//!   ship to take him off, so there is nothing to do - **but the retirement flag
+//!   `auto_trader+0xE` is cleared too.** Both scheduling paths set it (`0x004DD023`,
+//!   `0x00538CB5`) and the scan skips a flagged captain outright (`0x004DCFE0`), so
+//!   leaving it set would make him permanently unretireable the moment somebody hired him
+//!   again. Dropping the task must therefore undo the flag that goes with it.
 //!
 //! Deliberately NOT used: the handler's own `due += 0x20` self-postpone (its convoy
 //! branch at `0x004DDCFC` does this). A captain who has permanently left his ship would
@@ -136,8 +140,16 @@ unsafe extern "thiscall" fn retire_handler_hook(tasks: u32) -> u32 {
         }
         None => {
             let count = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            // Abandoning the removal has to clear the retirement flag as well, or the
+            // captain becomes permanently unretireable: both scheduling paths set
+            // auto_trader+0xE (`0x004DD023` for an AI owner, `0x00538CB5` for a human
+            // one), and while it is set the ten-day scan skips that captain outright
+            // (`0x004DCFE0`). So without this he would sail on past 50 forever once
+            // somebody hired him again. The flag means "a removal is already queued",
+            // and we have just decided there is none.
+            let cleared = clear_retirement_flag(captain);
             log_line(&format!(
-                "drop #{count}: captain {captain} was recorded on ship {recorded_ship} and is on no ship at all; dropping the task, as the game's own bail-out does"
+                "drop #{count}: captain {captain} was recorded on ship {recorded_ship} and is on no ship at all; dropping the task as the game's own bail-out does, and {cleared} so the scan can retire him if he is hired again"
             ));
             // The dispatcher frees the task on 0, exactly as after 0x004DDE2D.
             0
@@ -170,6 +182,20 @@ unsafe fn pair_matches(ship_index: u32, captain: u32) -> bool {
     ships
         .get_ship(ship_index as u16)
         .is_some_and(|ship| ship.get_captain_index() as u32 == captain)
+}
+
+/// Clear `auto_trader+0xE` so the ten-day scan will consider this captain again.
+/// Returns what happened, for the log.
+unsafe fn clear_retirement_flag(captain: u32) -> &'static str {
+    let ships = ShipsPtr::new();
+    let Some(trader) = ships.get_auto_trader(captain as u16) else {
+        return "could not clear his retirement flag (index out of range)";
+    };
+    if trader.get_retirement_flag() == 0 {
+        return "his retirement flag was already clear";
+    }
+    trader.set_retirement_flag(false);
+    "cleared his retirement flag"
 }
 
 /// The search the handler meant to do. A linear pass over the ships array rather than

@@ -36,9 +36,12 @@ The mod resolves the ship before the game's broken search can run:
   ordinary retirement - the game's own handler runs completely untouched.
 - **If the captain moved**, the mod finds the ship he is actually on and points the task
   at it, so he retires from there. This is what the broken code was trying to do.
-- **If he is on no ship at all**, the task is dropped. That is already what the game does
-  when its own search comes up empty, and it is the right answer: there is no ship to take
-  him off.
+- **If he is on no ship at all**, the task is dropped - the same thing the game does when
+  its own search comes up empty, and the right answer, since there is no ship to take him
+  off. The mod also clears his retirement flag in that case, because the game sets a flag
+  when it queues a removal and then skips that captain forever while it is set: without
+  clearing it, a captain who was dropped here would never retire at all once somebody hired
+  him again.
 
 Nothing else changes: what retirement *does* is still entirely the game's own code, which
 varies by where the ship is. The mod only decides which ship that code works on.

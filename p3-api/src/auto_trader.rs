@@ -155,6 +155,17 @@ impl AutoTraderPtr {
         unsafe { self.get(0xe) }
     }
 
+    /// Clearing it makes the scan consider the captain again, which is only correct if
+    /// the queued removal is genuinely not happening - the flag means "a removal is
+    /// already on its way", and while it is set the scan skips this captain forever
+    /// (`0x004DCFE0`). Used by `mod-fix-captain-retire-hang` when it abandons a task
+    /// whose captain is on no ship.
+    ///
+    /// The record must be live.
+    pub unsafe fn set_retirement_flag(&self, flagged: bool) {
+        self.set(0xe, &(flagged as u8))
+    }
+
     /// The 0-5 level the game displays for a raw skill byte.
     pub fn skill_level(skill: u8) -> u8 {
         skill / SKILL_PER_LEVEL
