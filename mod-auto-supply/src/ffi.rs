@@ -6,11 +6,15 @@ use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hoo
 use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
+    auto_trader::skill_caps,
     data::{enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
-    game_world::GAME_WORLD_PTR,
+    game_world::{GAME_WORLD_PTR, TICKS_PER_YEAR},
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
+    scheduled_tasks::{
+        scheduled_task::{SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE, SCHEDULED_TASK_SIZE},
+        SCHEDULED_TASKS_PTR,
+    },
     ship::SHIP_SIZE,
     ships::ShipsPtr,
     town::{get_town_name, TOWN_SIZE},
@@ -1794,120 +1798,260 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): log what the "feeding the poor" donation actually passes to the game,
-/// instead of predicting it. For `.claude/notes/done/feeding-the-poor.md`, where three
-/// in-game observations contradicted the arithmetic I derived statically.
+/// F9 (THROWAWAY): the captain-experience census, for
+/// `.claude/notes/done/captain-experience.md`. Dumps to DebugView and to `_probe1.log`
+/// in the game folder - always appended, never truncated, so presses days or years
+/// apart sit in one file and diff directly.
 ///
-/// The first press installs a hook on the call at `0x00535D3C` - operation `0x30`'s jump
-/// into `handle_feeding_the_poor` (`0x004FE557`) - and every donation from then on logs the
-/// four arguments the game computed:
+/// Restored to verify `mod-fix-captain-skill-cap-gate`: with that mod loaded, `GATED OUT`
+/// on the player's captains should fall to near zero, a captain whose navigation cap is
+/// below his trade or combat cap should keep gaining past it, and newly created records
+/// should never be `OVER` their caps.
 ///
-/// - the merchant and town bytes,
-/// - **the gate byte** at `op+0x6`, which is what the handler compares against 10 and 50,
-/// - and the five donation amounts, in table order: grain, beer, fish, meat, wine.
+/// Every skill byte in the game is written by operation `0x12` (`0x00538A80`), which
+/// clamps each skill to a ceiling taken from bits of the record's **array index**, and
+/// the only producer that runs continuously is the ten-day scan `0x004DCEA0`. So the
+/// dump prints, per record, the three skills against the three ceilings
+/// [p3_api::auto_trader::skill_caps] derives, where the record sits (tavern, ship,
+/// office) and who owns it - the scan gives a human owner's captains a random 0..50 on
+/// one skill and an AI owner's a flat +8, told apart by `merchant+0x8`.
 ///
-/// Donate, read the gate byte, note which of the three replies appeared. That pins the real
-/// thresholds and the real bands without any guessing about price curves or divisors, and it
-/// settles directly whether the wine row is under-counted.
+/// What to check in a dump:
+///
+/// - **no skill above its cap.** The handler writes the cap unconditionally when a gain
+///   would pass it, so an `OVER` row is a record no gain event has ever touched.
+/// - **`trade - combat` constant** for the same captain across two presses a year apart:
+///   the handler reads one payload field for both skills.
+/// - **administrator trade skills exact multiples of 43** - their own path adds exactly
+///   one level at a time and stops at 215.
+/// - **the round counter between 0 and 31**, consistent with the day of the year: it is
+///   reset below day 10 and the scan returns early above `0x1F`.
 unsafe fn debug_probe1() {
-    if !FEED_HOOK_INSTALLED.swap(true, Ordering::SeqCst) {
-        match hook_call_rel32(0x00135D3C, feed_the_poor_hook as usize as u32) {
-            Ok(hook) => FEED_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-            Err(_) => {
-                FEED_HOOK_INSTALLED.store(false, Ordering::SeqCst);
-                notify("feed-the-poor logger FAILED to install");
-            }
+    let mut out: Vec<String> = Vec::new();
+    let ships = ShipsPtr::new();
+    let traders = ships.get_auto_traders_size();
+    let ship_count = ships.get_ships_size();
+    let merchants = GAME_WORLD_PTR.get_merchants_count();
+    let now = GAME_WORLD_PTR.get_game_time_raw();
+    let local: u32 = *(0x006DFC14 as *const u32);
+    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
+
+    // Which save this block came from. The loaded file name is not kept anywhere the mod
+    // can read, so the block is keyed by the player himself plus a hash of the world's
+    // town list - enough to group blocks by save, and the tick orders them within one.
+    // An optional `_probe1_save.txt` in the game folder adds a label of your own.
+    let label = std::fs::read_to_string("_probe1_save.txt")
+        .map(|text| text.lines().next().unwrap_or("").trim().to_string())
+        .unwrap_or_default();
+    // Which save folder the game writes to: the path builder at 0x005473A6 picks
+    // `Save\Kam`, `Save\Ein` or `Save\Mehr` off this byte of the setup object.
+    let mode = *((*(0x006CC3E8 as *const u32) + 0xd) as *const u8);
+    let campaign = match mode {
+        5 => "Kam",
+        3 => "Ein",
+        0..=2 => "Mehr",
+        _ => "?",
+    };
+    // FNV-1a over the town id list at `game_world+0x18`, which world generation fills:
+    // constant within a save, different between worlds.
+    let world = GAME_WORLD_PTR.get::<[u8; 40]>(0x18).iter().fold(0x811c_9dc5u32, |hash, &byte| {
+        (hash ^ byte as u32).wrapping_mul(0x0100_0193)
+    });
+    let player = GAME_WORLD_PTR.get_merchant(local as u16);
+
+    out.push(format!(
+        "=== press {press} | save: {} campaign {campaign}({mode}) world {world:#010x} | tick {now} year {} day-of-year {} ({}.{}) ===",
+        if label.is_empty() { "<no _probe1_save.txt>".to_string() } else { format!("\"{label}\"") },
+        GAME_WORLD_PTR.get_year(),
+        GAME_WORLD_PTR.get_day_of_year(),
+        GAME_WORLD_PTR.get_day_of_month(),
+        GAME_WORLD_PTR.get_month(),
+    ));
+    out.push(format!(
+        "player: merchant {local} {} {} of {} | money {} company value {} | traders {traders} ships {ship_count} merchants {merchants}",
+        player.get_name(),
+        player.get_family_name(),
+        get_town_name(player.get_hometown_index()).unwrap_or_else(|| "?".into()),
+        player.get_money(),
+        player.get_company_value(),
+    ));
+
+    // The scan keeps its round counter in the ten-day task's own data at `+0x8`;
+    // `counter & 7` is the `captain_index & 7` the next run will process.
+    let mut group = None;
+    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
+        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
+        if task.get_opcode() != SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE {
+            continue;
+        }
+        let due = task.get_due_timestamp();
+        let counter = task.get_data_dword(0x8);
+        group = Some(counter & 7);
+        out.push(format!(
+            "ten-day task {index}: due {due} (in {:.1} days) | data+0x0 {} counter {counter} -> group {}{}",
+            due.wrapping_sub(now) as f32 / 256.0,
+            task.get_data_dword(0),
+            counter & 7,
+            if counter > 0x1f { " | SCAN DISABLED, counter past 0x1f" } else { "" },
+        ));
+    }
+    if group.is_none() {
+        out.push("ten-day task: NOT FOUND in the queue".to_string());
+    }
+
+    // `merchant+0x8 == 0` is a human player (verified in done/pirate-ai.md): his
+    // captains take the random path and only his administrators gain at all.
+    let human: Vec<bool> = (0..merchants).map(|i| GAME_WORLD_PTR.get_merchant(i).get_control_word() == 0).collect();
+    let words: Vec<String> = (0..merchants)
+        .map(|i| format!("{i}={:04x}{}", GAME_WORLD_PTR.get_merchant(i).get_control_word(), if human[i as usize] { "*" } else { "" }))
+        .collect();
+    out.push(format!("merchant control words (* = human, random path): {}", words.join(" ")));
+
+    // Where each record sits: chained to a town = that tavern, `ship+0x42` = that ship,
+    // `office+0x2F2` = administrator of that office, anything else unplaced.
+    // Which growth path the scan gives this owner's captains. It walks merchants and
+    // their ship chains, so a ship with no owner (0xFF - pirate ships and empty slots) is
+    // never visited at all.
+    let path_of = |owner: u16| {
+        if owner >= merchants {
+            "no owner, never scanned"
+        } else if human[owner as usize] {
+            "human 0..50"
+        } else {
+            "AI +8"
+        }
+    };
+    let mut place: Vec<String> = vec![String::new(); traders as usize];
+    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
+        let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
+        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
+        // The chain ends on an out-of-range index; cap the walk against cycles.
+        for _ in 0..traders {
+            let Some(trader) = ships.get_auto_trader(index) else { break };
+            place[index as usize] = format!("tavern {town}");
+            index = trader.get_next_index();
         }
     }
-    predict_generous_donation();
-}
-
-/// The barrel counts the arithmetic predicts, for the town whose view is loaded.
-///
-/// The beer figure has been confirmed in game to the barrel, including at one below the
-/// threshold, so the value routine, the divisor and the `>= 50` gate are all right. The wine
-/// pair is the open question: the dialog prices the wine row as **salt**, and the two numbers
-/// below bracket what that costs.
-unsafe fn predict_generous_donation() {
-    const GENEROUS_GATE: i32 = 0x32;
-    const RAW_PER_BARREL: i32 = 200;
-
-    let scene = *(0x006E51AC as *const u32);
-    if scene == 0 {
-        notify("feed-the-poor: no town view loaded");
-        return;
+    for ship_index in 0..ship_count {
+        let Some(ship) = ships.get_ship(ship_index) else { continue };
+        let captain = ship.get_captain_index();
+        if captain >= traders {
+            continue;
+        }
+        let owner = ship.get_merchant_index();
+        place[captain as usize] = format!(
+            "ship {ship_index} {:?} owner {owner:#04x} {}{}",
+            ship.get_name(),
+            path_of(owner as u16),
+            // The one status the scan skips outright.
+            if ship.get_status() == 0x11 { " status 0x11 SKIPPED" } else { "" },
+        );
     }
-    let map_id: u32 = *((scene + 0xC324) as *const u32);
-    let town_index = (map_id & 0x7F) as u8;
-    if town_index as u16 >= GAME_WORLD_PTR.get_towns_count() {
-        notify(&format!("feed-the-poor: map {map_id:#04x} is not a town"));
-        return;
+    let mut admins: Vec<u16> = Vec::new();
+    for office_index in 0..GAME_WORLD_PTR.get_offices_count() {
+        let office = GAME_WORLD_PTR.get_office(office_index);
+        let admin = office.get_administrator_index();
+        if admin >= traders {
+            continue;
+        }
+        admins.push(admin);
+        let owner = office.get_merchant_index();
+        place[admin as usize] = format!(
+            "office {office_index} in {} owner {owner:#04x} {}",
+            get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index())),
+            path_of(owner),
+        );
     }
-    let town = GAME_WORLD_PTR.get_town(town_index);
-    let citizens: i32 = town.get(0x2d4);
-    let poor_satisfaction: i16 = town.get(0x304);
 
-    // `0x005CB020`: poor satisfaction times citizens, divided by 18, then sqrt and truncate.
-    // A negative product cannot reach `fsqrt` - `0x0063AB05` branches away from it on the
-    // sign bit and lands in the CRT's domain-error path - and donations demonstrably still
-    // work in a town with negative poor satisfaction, so the term contributes nothing there
-    // and the divisor is just the constant 8.
-    let product = (poor_satisfaction as i32).wrapping_mul(citizens) / 18;
-    let divisor = if product > 0 { (product as f64).sqrt() as i32 + 8 } else { 8 };
+    let mut over_cap = 0;
+    let mut gated_out = 0;
+    let mut lockstep: Vec<String> = Vec::new();
+    let mut due_next: Vec<String> = Vec::new();
+    for index in 0..traders {
+        let Some(trader) = ships.get_auto_trader(index) else { break };
+        let (nav, trade, combat) = (trader.get_navigation_skill(), trader.get_trade_skill(), trader.get_combat_skill());
+        // A free slot is memset to 0xFF and linked into the freelist through +0x0.
+        if trader.get_state_byte() == 0xff && nav == 0xff && trade == 0xff && combat == 0xff {
+            continue;
+        }
+        let (nav_cap, trade_cap, combat_cap) = skill_caps(index);
+        let over = |skill: u8, cap: u8| if skill > cap { "!" } else { " " };
+        if nav > nav_cap || trade > trade_cap || combat > combat_cap {
+            over_cap += 1;
+        }
+        // Every gain is gated against the NAVIGATION cap, whichever skill was rolled, so
+        // a record with all three at or above it never gains again.
+        let stuck = nav >= nav_cap && trade >= nav_cap && combat >= nav_cap;
+        if stuck {
+            gated_out += 1;
+        }
+        let placed = if place[index as usize].is_empty() {
+            "unplaced".to_string()
+        } else {
+            place[index as usize].clone()
+        };
+        out.push(format!(
+            "trader {index:3} {} nav {nav:3}/{nav_cap}{} trade {trade:3}/{trade_cap}{} combat {combat:3}/{combat_cap}{} | wage {:3} mer {:#04x} state {:#04x} retire {} born {} age {:.1}y | {placed}{}",
+            if trader.is_captain() { "CAPT" } else { "PIRA" },
+            over(nav, nav_cap),
+            over(trade, trade_cap),
+            over(combat, combat_cap),
+            trader.get_daily_wage(),
+            trader.get_merchant_index(),
+            trader.get_state_byte(),
+            trader.get_retirement_flag(),
+            trader.get_timestamp(),
+            now.saturating_sub(trader.get_timestamp()) as f32 / TICKS_PER_YEAR as f32,
+            if stuck { " | GATED OUT" } else { "" },
+        ));
+        lockstep.push(format!("{index}:{}", trade as i32 - combat as i32));
+        if group == Some(index as u32 & 7) && !place[index as usize].is_empty() {
+            due_next.push(index.to_string());
+        }
+    }
 
-    let value: extern "thiscall" fn(u32, u32, u32, i32) -> i32 = mem::transmute(0x0052E1D0u32);
-    let barrels = |ware: u32| -> String {
-        (1..=999)
-            .find(|n| (value(0x006DE3D8, ware, town_index as u32, n * RAW_PER_BARREL) / divisor).min(255) >= GENEROUS_GATE)
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| ">999".into())
-    };
-
-    notify(&format!(
-        "{}: {} beer = extremely generous (divisor {divisor}, pop {citizens}, poorSat {poor_satisfaction})",
-        get_town_name(town_index).unwrap_or_default(),
-        barrels(WareId::Beer as u32),
+    // The administrator path adds exactly 43 at a time from a fresh 0, so anything else
+    // means either a different writer or the record is not really an administrator.
+    let stray: Vec<String> = admins
+        .iter()
+        .filter_map(|&i| ships.get_auto_trader(i).map(|t| (i, t.get_trade_skill())))
+        .filter(|(_, trade)| trade % 43 != 0)
+        .map(|(i, trade)| format!("{i}={trade}"))
+        .collect();
+    out.push(format!(
+        "administrators: {} | trade not a multiple of 43: {}",
+        admins.len(),
+        if stray.is_empty() { "none".to_string() } else { stray.join(" ") }
     ));
+    out.push(format!("records with a skill above its cap: {over_cap} | gated out of all further gains: {gated_out}"));
+    out.push(format!("trade-combat per record (must not move between presses): {}", lockstep.join(" ")));
+    out.push(format!(
+        "group {} is processed next run, placed records in it: {}",
+        group.map(|g| g.to_string()).unwrap_or_else(|| "?".into()),
+        if due_next.is_empty() { "none".to_string() } else { due_next.join(" ") }
+    ));
+
+    for line in &out {
+        debug!("probe1: {line}");
+    }
+    // Always append, never truncate: the point is to compare presses days or years apart
+    // and across saves, so every block from every session stays in the one file.
+    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe1.log");
+    if let Ok(mut file) = file {
+        use std::io::Write;
+        for line in &out {
+            let _ = writeln!(file, "{line}");
+        }
+    }
     notify(&format!(
-        "wine: {} if priced as salt (the bug), {} if priced as wine",
-        barrels(WareId::Salt as u32),
-        barrels(WareId::Wine as u32),
+        "probe1 #{press}: {over_cap} over cap, {gated_out} gated out, {} lines >> _probe1.log",
+        out.len()
     ));
 }
 
-static FEED_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
-static FEED_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
-
-/// Same shape as `handle_feeding_the_poor`: thiscall on the town's church object at
-/// `town+0x794`, four stack arguments, `ret 0x10`.
-#[no_mangle]
-unsafe extern "thiscall" fn feed_the_poor_hook(church: u32, merchant: u32, town: u32, gate: u32, amounts: u32) {
-    // Table order, from the ware list at 0x006734CC.
-    let a: [u16; 5] = std::array::from_fn(|i| *((amounts + i as u32 * 2) as *const u16));
-    let town_index = (town & 0xff) as u8;
-    let t = GAME_WORLD_PTR.get_town(town_index);
-    let citizens: i32 = t.get(0x2d4);
-    let poor: i16 = t.get(0x304);
-    let beggars: i32 = t.get(0x2e4);
-    let beggar_satisfaction: i16 = t.get(0x306);
-    let line = format!(
-        "FEED {}: GATE BYTE {} (>=10? {}, >=50? {}) | grain {} beer {} fish {} meat {} wine {} \
-         | pop {citizens} poorSat {poor} beggars {beggars} beggarSat {beggar_satisfaction} \
-         | merchant {:#x} church {church:#010x}",
-        get_town_name(town_index).unwrap_or_default(),
-        gate & 0xff,
-        gate & 0xff >= 10,
-        gate & 0xff >= 50,
-        a[0], a[1], a[2], a[3], a[4],
-        merchant & 0xff,
-    );
-    notify(&line);
-
-    let original: extern "thiscall" fn(u32, u32, u32, u32, u32) =
-        mem::transmute((*FEED_HOOK.load(Ordering::SeqCst)).old_absolute);
-    original(church, merchant, town, gate, amounts);
-}
-
+/// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
+/// `_probe1.log`, later presses append their own block.
+static PROBE1_PRESSES: AtomicU32 = AtomicU32::new(0);
 
 /// ALT+F9 (THROWAWAY): dump every office of the player with its administrator record, to
 /// settle whether dismissing and re-hiring an administrator preserves his trade skill.

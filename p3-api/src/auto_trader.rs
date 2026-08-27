@@ -8,6 +8,23 @@ pub const SKILL_PER_LEVEL: u8 = 43;
 /// 250, 200, 250, 150 raw points, i.e. displayed levels 5, 4, 5, 3.
 pub const SKILL_CAPS: [u8; 4] = [250, 200, 250, 150];
 
+/// The two byte-identical copies of [SKILL_CAPS] have one consumer each, and the
+/// distinction matters: the **ceilings** the gain handler clamps to are read only from
+/// `0x00673B34` (`0x00538AE7`, `0x00538B10`, `0x00538B37`), while the ten-day scan's
+/// human-owner **gate** reads only `0x00672824` (`0x004DD0EC`, `0x004DD0F7`) - and reads
+/// it with the *navigation* index whichever skill it rolled, which is the cap gate bug.
+/// So the threshold can be changed without touching the real ceilings. Both live in
+/// `.rdata`, so writing either needs [crate::memory::write_readonly].
+pub const SKILL_CAP_TABLE_ADDRESS: u32 = 0x0067_3B34;
+pub const SKILL_GATE_TABLE_ADDRESS: u32 = 0x0067_2824;
+
+/// The total skill budget the record initializer `0x004FDF50` hands out across the three
+/// skills: it rolls navigation freely, then clamps trade to `600 - navigation` and combat
+/// to what is left (`0x004FE027` loads 600, the clamps are at `0x004FE080` and
+/// `0x004FE0BB`). It never consults [SKILL_CAPS], which is why records are routinely born
+/// above their own per-slot ceilings.
+pub const SKILL_TOTAL_BUDGET: u32 = 600;
+
 /// Age in ticks at which the ten-day captain scan flags a record for retirement
 /// (`0x004DCEA9` compares `field_4` against `game_time - 0x474A00`): 18,248 days, almost
 /// exactly 50 years.
@@ -101,6 +118,12 @@ impl AutoTraderPtr {
         unsafe { self.get(0x9) }
     }
 
+    /// # Safety
+    /// The record must be live; skills outside `0..=250` are meaningless to the game.
+    pub unsafe fn set_navigation_skill(&self, skill: u8) {
+        self.set(0x9, &skill)
+    }
+
     /// The trading skill earns the buying discount
     /// `percent_paid = 2 * (50 - skill / 43)` (applied at 0x4d5347 for captains,
     /// 0x4ff7e8/0x4ff944 for administrators).
@@ -108,8 +131,20 @@ impl AutoTraderPtr {
         unsafe { self.get(0xa) }
     }
 
+    /// # Safety
+    /// The record must be live; skills outside `0..=250` are meaningless to the game.
+    pub unsafe fn set_trade_skill(&self, skill: u8) {
+        self.set(0xa, &skill)
+    }
+
     pub fn get_combat_skill(&self) -> u8 {
         unsafe { self.get(0xb) }
+    }
+
+    /// # Safety
+    /// The record must be live; skills outside `0..=250` are meaningless to the game.
+    pub unsafe fn set_combat_skill(&self, skill: u8) {
+        self.set(0xb, &skill)
     }
 
     /// Set once the captain has been flagged for retirement, by the AI branch of the
@@ -135,6 +170,20 @@ impl AutoTraderPtr {
     /// The daily wage; caps at 110 in-game.
     pub fn get_daily_wage(&self) -> u16 {
         unsafe { self.get(0xc) }
+    }
+
+    /// Recomputes and writes `field_C_daily_wage` from the record's own skills:
+    /// `0x004FE190` = `(navigation + trade + combat) / 50 + (field_8 % 11) + 10`. This is
+    /// the captain and pirate formula, called by the skill-gain handler after every gain -
+    /// **not** `0x004FE160`, which is the administrator's `20 * (trade / 43) + 10`.
+    ///
+    /// # Safety
+    /// The record must be live. Note the record initializer leaves the wage at `0` for
+    /// captains (it is set when one is hired) and derives it from the rolled skills for
+    /// pirates, so calling this on a fresh captain would replace that `0`.
+    pub unsafe fn recompute_daily_wage(&self) {
+        let func: extern "thiscall" fn(u32) = std::mem::transmute(0x004FE190u32);
+        func(self.address)
     }
 
     /// The employing merchant, `0xFF` = unemployed. Both resolvers prefer a record

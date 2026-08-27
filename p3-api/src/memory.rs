@@ -1,11 +1,39 @@
 use std::mem;
 
-use windows::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS};
+use windows::Win32::System::Memory::{
+    VirtualProtect, VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE_READWRITE, PAGE_GUARD,
+    PAGE_NOACCESS, PAGE_PROTECTION_FLAGS,
+};
 
 /// The highest address this process can map. `Patrician3.exe` is not
 /// `LARGE_ADDRESS_AWARE` (PE characteristics `0x010F`), so the user-mode half of the
 /// address space ends at 2 GiB and no valid game pointer is ever at or above it.
 pub const USER_ADDRESS_LIMIT: u32 = 0x8000_0000;
+
+/// Writes `bytes` over read-only memory, restoring the original page protection
+/// afterwards. `Err` names the step that failed and nothing has been written on the
+/// protect failure.
+///
+/// The game's constant tables live in `.rdata`, which is mapped read-only, so patching
+/// one is protect -> copy -> restore. Callers should verify the bytes they expect to be
+/// replacing first, so that a different game build fails loudly instead of corrupting
+/// data.
+///
+/// # Safety
+/// `address` must be the start of `bytes.len()` writable-after-protect bytes, and the
+/// caller must know that overwriting them is correct - there is no verification here.
+pub unsafe fn write_readonly(address: u32, bytes: &[u8]) -> Result<(), &'static str> {
+    let mut old_protection = PAGE_PROTECTION_FLAGS(0);
+    if !VirtualProtect(address as _, bytes.len(), PAGE_EXECUTE_READWRITE, &mut old_protection).as_bool() {
+        return Err("VirtualProtect PAGE_EXECUTE_READWRITE failed");
+    }
+    std::ptr::copy(bytes.as_ptr(), address as *mut u8, bytes.len());
+    let mut restored = PAGE_PROTECTION_FLAGS(0);
+    if !VirtualProtect(address as _, bytes.len(), old_protection, &mut restored).as_bool() {
+        return Err("VirtualProtect restore failed");
+    }
+    Ok(())
+}
 
 /// True if `len` bytes at `address` are committed and readable.
 ///
