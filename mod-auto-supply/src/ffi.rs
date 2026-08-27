@@ -116,8 +116,12 @@ const STRING_EMPTY_HEADER_PTR: *const u32 = 0x006c7cd0 as _;
 const STRING_CTOR_FROM_CSTR: u32 = 0x0064f390;
 /// thiscall(this): release the string data.
 const STRING_DTOR: u32 = 0x0064f253;
-/// Amount set for buy orders whose current amount is 0, in in-game units.
-const BUY_AMOUNT: i32 = 9999;
+/// Amount set for buy orders whose current amount is 0, in the in-game display units the
+/// office shows: loads for load wares, barrels for barrel wares. The two are the same
+/// physical quantity - a load is ten barrels, so both scale to 40,000 raw - so a setup
+/// asks for an equal amount of everything regardless of how it is measured.
+const BUY_AMOUNT_LOADS: i32 = 20;
+const BUY_AMOUNT_BARRELS: i32 = 200;
 /// The administrator view of the trading office window ("Trading Office" side button, pages 0-6).
 const ADMINISTRATOR_PAGE: i32 = 4;
 /// The trade wares (weapons are not administrator-tradeable).
@@ -1390,7 +1394,8 @@ unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, Stri
 /// F1: for every ware whose current order is "do nothing", set BUY (at the Center buy
 /// level, t1) if the town produces the ware, otherwise SELL (at the Center sell level,
 /// t0 - the supply price). Wares that already have an order are left untouched; a buy's
-/// amount is set to BUY_AMOUNT only if the current amount is 0.
+/// amount is set to [BUY_AMOUNT_LOADS] / [BUY_AMOUNT_BARRELS] only if the current amount
+/// is 0.
 unsafe fn on_setup_hotkey() {
     let Some((office, office_index, town)) = resolve_office() else {
         return;
@@ -1413,7 +1418,8 @@ unsafe fn on_setup_hotkey() {
         let (price, stock) = if production[i] > 0 {
             bought.push(format!("{ware_id:?}"));
             let stock = if stocks[i] == 0 {
-                BUY_AMOUNT.saturating_mul(ware_id.get_scaling())
+                let amount = if ware_id.is_barrel_ware() { BUY_AMOUNT_BARRELS } else { BUY_AMOUNT_LOADS };
+                amount.saturating_mul(ware_id.get_scaling())
             } else {
                 stocks[i]
             };
