@@ -10,6 +10,7 @@ members = [
     "mod-debug-navpoint-matrix",
     "mod-debug-window-lifecycle",
     "mod-fix-bath-house-bribe-blunders",
+    "mod-fix-captain-retire-hang",
     "mod-fix-captain-skill-cap-gate",
     "mod-fix-church-anim-crash",
     "mod-fix-damage-to-offside-ship-artillery",

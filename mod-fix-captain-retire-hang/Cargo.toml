@@ -1,0 +1,14 @@
+[package]
+name = "mod-fix-captain-retire-hang"
+edition = "2021"
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "fix_captain_retire_hang"
+
+[dependencies]
+log = { workspace = true }
+win_dbg_logger = { workspace = true }
+hooklet = { workspace = true }
+p3-api = { path = "../p3-api" }
