@@ -40,7 +40,7 @@ const ROUTE_DUMP_KEY: u32 = VK_F10.0 as u32;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 7] = [
+const PROBE_KEYS: [(u32, u32); 10] = [
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
@@ -48,6 +48,11 @@ const PROBE_KEYS: [(u32, u32); 7] = [
     (ROUTE_DUMP_KEY, 0),
     (ROUTE_DUMP_KEY, MOD_CTRL),
     (ROUTE_DUMP_KEY, MOD_SHIFT),
+    // The captain-retirement hang probe. Exact-match modifiers, so these three never
+    // collide with each other or with plain F10.
+    (ROUTE_DUMP_KEY, MOD_ALT),
+    (ROUTE_DUMP_KEY, MOD_ALT | MOD_CTRL),
+    (ROUTE_DUMP_KEY, MOD_ALT | MOD_SHIFT),
 ];
 
 /// Bind the registry and register the probe keys; called from start(). A missing
@@ -76,6 +81,9 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, 0) => debug_probe1(),
         (ROUTE_DUMP_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (ROUTE_DUMP_KEY, MOD_SHIFT) => debug_probe_ice(),
+        (ROUTE_DUMP_KEY, MOD_ALT) => retire_probe_inspect(),
+        (ROUTE_DUMP_KEY, m) if m == MOD_ALT | MOD_CTRL => retire_probe_benign(),
+        (ROUTE_DUMP_KEY, m) if m == MOD_ALT | MOD_SHIFT => retire_probe_hang(),
         (ROUTE_DUMP_KEY, 0) => dump_ship_routes(),
         _ => {}
     }
@@ -1101,3 +1109,210 @@ static ICE_PRESSES: AtomicU32 = AtomicU32::new(0);
 /// since the previous one - the readable form of "press it on two consecutive days".
 /// Indexed by town index; 40 is the world's town capacity (`game_world+0x18`).
 static ICE_PREVIOUS: Mutex<[Option<(u32, u8)>; 40]> = Mutex::new([None; 40]);
+
+// ---------------------------------------------------------------------------
+// The captain-retirement hang (scheduled task 0x27). See
+// `.claude/notes/todo/captain-retire-hang.md`.
+//
+// The handler `0x004DDC00` re-finds the ship when the (ship, captain) pair it was
+// scheduled with no longer matches, and that search contains a two-instruction
+// infinite loop at `0x004DDCB0`/`0x004DDCB2` (`cmp ecx,ebp` / `jne -4`, neither
+// operand written in between). The window in which a real game can produce a
+// mismatch is minutes wide and not player-controllable, so the only way to see it
+// is to schedule the task by hand with a deliberately mismatched pair.
+//
+// Set-up: a save with two ships named `test1` (has a captain) and `test2` (no
+// captain). SAVE THE GAME FIRST - the mismatched run is expected to freeze with no
+// crash report, because nothing faults.
+//
+// - ALT+F10        inspect: reads everything, writes nothing, and PREDICTS whether
+//                  the mismatched run will hang. Always run this first.
+// - CTRL+ALT+F10   benign: schedules the task with the MATCHING pair
+//                  (test1, test1's captain). Should quietly take the captain off
+//                  test1 and not freeze - which is what proves the probe itself
+//                  works before the real test.
+// - SHIFT+ALT+F10  the test: schedules the MISMATCHED pair (test2, test1's
+//                  captain). Expected to freeze.
+// ---------------------------------------------------------------------------
+
+/// `thiscall(tasks, due) -> record*`, `ret 4`. Pops the scheduled-task freelist
+/// (growing the array by 0x80 records when it is empty), links the record at the head
+/// of the task list, stores `due` at `record+0x0` and re-sorts. The caller then fills
+/// in the opcode at `+0x6` and the data union from `+0x8` - exactly what the ice pass
+/// at `0x004E48D7` does, which is the known-good caller this mirrors.
+const SCHEDULE_TASK: u32 = 0x004D8CF0;
+const SCHEDULED_TASKS_ADDRESS: u32 = 0x006DD73C;
+/// The scheduling clock, in 1/256-day units - the same base the ice pass adds its
+/// delay to. Due = now means the next dispatcher pass picks the task up.
+const SCHEDULE_CLOCK_ADDRESS: *const u32 = 0x006DE4B4 as _;
+const RETIRE_TASK_OPCODE: u16 = 0x27;
+const RETIRE_PROBE_LOG: &str = "_captain_retire_probe.log";
+
+/// Append one line and flush it to disk. `sync_all` matters here: the mismatched run
+/// is expected to hang, and the log is the only record of what was scheduled - there
+/// is no crash report, because nothing faults.
+fn retire_log(line: &str) {
+    debug!("retire-probe: {line}");
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(RETIRE_PROBE_LOG) {
+        use std::io::Write;
+        let _ = writeln!(file, "{line}");
+        let _ = file.sync_all();
+    }
+}
+
+/// The two set-up ships and the captain to schedule, or `None` with the reason logged.
+unsafe fn retire_probe_ships() -> Option<(u16, u16, u16)> {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let Some((with_captain, with_index)) = ships.get_ship_by_name("test1") else {
+        retire_log("ABORT: no ship named \"test1\" - the probe needs the prepared save");
+        return None;
+    };
+    let Some((_, without_index)) = ships.get_ship_by_name("test2") else {
+        retire_log("ABORT: no ship named \"test2\" - the probe needs the prepared save");
+        return None;
+    };
+    let captain = with_captain.get_captain_index();
+    if captain as u32 >= ships.get_auto_traders_size() as u32 {
+        retire_log(&format!(
+            "ABORT: test1 (ship {with_index}) has no captain (field_42 = {captain:#06x}); the probe needs one"
+        ));
+        return None;
+    }
+    Some((with_index, without_index, captain))
+}
+
+/// Walk the handler's own search the way it walks it, and report where it would land.
+/// The merchant loop counts DOWN from the merchant count, and the first merchant whose
+/// first-ship index is in range is the one whose ship gets compared - so whether the
+/// hang fires is decidable before running it.
+unsafe fn retire_probe_predict(captain: u16) {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let ship_count = ships.get_ships_size();
+    let merchant_count = GAME_WORLD_PTR.get_merchants_count();
+
+    for counter in (1..=merchant_count).rev() {
+        let merchant_index = counter - 1;
+        let first_ship = GAME_WORLD_PTR.get_merchant(merchant_index).get_first_ship_index();
+        if first_ship >= ship_count {
+            continue;
+        }
+        // 0x004DDC97 takes this merchant, and 0x004DDCAB compares this ship's captain.
+        let its_captain = ships.get_ship(first_ship).map(|s| s.get_captain_index()).unwrap_or(0xffff);
+        let name = ships.get_ship(first_ship).map(|s| s.get_name()).unwrap_or_default();
+        retire_log(&format!(
+            "  search lands on merchant {merchant_index} (of {merchant_count}), its first ship {first_ship} {name:?} carrying captain {its_captain}"
+        ));
+        if its_captain == captain {
+            retire_log(
+                "  PREDICTION: NO hang - that first ship already carries the wanted captain, so the jne is not taken. Move test1 out of that merchant's chain head to get a real test.",
+            );
+        } else {
+            retire_log("  PREDICTION: HANG - the compare fails and 0x004DDCB2 loops on itself forever");
+        }
+        return;
+    }
+    retire_log("  PREDICTION: no hang - no merchant has a first ship in range, so the search bails out at 0x004DDCC5");
+}
+
+/// ALT+F10: read-only. Reports the set-up and predicts the mismatched run's outcome.
+unsafe fn retire_probe_inspect() {
+    let ships = p3_api::ships::ShipsPtr::new();
+    retire_log(&format!(
+        "=== inspect | tick {} year {} day {} ===",
+        GAME_WORLD_PTR.get_game_time_raw(),
+        GAME_WORLD_PTR.get_year(),
+        GAME_WORLD_PTR.get_day_of_year(),
+    ));
+    let Some((with_index, without_index, captain)) = retire_probe_ships() else {
+        notify("retire probe: set-up missing, see _captain_retire_probe.log");
+        return;
+    };
+    let without_captain = ships.get_ship(without_index).map(|s| s.get_captain_index()).unwrap_or(0xffff);
+    retire_log(&format!(
+        "  test1 = ship {with_index}, captain {captain} | test2 = ship {without_index}, field_42 = {without_captain:#06x}"
+    ));
+    retire_log(&format!(
+        "  benign run would schedule (ship {with_index}, captain {captain}) - pair MATCHES, no search"
+    ));
+    retire_log(&format!(
+        "  test run would schedule (ship {without_index}, captain {captain}) - pair MISMATCHES, enters the search"
+    ));
+    retire_probe_predict(captain);
+    retire_probe_pending();
+    notify(&format!("retire probe: test1=ship {with_index} cap {captain}, test2=ship {without_index} >> log"));
+}
+
+/// Any task 0x27 still in the queue. After a run that did not freeze, "none pending" is
+/// what shows the handler actually ran to completion rather than the task being dropped.
+unsafe fn retire_probe_pending() {
+    let now = *SCHEDULE_CLOCK_ADDRESS;
+    let mut found = 0;
+    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
+        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
+        if task.get_opcode() != RETIRE_TASK_OPCODE {
+            continue;
+        }
+        found += 1;
+        retire_log(&format!(
+            "  pending task {index}: opcode 0x27, ship {}, captain {}, due {} ({} ticks from now)",
+            task.get_data_dword(0),
+            task.get_data_dword(4),
+            task.get_due_timestamp(),
+            task.get_due_timestamp() as i64 - now as i64,
+        ));
+    }
+    if found == 0 {
+        retire_log("  no task 0x27 pending - anything scheduled earlier has been consumed");
+    }
+}
+
+/// Schedule task 0x27 due now, with the given data union. Mirrors `0x004E48D7`.
+unsafe fn retire_probe_schedule(ship_index: u16, captain: u16) {
+    let due = *SCHEDULE_CLOCK_ADDRESS;
+    let allocate: extern "thiscall" fn(tasks: u32, due: u32) -> u32 = mem::transmute(SCHEDULE_TASK);
+    let record = allocate(SCHEDULED_TASKS_ADDRESS, due);
+    if record == 0 {
+        retire_log("  ABORT: the task allocator returned null");
+        return;
+    }
+    // +0x4 is the list link the allocator just set - do not touch it.
+    *((record + 0x6) as *mut u16) = RETIRE_TASK_OPCODE;
+    *((record + 0x8) as *mut u32) = ship_index as u32;
+    *((record + 0xc) as *mut u32) = captain as u32;
+    retire_log(&format!(
+        "  scheduled task {RETIRE_TASK_OPCODE:#04x} at record {record:#010x} due {due} with ship {ship_index} captain {captain} - handing control back to the game NOW"
+    ));
+}
+
+/// CTRL+ALT+F10: the matching pair. Validates the probe - should not freeze.
+unsafe fn retire_probe_benign() {
+    retire_log(&format!("=== BENIGN run (matching pair) | tick {} ===", GAME_WORLD_PTR.get_game_time_raw()));
+    let Some((with_index, _, captain)) = retire_probe_ships() else {
+        notify("retire probe: set-up missing, see _captain_retire_probe.log");
+        return;
+    };
+    notify("retire probe: benign run, expect test1 to lose its captain");
+    retire_probe_schedule(with_index, captain);
+}
+
+/// SHIFT+ALT+F10: the mismatched pair. EXPECTED TO FREEZE THE GAME.
+unsafe fn retire_probe_hang() {
+    retire_log(&format!(
+        "=== HANG TEST (mismatched pair) | tick {} === EXPECTED TO FREEZE - if the log ends here, 0x004DDCB2 span forever",
+        GAME_WORLD_PTR.get_game_time_raw()
+    ));
+    let Some((_, without_index, captain)) = retire_probe_ships() else {
+        notify("retire probe: set-up missing, see _captain_retire_probe.log");
+        return;
+    };
+    retire_probe_predict(captain);
+    notify("retire probe: HANG TEST armed - the game is expected to freeze now");
+    retire_probe_schedule(without_index, captain);
+    // NOT a survival test: scheduling returns immediately and the handler runs on a
+    // later dispatcher pass, so reaching this line proves nothing. (An earlier version
+    // logged "SURVIVED" here, which was simply wrong - it printed moments before the
+    // game froze.) The outcome is observable in the game instead: a freeze is the bug;
+    // if the game keeps running, press ALT+F10 and check that no 0x27 task is left
+    // pending, which means the handler completed.
+    retire_log("  task is queued; the handler runs on the next dispatcher pass. Frozen now = the bug. Still running = press ALT+F10 to check the task was consumed.");
+}
