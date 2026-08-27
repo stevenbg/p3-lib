@@ -23,7 +23,7 @@ use p3_api::{
     hotkeys::{HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     operations::OPERATIONS_PTR,
     scheduled_tasks::{
-        scheduled_task::SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE,
+        scheduled_task::{SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE, SCHEDULED_TASK_OPCODE_UNFREEZE_PORT},
         SCHEDULED_TASKS_PTR,
     },
     ship::SHIP_SIZE,
@@ -40,13 +40,14 @@ const ROUTE_DUMP_KEY: u32 = VK_F10.0 as u32;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 6] = [
+const PROBE_KEYS: [(u32, u32); 7] = [
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
     (DEBUG_PROBE1_KEY, MOD_ALT),
     (ROUTE_DUMP_KEY, 0),
     (ROUTE_DUMP_KEY, MOD_CTRL),
+    (ROUTE_DUMP_KEY, MOD_SHIFT),
 ];
 
 /// Bind the registry and register the probe keys; called from start(). A missing
@@ -74,6 +75,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, MOD_ALT) => debug_probe_administrators(),
         (DEBUG_PROBE1_KEY, 0) => debug_probe1(),
         (ROUTE_DUMP_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
+        (ROUTE_DUMP_KEY, MOD_SHIFT) => debug_probe_ice(),
         (ROUTE_DUMP_KEY, 0) => dump_ship_routes(),
         _ => {}
     }
@@ -888,3 +890,214 @@ unsafe fn probe1_timeline_detail() -> String {
     detail.push_str(&format!("| loose {}", loose.join(" ")));
     detail
 }
+
+/// SHIFT+F10: the ice census - every town's cold accumulator, ice level and frozen
+/// flag, plus the pending thaw tasks. Written to validate the port-freeze model in
+/// `.claude/notes/done/port-freezing.md`, which was derived statically:
+///
+/// - the daily ice pass (`0x004E45C4`, scheduled task `0x0D`) runs only when the day
+///   of the year is `<= 58` or `>= 333`;
+/// - it grows `town+0x9B8` in winter and melts it otherwise, using a per-climate term
+///   from the 52-byte-stride table at `0x006DDBB0`, indexed by `[0x006DE4B8 + idx]`;
+/// - `level = (cold >> 9) + 2` goes to `town+0x9BD`, and bit `0x80` is set when the
+///   level exceeds 5 - that bit alone is what makes a port freezable;
+/// - an eligible, not-yet-frozen port then takes a `rand(0x6400) < 0x180` roll (1.5%)
+///   each day, and on a hit sets [TOWN_FLAG_FROZEN] and schedules opcode `0x35` for
+///   `(level & 0x7F) + 1` days later.
+///
+/// What to look for, pressing it on a few consecutive days over a winter:
+///
+/// 1. **`cold` moves the right way**: rising while the day of the year is outside
+///    `58..333`, falling (or pinned at 0) inside it. `dLevel` names the change since
+///    the previous press so a rise is visible without diffing by eye.
+/// 2. **the stored level byte equals the modelled one** - `lvl(raw/exp)` prints both,
+///    and `MISMATCH` marks a disagreement. Because the model covers the whole byte,
+///    that one check validates the level arithmetic and the `0x80` eligibility bit at
+///    once. A mismatch means the model is wrong, not the town. Verified clean on
+///    27 Aug 2026 across all 24 towns of a 1301 world, on a press taken while the pass
+///    was running.
+/// 3. **`ELIGIBLE` appears exactly when `level > 5`** (`cold >= 0x800`; the `to2k`
+///    column is the cold still missing), and only eligible towns ever gain `FROZEN`. A
+///    frozen town that never showed `ELIGIBLE` would break the derivation.
+/// 4. **Every `FROZEN` town has a matching pending `0x35` task**, and its due date is
+///    within `level + 1` days of when it froze. The task list at the bottom prints
+///    each one with its town and the days remaining; `FROZEN, NO THAW TASK` flags a
+///    frozen port with nothing scheduled to reopen it - that would be a stuck port.
+/// 5. **The climate term differs by region**: grouping the `clim`/`term` columns
+///    against which towns actually freeze is what would let us say how often each
+///    town freezes. That is the open question the static trace could not answer.
+///
+/// Appended to `_probe_ice.log`, never truncated, so presses days apart compare
+/// directly.
+unsafe fn debug_probe_ice() {
+    let mut out: Vec<String> = Vec::new();
+    let towns = GAME_WORLD_PTR.get_towns_count();
+    let day_of_year = GAME_WORLD_PTR.get_day_of_year();
+    let now = GAME_WORLD_PTR.get_game_time_raw();
+    let press = ICE_PRESSES.fetch_add(1, Ordering::SeqCst);
+    // The ice pass's own season gate, from its caller 0x004E4984.
+    let ice_season = day_of_year <= 58 || day_of_year >= 333;
+    // Which arm of the pass today takes (0x004E46AE), which decides what the numbers
+    // below even mean. Measured 27 Aug 2026: the pass runs TWICE a day, so the per-pass
+    // rates double.
+    let phase = if !ice_season {
+        "IDLE, pass does not run (day 59..332)"
+    } else if day_of_year >= 333 || day_of_year < 32 {
+        "ACCUMULATING, cold += (rand(60) + edi) / 3 per pass, 2 passes/day"
+    } else if day_of_year <= 57 {
+        "DECAYING, cold -= (rand(edi) + 2.5 * edi) / 3 per pass, mean edi, 2 passes/day"
+    } else {
+        "RESET day 58, cold zeroed and level forced to 1"
+    };
+
+    out.push(format!(
+        "=== ice press {press} | tick {now} year {} day-of-year {day_of_year} ({}.{}) | {phase} ===",
+        GAME_WORLD_PTR.get_year(),
+        GAME_WORLD_PTR.get_day_of_month(),
+        GAME_WORLD_PTR.get_month(),
+    ));
+    out.push(
+        "town                 cold to2k lvl(raw/exp) prev clim  edi term       0x9C0 0x9C4 state"
+            .to_string(),
+    );
+
+    let mut frozen: Vec<u8> = Vec::new();
+    let mut eligible = 0usize;
+    let mut previous = ICE_PREVIOUS.lock();
+
+    for index in 0..towns.min(40) as u8 {
+        let town = GAME_WORLD_PTR.get_town(index);
+        let name = get_town_name(index).unwrap_or_else(|| format!("town {index}"));
+        let cold = town.get_cold_accumulator();
+        let level_byte = town.get_ice_level();
+        let level = level_byte & 0x7f;
+        // The pass's own arithmetic, byte for byte (`0x004E47DF`): `al = (cold >> 9) + 2`
+        // in BYTE registers, then `al |= 0x80` when that exceeds 5. Modelling the whole
+        // byte makes this one comparison validate the level and the eligibility bit
+        // together, and it keeps working past `(cold >> 9) + 2 >= 0x80`, where the level
+        // aliases into the eligibility bit.
+        let expected = {
+            let base = (((cold >> 9) & 0xff) as u8).wrapping_add(2);
+            if base > 5 {
+                base | 0x80
+            } else {
+                base
+            }
+        };
+        // The one exception (`0x004E47CD`): with cold at 0 the pass writes level 1 and
+        // stops - but only on a pass that runs outside its own winter window, which is
+        // day 58 alone, the single day the caller's gate (`day <= 58`) and the pass's own
+        // test (`day >= 58` is not winter) disagree. That 1 then sits there untouched all
+        // summer, so an off-season press legitimately reads level 1 against a computed 2.
+        // Measured 27 Aug 2026: every town, every off-season press.
+        let matches_model = level_byte == expected || (cold == 0 && level_byte == 1);
+        // Cold still needed before the port can freeze at all: eligibility is level > 5,
+        // i.e. cold >= 0x800.
+        let to_eligible = 0x800u32.saturating_sub(cold);
+        let previous_level = town.get::<u8>(0x9bc);
+        let climate = *((0x006de4b8 + index as u32) as *const u8);
+        // Per-climate block at 0x006DDBB0, stride 52 (0x34); the pass reads the first
+        // two dwords of the block as its accumulate/melt terms.
+        let block = 0x006ddbb0 + climate as u32 * 52;
+        let term = *(block as *const u32);
+        let term2 = *((block + 4) as *const u32);
+        // The single number the pass derives from the block (0x004E468C-0x004E46AB) and
+        // uses for both arms. Decay is mean `edi` per pass, measured to 2.004 passes/day
+        // across all 24 towns of a 1363 world.
+        let edi = (term as i64 - 2 * term2 as i64 + 3600) / 100;
+        let is_frozen = town.is_port_frozen();
+        if is_frozen {
+            frozen.push(index);
+        }
+        let freezable = level_byte & 0x80 != 0;
+        if freezable {
+            eligible += 1;
+        }
+
+        let mut state = String::new();
+        if is_frozen {
+            state.push_str("FROZEN ");
+        }
+        if freezable {
+            state.push_str("ELIGIBLE ");
+        }
+        if !matches_model {
+            state.push_str(&format!("MISMATCH exp {expected:#04x} "));
+        }
+        // Movement since the last press, which is the whole point of pressing twice.
+        if let Ok(previous) = previous.as_mut() {
+            if let Some((old_cold, old_level)) = previous[index as usize] {
+                let delta = cold as i64 - old_cold as i64;
+                if delta != 0 || old_level != level_byte {
+                    state.push_str(&format!("dCold {delta:+} dLevel {}->{} ", old_level & 0x7f, level));
+                }
+            }
+            previous[index as usize] = Some((cold, level_byte));
+        }
+
+        out.push(format!(
+            "{name:<18} {cold:>6} {to_eligible:>4} {level:>3}({level_byte:#04x}/{expected:#04x}) {previous_level:>4} {climate:>4} {edi:>4} {term:>5}/{term2:<5} {:>5} {:#04x}  {state}",
+            town.get::<u32>(0x9c0),
+            town.get::<u8>(0x9c4),
+        ));
+    }
+
+    // Pending thaws: the ice pass schedules one per freeze, so a frozen port with no
+    // task is a stuck port and a task with no frozen port is a stale schedule.
+    let mut thaw_towns: Vec<u8> = Vec::new();
+    out.push("--- pending thaw tasks (opcode 0x35) ---".to_string());
+    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
+        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
+        if task.get_opcode() != SCHEDULED_TASK_OPCODE_UNFREEZE_PORT {
+            continue;
+        }
+        // data+0, i.e. task+0x8 - and `get_data_dword` already adds the 0x8 data-union
+        // base, so this takes offset 0. Passing 0x8 here read task+0x10, a stale dword
+        // of the union, which is what produced bogus STALE / NO THAW TASK pairs on
+        // 27 Aug 2026.
+        let town_index = task.get_data_dword(0) as u8;
+        thaw_towns.push(town_index);
+        let due = task.get_due_timestamp();
+        out.push(format!(
+            "  task {index}: town {town_index} ({}) due {due} = {} days from now{}",
+            get_town_name(town_index).unwrap_or_else(|| "?".into()),
+            (due.saturating_sub(now)) as f32 / 256.0,
+            if GAME_WORLD_PTR.get_town(town_index).is_port_frozen() { "" } else { "  STALE, town not frozen" },
+        ));
+    }
+    for index in &frozen {
+        if !thaw_towns.contains(index) {
+            out.push(format!(
+                "  town {index} ({}) FROZEN, NO THAW TASK",
+                get_town_name(*index).unwrap_or_else(|| "?".into())
+            ));
+        }
+    }
+
+    let summary = format!(
+        "ice #{press}: {} frozen, {eligible} eligible, {} thaw tasks, day {day_of_year} ({})",
+        frozen.len(),
+        thaw_towns.len(),
+        phase.split(',').next().unwrap_or(phase),
+    );
+    out.push(summary.clone());
+
+    for line in &out {
+        debug!("ice: {line}");
+    }
+    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe_ice.log");
+    if let Ok(mut file) = file {
+        use std::io::Write;
+        for line in &out {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    notify(&format!("{summary} >> _probe_ice.log"));
+}
+
+/// How often the ice census has been pressed since load.
+static ICE_PRESSES: AtomicU32 = AtomicU32::new(0);
+/// Last press's (cold, level byte) per town, so each press can report the movement
+/// since the previous one - the readable form of "press it on two consecutive days".
+/// Indexed by town index; 40 is the world's town capacity (`game_world+0x18`).
+static ICE_PREVIOUS: Mutex<[Option<(u32, u8)>; 40]> = Mutex::new([None; 40]);

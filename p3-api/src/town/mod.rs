@@ -13,6 +13,18 @@ pub mod static_town_data;
 
 pub const TOWN_SIZE: u32 = 0x9F8;
 pub const TOWN_NAME_PTRS_ADDRESS: u32 = 0x006DDA00;
+
+/// Bits of the town flag word at `+0x2C8` ([TownPtr::get_flags]). The four crisis
+/// bits are the mask `0x04000A10` that `update_town_price_thresholds` tests at
+/// `0x005280B7`.
+pub const TOWN_FLAG_WINTER: u32 = 0x2;
+pub const TOWN_FLAG_SIEGE: u32 = 0x10;
+pub const TOWN_FLAG_BLOCKADE: u32 = 0x200;
+pub const TOWN_FLAG_PIRATE_ATTACK: u32 = 0x800;
+/// The port is iced in. Set by the daily ice pass (`0x004E48CA`, which posts "The
+/// port of %s is frozen.") and cleared by scheduled task `0x35` (`0x004E94A4`,
+/// "The port of %s is open again."). See `.claude/notes/done/port-freezing.md`.
+pub const TOWN_FLAG_FROZEN: u32 = 0x0400_0000;
 pub const WARE_BASE_PRICES: *const f32 = 0x00673A18 as _;
 
 #[derive(Debug)]
@@ -54,12 +66,40 @@ impl TownPtr {
     /// verified down to 0% utilization (the market hall window shows the actual
     /// staffing-scaled output instead). Nonzero exactly for the wares the town
     /// produces; the price threshold t2 is t1 + 10 days of this.
-    /// The town's flag word. Bit `0x2` is winter, rewritten from the calendar by the town
-    /// tick every day (`0x0051BA47`); the four crop producers scale their output by it, and
-    /// nothing else in the game reads it. Bits `17..22` are masked and refilled by the same
-    /// tick (`0x0051BD04`) and are unrelated.
+    /// The town's flag word - see the `TOWN_FLAG_*` constants in this module.
+    ///
+    /// Bit `0x2` is winter, rewritten from the calendar by the town tick every day
+    /// (`0x0051BA47`); the four crop producers scale their output by it. Bits
+    /// `17..22` are masked and refilled by the same tick (`0x0051BD04`) and are
+    /// unrelated. The word carries the town's crisis state too: siege, blockade,
+    /// pirate attack and [TOWN_FLAG_FROZEN] are read together as the mask
+    /// `0x04000A10` by `update_town_price_thresholds` (`0x005280B7`), which stretches
+    /// t1 to 28 days and doubles the building-material factor when any is set.
     pub fn get_flags(&self) -> u32 {
         unsafe { self.get(0x2c8) }
+    }
+
+    /// Whether the town's port is iced in, i.e. [TOWN_FLAG_FROZEN] is set.
+    pub fn is_port_frozen(&self) -> bool {
+        self.get_flags() & TOWN_FLAG_FROZEN != 0
+    }
+
+    /// Accumulated cold, the input to the ice model. The daily ice pass
+    /// (`0x004E45C4`, scheduled task `0x0D`, run only when the day of the year is
+    /// `<= 58` or `>= 333`) grows this in winter and melts it otherwise, then derives
+    /// [TownPtr::get_ice_level] from it. A town can only freeze once this reaches
+    /// `0x800`. See `.claude/notes/done/port-freezing.md`.
+    pub fn get_cold_accumulator(&self) -> u32 {
+        unsafe { self.get(0x9b8) }
+    }
+
+    /// Today's ice level, `(cold >> 9) + 2`, in the low 7 bits; bit `0x80` means the
+    /// level is above 5, which is what makes the port eligible for the daily 1.5%
+    /// freeze roll (`rand(0x6400) < 0x180`). Also the thaw delay: a port that freezes
+    /// is scheduled to reopen `(level & 0x7F) + 1` days later. `+0x9BC` holds
+    /// yesterday's level.
+    pub fn get_ice_level(&self) -> u8 {
+        unsafe { self.get(0x9bd) }
     }
 
     pub fn get_production_values(&self) -> [i32; 24] {

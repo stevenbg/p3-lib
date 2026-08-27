@@ -6,6 +6,14 @@ pub const SCHEDULED_TASK_OPCODE_ALDERMAN_MISSION: u16 = 0x32;
 /// at `0x004D8668`). Among much else it runs the captain scan `0x004DCEA0`, which keeps
 /// its round counter in this task's own data at `+0x8`.
 pub const SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE: u16 = 0x03;
+/// The daily weather pass (`0x004E4984`). Outside the ice season it runs `0x004F34A4`;
+/// when the day of the year is `<= 58` or `>= 333` it runs the ice pass `0x004E45C4`,
+/// which is what freezes ports.
+pub const SCHEDULED_TASK_OPCODE_DAILY_WEATHER: u16 = 0x0D;
+/// Thaw one port: `0x004E94A4` clears [crate::town::TOWN_FLAG_FROZEN] on the town whose
+/// index sits in this task's data at `+0x8` and posts "The port of %s is open again.".
+/// The ice pass schedules it `(ice_level & 0x7F) + 1` days out when a port freezes.
+pub const SCHEDULED_TASK_OPCODE_UNFREEZE_PORT: u16 = 0x35;
 
 pub struct ScheduledTaskPtr {
     address: u32,
