@@ -23,8 +23,11 @@ reported: Windows' text-services stack (CoreUIComponents, CoreMessaging,
 textinputframework, MSCTF) takes and swallows those routinely - eight consecutive
 reports proved to be that noise - while every real crash so far faulted in code
 loaded from the game folder. The skip applies only to first-chance access
-violations: wild EIPs outside any module, rarer codes (heap corruption, illegal
-instruction), and everything from the game folder still report first-chance, and
+violations - inside a Windows module, or at a wild EIP whose return address on
+the stack is a Windows module (the same noise calling through a pointer that
+missed the current ASLR layout). Wild EIPs called from game code, rarer codes
+(heap corruption, illegal instruction), and everything from the game folder
+still report first-chance, and
 an exception that actually kills the process always gets a full report from the
 unhandled filter, which never skips.
 

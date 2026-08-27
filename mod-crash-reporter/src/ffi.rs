@@ -12,7 +12,9 @@
 //! routine), and first-chance access violations faulting inside a C:\WINDOWS
 //! module are skipped - Windows' text-services stack takes and swallows those
 //! routinely, and every real crash so far faulted in code loaded from the game
-//! folder. An OS-module fault that actually kills the game still gets its full
+//! folder. The same applies to a wild EIP outside every module whose return
+//! address on the stack is a Windows module: that is the same noise calling
+//! through a stale pointer that missed the current ASLR layout. An OS-module fault that actually kills the game still gets its full
 //! report from the unhandled filter, which never skips. A report the process
 //! survives was a handled exception, so the last report in the file is the crash. The unhandled-exception filter marks the report
 //! that killed the process, and repeats it in full only when it is a different
@@ -124,11 +126,26 @@ unsafe fn report(info: *const EXCEPTION_POINTERS, kind: Kind) {
     // heap corruption or illegal instruction still report, and an exception that
     // actually kills the process still gets its full report from the unhandled
     // filter below, which is never skipped.
-    if kind == Kind::FirstChance
-        && code == STATUS_ACCESS_VIOLATION
-        && is_windows_system_code(record.ExceptionAddress as u32)
-    {
-        return;
+    if kind == Kind::FirstChance && code == STATUS_ACCESS_VIOLATION {
+        let eip = record.ExceptionAddress as u32;
+        if is_windows_system_code(eip) {
+            return;
+        }
+        // The same OS noise in a second disguise: CoreMessaging calls through a
+        // stale pointer that targeted USER32 under a previous boot's ASLR layout,
+        // so the EIP lands in unmapped space - no module to attribute it to. At the
+        // instant of a call through garbage, [esp] holds the return address, i.e.
+        // the caller: a Windows module there means Windows made the bad call; a
+        // real game bug jumping to garbage has game code there and still reports.
+        if module_of(eip).is_none() {
+            if let Some(esp) = info.ContextRecord.as_ref().map(|ctx| ctx.Esp) {
+                if let Some(return_address) = read_u32(esp) {
+                    if is_windows_system_code(return_address) {
+                        return;
+                    }
+                }
+            }
+        }
     }
     if IN_HANDLER.swap(true, Ordering::SeqCst) {
         // An exception inside the handler itself (or a concurrent one): bail rather
