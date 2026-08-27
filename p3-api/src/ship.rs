@@ -25,12 +25,56 @@ impl ShipPtr {
         unsafe { self.get(0x0) }
     }
 
+    /// Also the link for the ships tick's two ship lists (`ships+0xE8` in port,
+    /// `ships+0xEA` at sea): `0x00506720` walks them through this field, so the name
+    /// is incomplete - a ship is spliced out of its list with
+    /// `[cursor] = ship->0x6; ship->0x6 = 0xFFFF`. See
+    /// `.claude/notes/done/port-freezing.md`.
     pub fn get_next_ship_in_convoy(&self) -> u16 {
         unsafe { self.get(0x06) }
     }
 
     pub fn get_convoy_id(&self) -> u16 {
         unsafe { self.get(0x08) }
+    }
+
+    /// Previous ship in the town's docking chain, `0xFFFF` when unlinked. A separate
+    /// chain from the per-merchant (`+0x4`) and per-convoy (`+0x6`) ones: it is
+    /// ordered by [ShipPtr::get_docking_sort_key], inserted by `0x0050D0C0` and
+    /// unlinked by `0x0050D040(ships, index)` - a plain doubly-linked unlink that
+    /// writes `0xFFFF` into both links and destroys nothing. See
+    /// `.claude/notes/done/port-freezing.md`.
+    pub fn get_previous_ship_in_port(&self) -> u16 {
+        unsafe { self.get(0x0a) }
+    }
+
+    /// Next ship in the town's docking chain, `0xFFFF` when unlinked. See
+    /// [ShipPtr::get_previous_ship_in_port].
+    pub fn get_next_ship_in_port(&self) -> u16 {
+        unsafe { self.get(0x0c) }
+    }
+
+    /// The signed key the docking chain is sorted by: `0x0050D0C0` walks the chain
+    /// comparing this before linking a ship in. Meaning not yet identified.
+    pub fn get_docking_sort_key(&self) -> i16 {
+        unsafe { self.get(0x1e) }
+    }
+
+    /// The trade-route state byte. **Bit 0 is "automatic trade is running"**: the
+    /// [ships tick](`0x00506720`) only executes a route stop for a ship with that bit
+    /// set, [crate::operation::Operation::SetTradeRouteActive] writes the whole byte as
+    /// `0x01` when activating (`0x0053E0F3`) and clears bits 0 and 1 when deactivating
+    /// (`0x0053DF4D`), and a finished stop with action bit `0x02` clears the low bits
+    /// again. Bit 0 is also the gate on the "destination port closed" check that turns a
+    /// ship away from a frozen or blockaded port.
+    pub fn get_trade_route_flags(&self) -> u8 {
+        unsafe { self.get(0x136) }
+    }
+
+    /// Whether automatic trade is currently running for this ship - bit 0 of
+    /// [ShipPtr::get_trade_route_flags].
+    pub fn is_trade_route_active(&self) -> bool {
+        self.get_trade_route_flags() & 1 != 0
     }
 
     pub fn get_type(&self) -> ShipType {

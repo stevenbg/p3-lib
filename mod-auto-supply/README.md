@@ -59,10 +59,37 @@ Stops load and buy the barrel goods before the bulky loads goods, each group ord
 ware value with the best first, so when hold space runs out the least valuable cargo is
 what gets left behind (see p3-rou's README).
 
-F3 also renames the ship after its new route: the first three letters of each route
-town, unique, in route order (e.g. LueRosSte), up to ten towns (31 characters, the
-ship struct's name capacity) - through the game's own rename operations, so every
-name display stays in sync.
+F3 also renames the ship after its new route: a leading `-`, then the first three
+letters of each route town, unique, in route order (e.g. -LueRosSte), up to ten towns
+(31 characters, the ship struct's name capacity) - through the game's own rename
+operations, so every name display stays in sync. The `-` makes the generated ships
+sort together at the top of any name-sorted ship list, and costs no town: one dash
+plus ten towns is exactly the 31 characters available. The name is also what the
+thawing-port feature below reads to decide which ships serve a town, so renaming a route
+ship by hand takes it out of that.
+
+## Thawing ports restart route ships
+
+Not a hotkey - it runs on the game's own event. A frozen port turns arriving ships away,
+and an auto-trade ship routed through one can end up stopped, which is easy to miss and
+tedious to restart by hand. When a port thaws, this mod restarts automatic trade on the
+route ships that serve that town.
+
+It uses the generated name as the record of which towns a ship serves: F3 already writes
+`-` plus one three-letter code per route town, so a ship named `-LueRosSte` is known to
+serve Luebeck, Rostock and Stettin without walking its route. On a thaw, every ship of
+yours whose name starts with `-` and contains the thawed town's code gets its "active"
+checkbox set, through the game's own operation (`0x68`), the same one the checkbox sends.
+
+It only ever *sets* the flag, and only on your own ships: a ship already trading is left
+alone, so it cannot stop anything, and it ignores ships you named yourself. Each thaw is
+reported on the event ticker ("Stockholm ice-free: restarted 2 ship(s)") and in the log,
+which also names the ships. Ports freeze between roughly 3 December and late February,
+and only the northern and eastern ones freeze at all - Bergen, Oslo, Stockholm, Visby,
+Riga, Reval, Ladoga and Novgorod on the standard map.
+
+This assumes town names are distinct in their first three characters, which holds for all
+24 towns of the standard map.
 
 ## Price levels
 

@@ -11,7 +11,10 @@ use p3_api::{
     hotkeys::{HotkeyHandler, HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_SIZE, SCHEDULED_TASKS_PTR},
+    scheduled_tasks::{
+        scheduled_task::{SCHEDULED_TASK_OPCODE_UNFREEZE_PORT, SCHEDULED_TASK_SIZE},
+        SCHEDULED_TASKS_PTR,
+    },
     town::{get_town_name, TOWN_SIZE},
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
@@ -289,7 +292,17 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 town dump; global F3/F4/DEL route keys");
+    // A thawing port restarts automatic trade on the route ships that serve it. Not a
+    // hotkey feature: it has to fire on the game's own event, whenever that happens.
+    match hook_call_rel32(UNFREEZE_PORT_CALL_OFFSET, unfreeze_port_hook as usize as u32) {
+        Ok(hook) => UNFREEZE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            // Not fatal: every hotkey feature still works without it.
+            error!("failed to hook the unfreeze-port task - thawed ports will not restart ships");
+        }
+    }
+
+    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 town dump; global F3/F4/DEL route keys; thaw restarts route ships");
     0
 }
 
@@ -1423,12 +1436,14 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     }
 }
 
-/// The route name for a ship: the first three letters of each of the route's towns,
-/// unique, in route order (e.g. LueRosSte) - up to ten towns. Capped at 31
+/// The route name for a ship: a leading `-` so generated ships group together when
+/// a ship list sorts by name, then the first three letters of each of the route's
+/// towns, unique, in route order (e.g. -LueRosSte) - up to ten towns. Capped at 31
 /// characters: the ship struct's inline name buffer at +0x160 is 32 bytes and ends
-/// the 0x180-stride struct, so anything longer would spill into the next ship.
+/// the 0x180-stride struct, so anything longer would spill into the next ship. The
+/// prefix costs no town: 1 + 10 x 3 is exactly 31.
 unsafe fn route_ship_name(stops: &[TradeRouteStop]) -> String {
-    let mut route_name = String::new();
+    let mut route_name = String::from(ROUTE_NAME_PREFIX);
     let mut seen: Vec<u8> = Vec::new();
     for stop in stops {
         if seen.contains(&stop.town_index) {
@@ -1438,10 +1453,25 @@ unsafe fn route_ship_name(stops: &[TradeRouteStop]) -> String {
         if route_name.chars().count() + 3 > 31 {
             break;
         }
-        let town = get_town_name(stop.town_index).unwrap_or_default();
-        route_name.extend(town.chars().take(3));
+        route_name.push_str(&town_code(stop.town_index).unwrap_or_default());
     }
     route_name
+}
+
+/// The marker [route_ship_name] puts at the front of a generated name. It is what
+/// [resume_autotrade_after_thaw] uses to tell "a route ship this mod named" from a ship
+/// the player named, so the two must agree - hence the shared constant.
+const ROUTE_NAME_PREFIX: &str = "-";
+
+/// A town's three-letter code as it appears inside a generated ship name: the first
+/// three characters of the town's name (Luebeck -> `Lue`). All 24 town names of the
+/// standard map are distinct in their first three characters, so a code identifies one
+/// town; a map with two towns sharing a prefix would make [resume_autotrade_after_thaw]
+/// treat them as one, which only ever means resuming a ship a little eagerly.
+fn town_code(town_index: u8) -> Option<String> {
+    let name = get_town_name(town_index)?;
+    let code: String = name.chars().take(3).collect();
+    (code.chars().count() == 3).then_some(code)
 }
 
 /// Rename a ship through the game's rename operations, the way the shipyard does:
@@ -1798,3 +1828,91 @@ const ROUTE_STOP_POOL_COUNT: *const u16 = 0x006dd72a as _;
 const ROUTE_STOP_POOL: *const u32 = 0x006dd72c as _;
 const ROUTE_STOP_SIZE: u32 = 220;
 const SHIP_ROUTE_HEAD_OFFSET: u32 = 0x132;
+
+/// Module-relative offset of the only call to the unfreeze-port scheduled task
+/// (`0x004E94A4`, opcode `0x35`), inside the task dispatcher.
+const UNFREEZE_PORT_CALL_OFFSET: u32 = 0x000D89C8;
+
+static UNFREEZE_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+/// A port thawing: `thiscall` on the scheduled-tasks singleton, no arguments. The task
+/// being executed is the one at `tasks+0x8`, which is how the handler itself finds the
+/// town index - so we read it the same way rather than guessing.
+///
+/// The original runs first, so the frozen flag is already clear when we resume ships.
+#[no_mangle]
+unsafe extern "thiscall" fn unfreeze_port_hook(tasks: u32) {
+    let original: extern "thiscall" fn(u32) =
+        mem::transmute((*UNFREEZE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
+
+    let task = SCHEDULED_TASKS_PTR.get_scheduled_task(SCHEDULED_TASKS_PTR.get_earliest_task_index());
+    // Only trust the town index if the task really is the one we expect: the hook fires
+    // from a single call site, but the index is read out of shared mutable state.
+    let town_index = (task.get_opcode() == SCHEDULED_TASK_OPCODE_UNFREEZE_PORT)
+        .then(|| task.get_data_dword(0));
+
+    original(tasks);
+
+    match town_index {
+        Some(index) if index < GAME_WORLD_PTR.get_towns_count() as u32 => {
+            resume_autotrade_after_thaw(index as u8)
+        }
+        Some(index) => error!("thaw: task town index {index} out of range, no ships resumed"),
+        None => error!("thaw: unfreeze hook fired on opcode {:#x}, no ships resumed", task.get_opcode()),
+    }
+}
+
+/// Restart automatic trade on this mod's route ships that serve a town whose port has
+/// just thawed.
+///
+/// A frozen port turns arriving ships away, and an auto-trade ship that was routed
+/// through it can end up stopped - annoying to notice and to restart by hand, since
+/// nothing in the game tells you which ships were affected. F3 already stamps a
+/// generated ship's route into its name ([route_ship_name]: [ROUTE_NAME_PREFIX] then one
+/// [town_code] per route town), so the name is a reliable, cheap statement of "this ship
+/// serves that town" - no route walking needed.
+///
+/// Only ever *sets* the flag, and only on the player's own ships whose generated name
+/// names this town. A ship already trading is left alone, so the hook is a no-op in the
+/// common case and can never stop a ship.
+unsafe fn resume_autotrade_after_thaw(town_index: u8) {
+    let Some(code) = town_code(town_index) else {
+        error!("thaw: town {town_index} has no name, no ships resumed");
+        return;
+    };
+    let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
+    let player = *(0x006DFC14 as *const u32) as u8;
+    let ships = p3_api::ships::ShipsPtr::new();
+
+    let mut resumed = Vec::new();
+    let mut already = 0;
+    for ship_index in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(ship_index) else { continue };
+        if ship.get_merchant_index() != player {
+            continue;
+        }
+        let name = ship.get_name();
+        if !name.starts_with(ROUTE_NAME_PREFIX) || !name.contains(&code) {
+            continue;
+        }
+        if ship.is_trade_route_active() {
+            already += 1;
+            continue;
+        }
+        OPERATIONS_PTR.enqueue_operation(Operation::SetTradeRouteActive {
+            ship_index: ship_index as u32,
+            active: true,
+        });
+        resumed.push(name);
+    }
+
+    if resumed.is_empty() {
+        debug!("thaw in {town} ({code}): {already} route ships already trading, none to resume");
+        return;
+    }
+    info!(
+        "thaw in {town} ({code}): resumed automatic trade on [{}] ({already} already trading)",
+        resumed.join(", ")
+    );
+    notify(&format!("{town} ice-free: restarted {} ship(s)", resumed.len()));
+}
