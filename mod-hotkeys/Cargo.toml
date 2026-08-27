@@ -1,0 +1,21 @@
+[package]
+name = "mod-hotkeys"
+edition = "2021"
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "hotkeys"
+
+[dependencies]
+log = { workspace = true }
+win_dbg_logger = { workspace = true }
+
+[dependencies.windows]
+version = "0.48"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+]
