@@ -2,9 +2,10 @@
 //!
 //! **Extra speed** - numpad `*` / numpad `/` scale the game's time x1 / x2 / x4 /
 //! x8, anywhere: world map, town view, sea battle. They sit next to the game's own
-//! speed-slider keys (numpad `+` / `-`) without colliding with them: the game's key
-//! dispatch at `0x00424B9B` handles only numpad `+`, numpad `-`, Pause and Tab, so
-//! `*` and `/` are free, and no modifier is needed. The intended use
+//! speed-slider keys (numpad `+` / `-`) without colliding with them: the dispatcher
+//! owning the speed-slider keys (`0x00424B9B`) handles only numpad `+`, numpad `-`,
+//! Pause and Tab - it is one dispatcher among several, but no handler for `*` or
+//! `/` shows up in a full-exe scan - so no modifier is needed. The intended use
 //! is speeding up sea battles, but battles are not a map type of their own - a town
 //! attacked from the sea fights on the town's map - so the keys are deliberately
 //! global instead of scene-scoped.
@@ -99,8 +100,7 @@ pub unsafe extern "C" fn start() -> u32 {
 }
 
 /// Step the scale through 1 / 2 / 4 / 8: numpad `*` up, numpad `/` down. Declines,
-/// so the game still sees the keys (its own dispatch handles only numpad +, numpad
-/// -, Pause and Tab, so there is nothing to collide with either way).
+/// so the game still sees the keys (no game handler for them is known).
 #[no_mangle]
 unsafe extern "C" fn speed_hotkeys(vk: u32, _mods: u32) -> u32 {
     let scale = SCALE.load(Ordering::Relaxed);

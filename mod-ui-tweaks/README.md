@@ -13,9 +13,11 @@ event ticker (`extra speed: x4`). Nothing resets the scale behind the player's
 back; numpad `/` brings it back down.
 
 They sit next to the game's own speed-slider keys (numpad `+` and `-`) without
-colliding with them, and need no modifier: the game's key dispatch
-(`0x00424B9B`) handles only numpad `+`, numpad `-`, Pause and Tab, so `*` and `/`
-reach nothing but this mod.
+colliding with them, and need no modifier: the dispatcher that owns the
+speed-slider keys (`0x00424B9B`) handles only numpad `+`, numpad `-`, Pause and
+Tab. (It is one dispatcher among several - windows and scenes take their input
+through their own methods - but no handler for `*` or `/` shows up in a full-exe
+scan, and none has surfaced in play.)
 
 The intended use is sea battles, which run at a fixed pace the speed slider cannot
 touch. The keys are deliberately global rather than battle-scoped: battles are not
