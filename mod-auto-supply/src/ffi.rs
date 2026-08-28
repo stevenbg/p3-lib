@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
-use std::sync::Mutex;
-use std::{mem, panic, ptr};
+use std::{mem, panic};
 
 use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hook, FunctionPointerHook};
 use log::{debug, error, info, warn};
@@ -11,18 +10,12 @@ use p3_api::{
     hotkeys::{HotkeyHandler, HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
-    scheduled_tasks::{
-        scheduled_task::{SCHEDULED_TASK_OPCODE_UNFREEZE_PORT, SCHEDULED_TASK_SIZE},
-        SCHEDULED_TASKS_PTR,
-    },
-    town::{get_town_name, TOWN_SIZE},
+    scheduled_tasks::{scheduled_task::SCHEDULED_TASK_OPCODE_UNFREEZE_PORT, SCHEDULED_TASKS_PTR},
+    town::get_town_name,
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
 use p3_rou::{builder, TradeRouteStop};
-use windows::Win32::{
-    System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT},
-    UI::Input::KeyboardAndMouse::{VK_DELETE, VK_F1, VK_F11, VK_F3, VK_F4},
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DELETE, VK_F1, VK_F11, VK_F2, VK_F3, VK_F4};
 
 use crate::prices::{buy_price, sell_price, PriceLevel};
 
@@ -46,38 +39,74 @@ const LOCKED_BUILDING_MATERIALS: [(WareId, i32); 6] = [
 
 /// The six price levels, on Q W E R T Y in ASCENDING price order: ctrl sets buy prices,
 /// alt sets sell prices. Pressed without a modifier (or with both) they do nothing.
-/// Buying gets more aggressive towards Y (drains the town deeper), selling gets more
-/// restrained (only sells into scarcity); R is the natural pair, buy par / sell supply.
+/// Buying gets more aggressive towards Y (pays more, so it drains the town deeper),
+/// selling gets more restrained (holds out for more, so it only sells into scarcity).
+/// Q is the natural pair - buy at par, sell at the supply price - and also the widest
+/// margin; see [PriceLevel] for the whole ladder.
 const LEVEL_KEYS: [(u32, PriceLevel); 6] = [
-    (0x51, PriceLevel::Upper),    // Q: buy t2          / sell t1
-    (0x57, PriceLevel::UpperMid), // W: buy mid t1..t2  / sell mid t0..t1
-    (0x45, PriceLevel::Upper30),  // E: buy 30% t1->t2  / sell 30% t0->t1
-    (0x52, PriceLevel::Center),   // R: buy t1 (par)    / sell t0 (the supply price)
-    (0x54, PriceLevel::Lower70),  // T: buy 70% t0->t1  / sell 70% 0->t0
-    (0x59, PriceLevel::LowerMid), // Y: buy mid t0..t1  / sell mid 0..t0
+    (0x51, PriceLevel::Q), // buy 1.00 (t1, par) / sell 1.40 (t0, the supply price)
+    (0x57, PriceLevel::W), // buy 1.05 / sell 1.45
+    (0x45, PriceLevel::E), // buy 1.10 / sell 1.50
+    (0x52, PriceLevel::R), // buy 1.15 / sell 1.55
+    (0x54, PriceLevel::T), // buy 1.20 / sell 1.60
+    (0x59, PriceLevel::Y), // buy 1.25 (mid t0..t1) / sell 1.65
 ];
 /// F11: dump the current town's thresholds, base prices and price levels to the log and
 /// to a CSV.
 const TOWN_DUMP_KEY: u32 = VK_F11.0 as u32;
-/// F4 appends a trade stop for the current town to the selected ship's route; Ctrl+F4
-/// does the same but also buys the [NO_BUY_WARES].
-const ADD_STOP_KEY: u32 = VK_F4.0 as u32;
-/// F3 sets a whole route template: plain 5stop, alt 6stop, ctrl suck.
-const ROUTE_KEY: u32 = VK_F3.0 as u32;
+/// The trade template: one self-contained trade stop per target.
+const ROUTE_TRADE_KEY: u32 = VK_F4.0 as u32;
+/// The route templates get one key each, F1/F2/F3, with SHIFT appending to the existing
+/// route instead of replacing it.
+///
+/// F1 is deliberately shared with [SETUP_KEY]: the office and goods-dialog groups
+/// register F1 too, and because the registry dispatches newest-first their registration
+/// **shadows** this one while their window is open - which is what the shared registry was
+/// built for. Those scoped handlers swallow the keystroke (return nonzero) so exactly one
+/// thing happens per press; when the window closes and its registration goes, the global
+/// route key resurfaces on its own. Nothing here has to know whether a window is open.
+const ROUTE_5STOP_KEY: u32 = VK_F1.0 as u32;
+/// The 6stop office-swap template.
+const ROUTE_6STOP_KEY: u32 = VK_F2.0 as u32;
+/// The collection ("suck") template.
+const ROUTE_SUCK_KEY: u32 = VK_F3.0 as u32;
 /// DEL clears the selected ship's route (guarded on the goods dialog being closed).
 const CLEAR_ROUTE_KEY: u32 = VK_DELETE.0 as u32;
-/// The stop buys what the town produces at this level (the Ctrl+Y price).
-const STOP_BUY_LEVEL: PriceLevel = PriceLevel::LowerMid;
-/// The stop sells everything else at this level (the Alt+Y price).
-const STOP_SELL_LEVEL: PriceLevel = PriceLevel::LowerMid;
-/// Wares plain F4 never buys, even where the town produces them: their margin does not
-/// justify the cargo space early on (grain, hemp and timber are bulky loads goods), so
-/// they stay in the town. Ctrl+F4 buys them too.
+// The price levels the generated orders use. Every automatic price in the mod comes from
+// one of these five, so retuning is a one-line change per feature:
+//
+// | feature | buy | sell |
+// |-|-|-|
+// | F1 office setup | Q (par, 1.00) | Q (supply price, 1.40) |
+// | F1 goods-dialog fill | [STOP_BUY_LEVEL] R | [STOP_SELL_LEVEL] R |
+// | F4 trade template | [STOP_BUY_LEVEL] R | [STOP_SELL_LEVEL] R |
+// | F1/F2 supply templates | [COLLECT_BUY_LEVEL] E | [SUPPLY_SELL_LEVEL] Q |
+// | F3 collection template | [COLLECT_BUY_LEVEL] E | - |
+//
+// The office setup's Q is written at its own call site because it prices existing orders
+// rather than building a stop.
+
+/// What a trade stop pays for the wares its town produces - the F4 template and the
+/// goods-dialog fill, which build the same shape of stop.
+const STOP_BUY_LEVEL: PriceLevel = PriceLevel::R;
+/// What a trade stop asks for everything its town does not produce.
+const STOP_SELL_LEVEL: PriceLevel = PriceLevel::R;
+/// What the collection route and the office-less targets of a supply route pay. Shared
+/// deliberately: both are "haul home what this town has that we do not produce".
+const COLLECT_BUY_LEVEL: PriceLevel = PriceLevel::E;
+/// What a supply route asks for the goods it delivers to a target.
+const SUPPLY_SELL_LEVEL: PriceLevel = PriceLevel::Q;
+/// Wares the trade template (F4) and the goods-dialog fill leave in the town even where
+/// it produces them: their margin does not justify the cargo space early on (grain, hemp
+/// and timber are bulky loads goods). ALT buys them too. Also the wares the collection
+/// route never buys - there unconditionally.
 const NO_BUY_WARES: [WareId; 6] = [WareId::Pitch, WareId::Timber, WareId::Salt, WareId::Bricks, WareId::Grain, WareId::Hemp];
-/// Wares the F3 routes never supply, even where the town consumes them: low-value
-/// industry inputs that are not worth the hold space. Whatever accumulates in the
-/// target office is still hauled home. (Timber is supplied - as the worst of the loads
-/// goods it is ordered last, see p3-rou's cargo_order.)
+/// Low-value industry inputs, worth skipping when hold space is tight: what a target
+/// consumes of them is mostly business demand, and they crowd out goods with a better
+/// margin. **Excluded only when ALT is held** with a route key - a plain route supplies
+/// everything the target consumes. Whatever accumulates in the target office is hauled
+/// home either way. (Timber is not on this list - as the worst of the loads goods it is
+/// simply ordered last, see p3-rou's cargo_order.)
 const NO_SUPPLY_WARES: [WareId; 4] = [WareId::Bricks, WareId::PigIron, WareId::Pitch, WareId::Hemp];
 
 /// The game's route file loader: thiscall(this, base_name) -> decompressed buffer. It
@@ -148,19 +177,27 @@ const OWNER_DIALOG: &std::ffi::CStr = c"auto-supply goods dialog";
 /// dump. (The F9/F10 debug probes live in mod-crash-reporter now.) The handlers
 /// never swallow, exactly like the old all-seeing hook, which always fell through
 /// to CallNextHookEx.
-const GLOBAL_KEYS: [(u32, u32); 10] = [
+const GLOBAL_KEYS: [(u32, u32); 18] = [
     (TOWN_DUMP_KEY, 0),
-    (ADD_STOP_KEY, 0),
-    (ADD_STOP_KEY, MOD_CTRL),
-    (ROUTE_KEY, 0),
-    (ROUTE_KEY, MOD_CTRL),
-    (ROUTE_KEY, MOD_ALT),
-    (ROUTE_KEY, MOD_SHIFT),
-    (ROUTE_KEY, MOD_CTRL | MOD_SHIFT),
-    (ROUTE_KEY, MOD_ALT | MOD_SHIFT),
+    (ROUTE_TRADE_KEY, 0),
+    (ROUTE_TRADE_KEY, MOD_SHIFT),
+    (ROUTE_TRADE_KEY, MOD_ALT),
+    (ROUTE_TRADE_KEY, MOD_ALT | MOD_SHIFT),
+    (ROUTE_5STOP_KEY, 0),
+    (ROUTE_5STOP_KEY, MOD_SHIFT),
+    (ROUTE_5STOP_KEY, MOD_ALT),
+    (ROUTE_5STOP_KEY, MOD_ALT | MOD_SHIFT),
+    (ROUTE_6STOP_KEY, 0),
+    (ROUTE_6STOP_KEY, MOD_SHIFT),
+    (ROUTE_6STOP_KEY, MOD_ALT),
+    (ROUTE_6STOP_KEY, MOD_ALT | MOD_SHIFT),
+    (ROUTE_SUCK_KEY, 0),
+    (ROUTE_SUCK_KEY, MOD_SHIFT),
+    (ROUTE_SUCK_KEY, MOD_ALT),
+    (ROUTE_SUCK_KEY, MOD_ALT | MOD_SHIFT),
     (CLEAR_ROUTE_KEY, 0),
 ];
-static GLOBAL_HANDLES: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
+static GLOBAL_HANDLES: [AtomicU32; 18] = [const { AtomicU32::new(0) }; 18];
 
 /// Office keys, registered while a trading office window is open (its vtable
 /// open/close hooks below): F1 and the price-level keys.
@@ -302,7 +339,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    info!("loaded: office F1 setup, ctrl/alt+QWERTY prices, F11 town dump; global F3/F4/DEL route keys; thaw restarts route ships");
+    info!("loaded: global route templates F1 5stop / F2 6stop / F3 collect / F4 trade (shift appends, alt relaxes each template's ware filter), DEL, F11; office and goods-dialog F1 shadow the global F1 while open; thaw restarts route ships");
     0
 }
 
@@ -350,21 +387,28 @@ fn level_of(vk: u32) -> Option<PriceLevel> {
 unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
     match (vk, mods) {
         (TOWN_DUMP_KEY, 0) => on_town_dump_hotkey(),
-        // Plain F4 skips the NO_BUY_WARES, ctrl+F4 buys everything produced.
-        // Alt+F4 stays with Windows (never registered).
-        (ADD_STOP_KEY, m) => on_add_stop_hotkey(m & MOD_CTRL == 0),
-        // Shift appends the generated route to the existing one instead of
-        // replacing it.
-        (ROUTE_KEY, m) => on_route_hotkey(
-            if m & MOD_CTRL != 0 {
-                RouteKind::Suck
-            } else if m & MOD_ALT != 0 {
-                RouteKind::SixStop
-            } else {
-                RouteKind::FiveStop
-            },
-            m & MOD_SHIFT != 0,
-        ),
+        (ROUTE_TRADE_KEY, m) => {
+            on_route_hotkey(RouteKind::Trade, m & MOD_SHIFT != 0, m & MOD_ALT != 0);
+            if m & MOD_ALT != 0 {
+                // The only global key that swallows, and not for shadowing: ALT+F4 is
+                // the OS close-window chord, and letting it travel on to
+                // DefWindowProc could end the session. The game appears to ignore it,
+                // but "appears to" is not worth a lost game, and we have handled the
+                // key anyway.
+                return 1;
+            }
+        }
+        // One key per template. SHIFT appends the generated route to the existing one
+        // instead of replacing it; ALT narrows the supply basket to skip the
+        // [NO_SUPPLY_WARES]. F1 only reaches here when no office window or goods dialog
+        // is open - theirs shadows it and swallows the key.
+        (ROUTE_5STOP_KEY, m) => {
+            on_route_hotkey(RouteKind::FiveStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0)
+        }
+        (ROUTE_6STOP_KEY, m) => {
+            on_route_hotkey(RouteKind::SixStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0)
+        }
+        (ROUTE_SUCK_KEY, m) => on_route_hotkey(RouteKind::Suck, m & MOD_SHIFT != 0, m & MOD_ALT != 0),
         // Internally guarded on the goods dialog being closed, as before.
         (CLEAR_ROUTE_KEY, 0) => on_clear_route_hotkey(),
         _ => {}
@@ -374,6 +418,13 @@ unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
 
 /// Office keys, live only while a trading office window is open. The handlers still
 /// resolve the office themselves, so a stray press during teardown is a no-op.
+///
+/// **These swallow the keystroke.** F1 is also a global route key, and the registry
+/// dispatches newest-first, so declining here would let the global handler fire too and
+/// build a route while setting up the office. Returning nonzero stops the walk, which is
+/// what makes the shadowing work; ownership is the rule, not success - F1 belongs to the
+/// office window while it is open even when the action refuses (wrong view), because
+/// refusing with a popup is a better answer than silently doing the other thing.
 #[no_mangle]
 unsafe extern "C" fn office_hotkeys(vk: u32, mods: u32) -> u32 {
     match (vk, mods) {
@@ -381,22 +432,34 @@ unsafe extern "C" fn office_hotkeys(vk: u32, mods: u32) -> u32 {
         (SETUP_KEY, MOD_ALT) => on_lock_building_materials_hotkey(),
         (SETUP_KEY, 0) => on_setup_hotkey(),
         // Ctrl = buy prices, alt = sell prices, in the administrator view.
-        _ => {
-            if let Some(level) = level_of(vk) {
+        _ => match level_of(vk) {
+            Some(level) => {
                 let (sell, buy) = if mods & MOD_CTRL != 0 { (None, Some(level)) } else { (Some(level), None) };
                 apply_prices(sell, buy);
             }
-        }
+            // Not one of ours after all: decline, so nothing downstream is starved.
+            None => return 0,
+        },
     }
-    0
+    1
 }
 
 /// Goods-dialog keys, live from populate to close; they act on the displayed stop,
 /// which the handler re-reads at press time.
+///
+/// **These swallow the keystroke**, for the same reason as [office_hotkeys] - F1 is a
+/// global route key and the dialog's registration shadows it. The swallow happens even
+/// when the displayed stop cannot be resolved: while the dialog is open these keys are
+/// its own, and falling through to "build a whole route instead" would be a nasty
+/// surprise.
 #[no_mangle]
 unsafe extern "C" fn dialog_hotkeys(vk: u32, mods: u32) -> u32 {
-    let Some((dialog, stop_index)) = goods_dialog_stop() else {
+    // Not one of ours: decline before anything else, so nothing downstream is starved.
+    if vk != SETUP_KEY && level_of(vk).is_none() {
         return 0;
+    }
+    let Some((dialog, stop_index)) = goods_dialog_stop() else {
+        return 1;
     };
     match (vk, mods) {
         // F1: fill the displayed stop's empty slots with buy/sell orders (plain
@@ -409,7 +472,7 @@ unsafe extern "C" fn dialog_hotkeys(vk: u32, mods: u32) -> u32 {
             }
         }
     }
-    0
+    1
 }
 
 /// The town whose view is open, from the town-scene object. On the world map this is the
@@ -470,439 +533,6 @@ unsafe fn refresh_goods_dialog(dialog: u32, stop_index: u32) {
     // without this, the first dialog hotkey (whose handler refreshes the dialog)
     // silently disarms all the others.
     register_group(OWNER_DIALOG, &DIALOG_KEYS, &DIALOG_HANDLES, dialog_hotkeys);
-}
-
-/// F9 (THROWAWAY): install an operation logger on the queue drain's call into the
-/// operation switch (execute_operations 0x546870 calls 0x535760 at 0x546934), dumping
-/// every processed operation. Used to identify the opcode behind UI actions - press F9
-/// once, perform the action in-game, read the log.
-static OP_LOGGER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
-const OP_SWITCH_DRAIN_CALL_OFFSET: u32 = 0x146934;
-/// Noisy periodic opcodes to omit (0x94/0x24/0x7b per the gitbook's debugging notes).
-const OP_LOGGER_NOISE: [u32; 3] = [0x94, 0x24, 0x7b];
-
-unsafe extern "thiscall" fn op_logger_hook(op: u32) {
-    let opcode = *(op as *const u32);
-    if !OP_LOGGER_NOISE.contains(&opcode) {
-        let bytes: Vec<String> = (0..0x14).map(|i| format!("{:02x}", *((op + i) as *const u8))).collect();
-        debug!("op {opcode:#04x}: {}", bytes.join(" "));
-    }
-    let hook = OP_LOGGER_HOOK.load(Ordering::SeqCst);
-    let original: extern "thiscall" fn(u32) = mem::transmute((*hook).old_absolute);
-    original(op);
-}
-
-/// F9 (THROWAWAY): find what marks a town as enterable while the player's ship is
-/// arriving but has not docked yet. Press F9 once while the ship is still at sea (takes
-/// a byte-exact snapshot of every town struct and dumps the ship's movement state),
-/// then again the moment the town's tavern becomes reachable: the second press diffs
-/// every town against the snapshot and dumps the ships again. Keep the two presses
-/// close together - a day boundary in between adds price and stock noise to the diff.
-static TOWN_SNAPSHOT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-
-#[allow(dead_code)]
-unsafe fn on_town_snapshot_hotkey() {
-    if TOWN_SNAPSHOT.lock().unwrap().is_empty() {
-        let towns = snapshot_towns();
-        dump_player_ships("before");
-        info!("town probe: snapshot of {towns} towns taken - press F9 again when the town becomes enterable");
-    } else {
-        diff_towns();
-        dump_player_ships("after");
-        info!("town probe: diff done, snapshot cleared");
-    }
-}
-
-/// The side-room missions of the save this probe was written against, counted per town
-/// index (Edinburgh 0 .. Novgorod 23): Edinburgh pirate hunter, London trader, Hamburg
-/// trader, Rostock trader + courier, Oslo patrol + smuggler + courier, Malmö smuggler,
-/// Gdansk escort, Reval fugitive + treasure map, Ladoga patrol.
-const MISSIONS_PER_TOWN: [u8; 24] = [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 2, 1, 0];
-
-/// F9 (THROWAWAY): dump the inline symbol strings the UI's rich-text markup splices in.
-///
-/// F9 (THROWAWAY): dump the tick pacer's speed block, from the sea-battle speed work
-/// (now the gitbook's basics/time.md Game Speed section).
-///
-/// The pacer (`0x00546620`) turns elapsed real ms (`[0x6DCCF8]` minus `ops+0x938`)
-/// into an advance-time operation (opcode 0xC4) sized by the pacing mode `ops+0x92C`:
-/// mode 0 = normal play, one tick per `ops+0x8D4` ms (the speed slider's divisor,
-/// cap 8/batch); 1 = fast forward, per `ops+0x8D8` (cap 256); 2 = local map, per the
-/// constant `[0x673CF8]` = 3375 (cap 1). `ops+0x914` is the master run flag.
-#[allow(dead_code)]
-unsafe fn on_speed_probe_hotkey() {
-    let ops = 0x006df2f0u32;
-    let r = |off: u32| *((ops + off) as *const u32);
-    debug!(
-        "speed probe: level {} run {} advancing {} net {} | div1 {} div2 {} saved_div {} f91c {} | last_ms {} pending_c4 {} timer {} interval {} | const_ms {} clock_ms {} tick {:#x} queue {}",
-        r(0x92c),
-        r(0x914),
-        r(0x918),
-        r(0x928),
-        r(0x8d4),
-        r(0x8d8),
-        r(0x8dc),
-        r(0x91c),
-        r(0x938),
-        r(0x93c),
-        r(0x940),
-        r(0x944),
-        *(0x673cf8u32 as *const u32),
-        *(0x6dccf8u32 as *const u32),
-        *(0x6de4b4u32 as *const u32),
-        *((ops + 0x482) as *const u16),
-    );
-}
-
-/// F10 (THROWAWAY): toggle "battle time follows the speed slider".
-///
-/// A sea battle switches the tick pacer to level 2, whose branch ignores the slider
-/// and paces the world at the hard constant `[0x673CF8]` = 3375 ms per tick
-/// (`0x0054675C: mov edi,[0x673CF8]`). The patch replaces that one load - same
-/// length, in place - with `mov edi,[esi+0x8D4]`, the level-0 branch's own divisor,
-/// so battle time runs at whatever the slider was set to (3515 slowdown .. 78 very
-/// fast). The level-2 cap of 1 tick per pacer run stays: at 60 fps that allows ~60
-/// ticks/s, far above very fast's 12.8, so it never binds. (An earlier probe that
-/// enqueued the fast-forward op 0xC8 level 1 instead flickered the world view over
-/// the battle scene - level 1 is the fast-forward MODE with its own window, not a
-/// speed.)
-/// (retired F9) The layout routine at `0x00462520` expands `\\C`, `\\L` and `\\B` by taking the
-/// `char*` at `+0x4` of the objects in `0x006CC37C`, `0x006CC384` and `0x006CC380`
-/// (`0x004627F5`..`0x0046281F`), so they are text, not graphics - and can be appended to
-/// any string drawn the ordinary way. This prints them, and their neighbours in that
-/// global cluster, as bytes and as characters.
-#[allow(dead_code)]
-unsafe fn on_current_town_hotkey() {
-    for global in (0x006cc370..=0x006cc394u32).step_by(4) {
-        let object = *(global as *const u32);
-        if !(0x0001_0000..0x7fff_0000).contains(&object) {
-            debug!("{global:#010x}: {object:#010x} (not a pointer)");
-            continue;
-        }
-        let text = *((object + 4) as *const u32);
-        if !(0x0001_0000..0x7fff_0000).contains(&text) {
-            debug!("{global:#010x}: object {object:#010x}, +4 = {text:#010x} (not a pointer)");
-            continue;
-        }
-        let mut bytes = Vec::new();
-        for offset in 0..32u32 {
-            let byte = *((text + offset) as *const u8);
-            if byte == 0 {
-                break;
-            }
-            bytes.push(byte);
-        }
-        let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        let shown: String = bytes
-            .iter()
-            .map(|b| if (0x20..0x7f).contains(b) { *b as char } else { '.' })
-            .collect();
-        debug!("{global:#010x}: object {object:#010x} -> \"{shown}\" [{}]", hex.join(" "));
-    }
-}
-
-/// F9 (THROWAWAY, kept): scan every committed page for a per-town table matching
-/// `MISSIONS_PER_TOWN` - the fallback for when a link is in neither the town struct nor
-/// the records.
-#[allow(dead_code)]
-unsafe fn scan_memory_for_mission_table() {
-    let towns = GAME_WORLD_PTR.get_towns_count().min(0xff) as usize;
-    if towns != MISSIONS_PER_TOWN.len() {
-        error!("mission probe: this save has {towns} towns, the expectation has {}", MISSIONS_PER_TOWN.len());
-        return;
-    }
-
-    let mut region = MEMORY_BASIC_INFORMATION::default();
-    let mut address: usize = 0x10000;
-    let mut scanned = 0usize;
-    let mut hits = 0usize;
-    while address < 0x7fff_0000 {
-        if VirtualQuery(Some(address as _), &mut region, mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
-            break;
-        }
-        let base = region.BaseAddress as usize;
-        let size = region.RegionSize;
-        address = base + size.max(0x1000);
-
-        // Committed, readable, not a guard page - anything else faults on read.
-        const READABLE: u32 = 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80;
-        if region.State != MEM_COMMIT || region.Protect.0 & READABLE == 0 || region.Protect.0 & 0x100 != 0 {
-            continue;
-        }
-        scanned += size;
-        hits += scan_region_for_mission_table(base, size, towns);
-    }
-
-    info!("mission probe: scanned {} MiB, {hits} hits", scanned / (1024 * 1024));
-}
-
-/// The shapes a per-town mission table could have, tested at every offset of a region.
-/// Each has a cheap first test (a town without a mission) before the full comparison.
-unsafe fn scan_region_for_mission_table(base: usize, size: usize, towns: usize) -> usize {
-    let has_mission = |town: usize| MISSIONS_PER_TOWN[town] > 0;
-    let mut hits = 0;
-    let stride_end = size.saturating_sub(4 * towns);
-    for offset in 0..stride_end {
-        let at = base + offset;
-
-        // One byte per town: the mission count, or any nonzero marker where a mission is.
-        let first: u8 = ptr::read_unaligned(at as *const u8);
-        if first != 0 && ptr::read_unaligned((at + 1) as *const u8) == 0 {
-            let bytes: Vec<u8> = (0..towns).map(|t| ptr::read_unaligned((at + t) as *const u8)).collect();
-            if (0..towns).all(|t| bytes[t] == MISSIONS_PER_TOWN[t]) {
-                debug!("mission COUNTS (u8) at {at:#010x}{}: {bytes:?}", describe_address(at));
-                hits += 1;
-            } else if (0..towns).all(|t| (bytes[t] != 0) == has_mission(t)) {
-                debug!("u8 set where a mission is at {at:#010x}{}: {bytes:?}", describe_address(at));
-                hits += 1;
-            } else if (0..towns).all(|t| (bytes[t] != 0xff) == has_mission(t)) {
-                debug!("u8 0xff-empty at {at:#010x}{}: {bytes:?}", describe_address(at));
-                hits += 1;
-            }
-        }
-
-        // One id per town, the usual 0xFFFF or 0 for "no mission here".
-        for empty in [0u16, 0xffff] {
-            if ptr::read_unaligned((at + 2) as *const u16) == empty && ptr::read_unaligned(at as *const u16) != empty {
-                let words: Vec<u16> = (0..towns).map(|t| ptr::read_unaligned((at + 2 * t) as *const u16)).collect();
-                if (0..towns).all(|t| (words[t] != empty) == has_mission(t)) {
-                    debug!("u16 ids ({empty:#06x} = none) at {at:#010x}{}: {words:?}", describe_address(at));
-                    hits += 1;
-                }
-            }
-        }
-
-        // Same, as dwords - an id, a pointer or a count per town.
-        for empty in [0u32, 0xffff_ffff] {
-            if ptr::read_unaligned((at + 4) as *const u32) == empty && ptr::read_unaligned(at as *const u32) != empty {
-                let dwords: Vec<u32> = (0..towns).map(|t| ptr::read_unaligned((at + 4 * t) as *const u32)).collect();
-                if (0..towns).all(|t| (dwords[t] != empty) == has_mission(t)) {
-                    debug!("u32 ids ({empty:#010x} = none) at {at:#010x}{}: {dwords:x?}", describe_address(at));
-                    hits += 1;
-                }
-            }
-        }
-    }
-    hits
-}
-
-/// Where an address sits, so a hit can be placed: inside a town struct (with the town and
-/// the field offset), in the executable's own data, or in unidentified heap.
-unsafe fn describe_address(at: usize) -> String {
-    let towns_base: u32 = GAME_WORLD_PTR.get(0x68);
-    let towns_end = towns_base as usize + GAME_WORLD_PTR.get_towns_count() as usize * TOWN_SIZE as usize;
-    if (towns_base as usize..towns_end).contains(&at) {
-        let delta = at - towns_base as usize;
-        return format!(" (town {} +{:#x})", delta / TOWN_SIZE as usize, delta % TOWN_SIZE as usize);
-    }
-    if (0x0040_0000..0x0080_0000).contains(&at) {
-        return " (executable data)".into();
-    }
-    let pool_base: u32 = SCHEDULED_TASKS_PTR.get(0x0);
-    let capacity: u16 = SCHEDULED_TASKS_PTR.get(0x0c);
-    let stride = SCHEDULED_TASK_SIZE as usize;
-    let pool_end = pool_base as usize + capacity as usize * stride;
-    if (pool_base as usize..pool_end).contains(&at) {
-        let delta = at - pool_base as usize;
-        return format!(" (scheduled task {} +{:#x})", delta / stride, delta % stride);
-    }
-    String::new()
-}
-
-/// Every town struct, byte for byte, concatenated.
-unsafe fn snapshot_towns() -> u8 {
-    let count = GAME_WORLD_PTR.get_towns_count() as u8;
-    let mut buffer = Vec::with_capacity(count as usize * TOWN_SIZE as usize);
-    for town_index in 0..count {
-        let town = GAME_WORLD_PTR.get_town(town_index);
-        buffer.extend_from_slice(std::slice::from_raw_parts(town.get_address() as *const u8, TOWN_SIZE as usize));
-    }
-    *TOWN_SNAPSHOT.lock().unwrap() = buffer;
-    count
-}
-
-/// Log every run of bytes that changed since the snapshot, per town.
-unsafe fn diff_towns() {
-    let snapshot = std::mem::take(&mut *TOWN_SNAPSHOT.lock().unwrap());
-    let size = TOWN_SIZE as usize;
-    for town_index in 0..(snapshot.len() / size) as u8 {
-        let town = GAME_WORLD_PTR.get_town(town_index);
-        let now = std::slice::from_raw_parts(town.get_address() as *const u8, size);
-        let before = &snapshot[town_index as usize * size..][..size];
-        let name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
-
-        let mut offset = 0;
-        while offset < size {
-            if now[offset] == before[offset] {
-                offset += 1;
-                continue;
-            }
-            let start = offset;
-            while offset < size && now[offset] != before[offset] {
-                offset += 1;
-            }
-            let old: Vec<String> = before[start..offset].iter().map(|b| format!("{b:02x}")).collect();
-            let new: Vec<String> = now[start..offset].iter().map(|b| format!("{b:02x}")).collect();
-            debug!("town diff {name} +{start:#x}: {} -> {}", old.join(" "), new.join(" "));
-        }
-    }
-}
-
-/// The movement state of every ship the player owns: the fields that could plausibly
-/// carry "arriving at a town" - status (+0x134), the flag bytes around the destination
-/// (+0x3C..+0x3E), the counter at +0x138, and the owning convoy's status and town.
-unsafe fn dump_player_ships(label: &str) {
-    let ships = p3_api::ships::ShipsPtr::new();
-    let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u8;
-    for index in 0..ships.get_ships_size() {
-        let Some(ship) = ships.get_ship(index) else { break };
-        if ship.get_merchant_index() != player_merchant {
-            continue;
-        }
-        let convoy_id = ship.get_convoy_id();
-        let (convoy_status, convoy_town) = match ships.get_convoy(convoy_id) {
-            Some(convoy) => (convoy.get_status() as i32, convoy.get_current_town_index() as i32),
-            None => (-1, -1),
-        };
-        let flags: [u8; 3] = [ship.get(0x3c), ship.get(0x3d), ship.get(0x3e)];
-        let counter: u16 = ship.get(0x138);
-        debug!(
-            "{label}: ship {index} {} status {:#x} dest {:?} last {:?} flags {:02x}/{:02x}/{:02x} +0x138 {counter} convoy {convoy_id} (status {convoy_status:#x} town {convoy_town}) pos {},{}",
-            ship.get_name(),
-            ship.get_status(),
-            ship.get_destination_town_index(),
-            ship.get_last_town_index(),
-            flags[0],
-            flags[1],
-            flags[2],
-            ship.get_x() >> 16,
-            ship.get_y() >> 16
-        );
-    }
-}
-
-/// Kept from the previous investigation (the auto-trader chain work): the op logger
-/// installer and the tavern-captain census.
-#[allow(dead_code)]
-unsafe fn install_op_logger() {
-    if !OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
-        return;
-    }
-    match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, op_logger_hook as usize as u32) {
-        Ok(hook) => {
-            OP_LOGGER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-            info!("op logger: installed - perform the action to identify");
-        }
-        Err(e) => error!("op logger: hook failed: {e:?}"),
-    }
-}
-
-/// F9 (THROWAWAY): dump the name-registry neighborhood past bank C (pointers at
-/// 0x6DDB48.., counts 0x6DDB70/0x6DDB74) to identify the first/last-name tables the
-/// auto-trader name ids index.
-#[allow(dead_code)]
-unsafe fn dump_name_registry() {
-    let first_count = *(0x006ddb70 as *const u16);
-    let last_count = *(0x006ddb74 as *const u16);
-    debug!("name registry counts: first {first_count}, last {last_count}");
-    for i in 0..10u32 {
-        let slot = 0x006ddb48 + i * 4;
-        let ptr = *(slot as *const u32);
-        if !(0x0001_0000..0x7fff_0000).contains(&ptr) {
-            debug!("name table slot {slot:#010x}: {ptr:#010x} (not a pointer)");
-            continue;
-        }
-        let mut preview = String::new();
-        for off in 0..96u32 {
-            let b = *((ptr + off) as *const u8);
-            preview.push(if b == 0 {
-                '|'
-            } else if (0x20..0x7f).contains(&b) {
-                b as char
-            } else {
-                '.'
-            });
-        }
-        debug!("name table slot {slot:#010x} -> {ptr:#010x}: {preview}");
-    }
-}
-
-/// F9 (THROWAWAY): list the towns whose tavern has a hireable captain, replicating
-/// the game's resolver 0x5261d0: walk the town's auto-trader chain, a hireable
-/// captain is an available (state > 0x20) unemployed (merchant 0xff) record. Logs
-/// every chain record to the debug log for offset verification.
-#[allow(dead_code)]
-unsafe fn find_tavern_captains() {
-    debug!("today's date serial: {}", *(0x006de4b4 as *const u32));
-    dump_name_registry();
-    let ships = p3_api::ships::ShipsPtr::new();
-    let count = ships.get_auto_traders_size();
-    let mut chained: Vec<(u16, String)> = Vec::new();
-    let mut found = 0;
-    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
-        let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
-        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
-        // The chain ends on an out-of-range index; cap the walk against cycles.
-        for _ in 0..count {
-            let Some(trader) = ships.get_auto_trader(index) else { break };
-            chained.push((index, town.clone()));
-            if trader.is_captain() && trader.get_merchant_index() == 0xff {
-                found += 1;
-                notify(&format!(
-                    "Captain for hire in {town}: nav {} trade {} combat {} (43/level), wage {}",
-                    trader.get_navigation_skill(),
-                    trader.get_trade_skill(),
-                    trader.get_combat_skill(),
-                    trader.get_daily_wage()
-                ));
-            }
-            index = trader.get_next_index();
-        }
-    }
-    // The whole array: chained records tagged with their town, the rest "unchained" -
-    // employed captains, parked administrators, free slots.
-    for index in 0..count {
-        let Some(trader) = ships.get_auto_trader(index) else { break };
-        let location = chained
-            .iter()
-            .find(|(i, _)| *i == index)
-            .map(|(_, town)| town.clone())
-            .unwrap_or_else(|| "unchained".into());
-        let share = if trader.is_pirate() {
-            format!(" share {}%", trader.get_pirate_loot_share_percent())
-        } else {
-            String::new()
-        };
-        debug!(
-            "auto trader {index} ({location}): state {:#04x}{share} names {}/{} field4 {} nav {} trade {} combat {} wage {} merchant {:#04x} next {:#x}",
-            trader.get_state_byte(),
-            trader.get_first_name_id(),
-            trader.get_last_name_id(),
-            trader.get_timestamp(),
-            trader.get_navigation_skill(),
-            trader.get_trade_skill(),
-            trader.get_combat_skill(),
-            trader.get_daily_wage(),
-            trader.get_merchant_index(),
-            trader.get_next_index()
-        );
-    }
-    if found == 0 {
-        notify("No captain is waiting in any tavern");
-    }
-    // Every ship with a captain: correlates the unchained auto-trader records with
-    // the ships employing them (ship+0x42, incl. town-owned and pirate ships).
-    for ship_index in 0..ships.get_ships_size() {
-        let Some(ship) = ships.get_ship(ship_index) else { continue };
-        let captain = ship.get_captain_index();
-        if captain < count {
-            debug!(
-                "ship {ship_index} {:?} (owner {:#04x}): captain {captain}",
-                ship.get_name(),
-                ship.get_merchant_index()
-            );
-        }
-    }
 }
 
 /// The ship currently shown in the ship panel (the map selection).
@@ -1090,8 +720,9 @@ unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Option<PriceLe
 
 /// F1 while the goods dialog is open: fill the displayed stop's EMPTY ware slots with
 /// trade orders for the stop's own town - buy what it produces (at STOP_BUY_LEVEL),
-/// sell everything else (at STOP_SELL_LEVEL), MAX amounts - exactly F4's stop, but in
-/// place and preserving every existing instruction, office transfers included. With
+/// sell everything else (at STOP_SELL_LEVEL), MAX amounts - the same shape as a stop of
+/// the F4 trade template, but written in place and preserving every existing instruction,
+/// office transfers included. With
 /// `skip_no_buy_wares` the [NO_BUY_WARES] get no order where the town produces them.
 /// The instruction order is recomputed into the builder's cargo order.
 unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares: bool) {
@@ -1185,26 +816,6 @@ unsafe fn apply_route_file(ship_index: u16) -> bool {
     true
 }
 
-/// The context every route key needs: the selected ship (which must be the player's) and
-/// the town whose view is open. Logs why not when it cannot be resolved.
-unsafe fn route_context(what: &str) -> Option<(u16, String, u8)> {
-    let Some(ship_index) = selected_ship_index() else {
-        notify(&format!("{what}: no ship selected"));
-        return None;
-    };
-    if !is_player_ship(ship_index) {
-        notify(&format!("{what}: the selected ship is not yours"));
-        return None;
-    }
-    let Some(town_index) = current_town_index() else {
-        notify(&format!("{what}: not in a town"));
-        return None;
-    };
-    let ships = p3_api::ships::ShipsPtr::new();
-    let ship_name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
-    Some((ship_index, ship_name, town_index))
-}
-
 /// True if the player has a trading office in the town. Route stops that transfer wares
 /// to or from an office are wiped at load time in towns where there is none.
 unsafe fn has_player_office(town_index: u8) -> bool {
@@ -1234,71 +845,20 @@ unsafe fn write_and_apply_route(ship_index: u16, mut stops: Vec<TradeRouteStop>)
     true
 }
 
-/// Append a trade stop for the current town to the selected ship's route: buy the wares
-/// the town produces at the STOP_BUY_LEVEL price, sell all others at the STOP_SELL_LEVEL
-/// price, with the sell instructions listed above the buys. With `skip_no_buy_wares` the
-/// [NO_BUY_WARES] get no order at all where the town produces them. The whole route is
-/// then re-applied through the game's loader + transfer.
-unsafe fn on_add_stop_hotkey(skip_no_buy_wares: bool) {
-    let Some((ship_index, name, town_index)) = route_context("add stop") else {
-        return;
-    };
-    let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
-    let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
-
-    let mut price = [0i32; 24];
-    let mut amount = [0i32; 24];
-    let mut bought = Vec::new();
-    let mut skipped = Vec::new();
-    let mut sold = 0;
-    for ware_index in TRADE_WARES {
-        let i = ware_index as usize;
-        let ware_id = WareId::from_u16(ware_index).unwrap();
-        if production[i] > 0 {
-            // Produced here: collect it, up to the buy level's maximum price - unless
-            // it is one of the wares we leave in the town.
-            if skip_no_buy_wares && NO_BUY_WARES.contains(&ware_id) {
-                skipped.push(format!("{ware_id:?}"));
-                continue;
-            }
-            price[i] = -buy_price(ware_index, STOP_BUY_LEVEL);
-            bought.push(format!("{ware_id:?}"));
-        } else {
-            // Not produced here: supply it, down to the sell level's minimum price.
-            price[i] = sell_price(ware_index, STOP_SELL_LEVEL);
-            sold += 1;
-        }
-        amount[i] = builder::MAX_AMOUNT;
-    }
-    // builder::stop orders the instructions: the sells first, then the buys with the
-    // barrel goods before the bulky loads goods.
-    let mut stops = read_ship_route(ship_index);
-    stops.push(builder::stop(town_index, 0x00, price, amount));
-    let stop_count = stops.len();
-
-    if write_and_apply_route(ship_index, stops) {
-        let skipped = if skipped.is_empty() {
-            String::new()
-        } else {
-            format!(", skipping [{}]", skipped.join(", "))
-        };
-        info!(
-            "add stop in {town} on {name:?}: buying [{}]{skipped}, selling {sold} others (route now {stop_count} stops)",
-            bought.join(", ")
-        );
-        notify(&format!("Stop added in {town}: {name} now {stop_count} stops"));
-    }
-}
-
-/// The route templates F3 can set, from `p3_rou::builder`.
+/// The route templates the F1/F2/F3 keys can set, from `p3_rou::builder`.
 #[derive(Clone, Copy, Debug)]
 enum RouteKind {
     FiveStop,
     SixStop,
     Suck,
+    /// One self-contained trade stop per target: buy what the town produces, sell what
+    /// it does not, both at the extreme Y prices. Nothing is loaded at home and
+    /// everything is unloaded there, so the route is a circuit that needs no
+    /// consumption figures and no office at any target.
+    Trade,
 }
 
-/// F3: rebuild the selected ship's route from a supply template. The ship's current
+/// F1/F2/F3: rebuild the selected ship's route from a supply template. The ship's current
 /// route provides the towns: its FIRST stop's town becomes the home town, and the
 /// remaining unique towns, in order, the targets (further occurrences of the home town
 /// are ignored; a ship without a route uses the merchant's home town and the open town
@@ -1307,13 +867,22 @@ enum RouteKind {
 /// shift held, the target is just the currently open town and the generated stops are
 /// APPENDED to the existing route instead of replacing it.
 ///
-/// Quantities are a week of each target's citizen and business consumption; prices the
-/// R levels. Wares a target produces itself are not supplied to it; targets without a
+/// **What ALT means depends on the template**, because each has a different filter worth
+/// relaxing - in both cases it is a ware filter, never a quantity:
+///
+/// | Template | plain | with ALT |
+/// |-|-|-|
+/// | F1 5stop, F2 6stop | supply everything the target consumes | leave out the [NO_SUPPLY_WARES] |
+/// | F3 collect, F4 trade | leave the [NO_BUY_WARES] in the town | buy those too |
+///
+/// For the supply templates, quantities are a week of each target's citizen and business
+/// consumption and prices the R levels. Wares a target produces itself are not supplied to
+/// it; targets without a
 /// player office get a combined sell-and-buy trade stop (buying their produce at T)
-/// instead of the office-reset stops. Ctrl+F3 builds a collection route instead: one
-/// buy stop per target at the T prices, skipping the NO_BUY_WARES and everything the
+/// instead of the office-reset stops. F3 builds a collection route instead: one
+/// buy stop per target at the R price, skipping the NO_BUY_WARES and everything the
 /// home town produces itself.
-unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
+unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
     let Some(ship_index) = selected_ship_index() else {
         notify("Route: no ship selected");
         return;
@@ -1368,16 +937,23 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     };
 
     // The buy list, shared by the collection route and the office-less trade stops:
-    // everything except the NO_BUY_WARES and what the home town produces itself, at
-    // the T price. (In trade stops, sells take precedence per ware.)
+    // everything the home town does not produce itself, at the R price. (In trade stops,
+    // sells take precedence per ware.)
+    //
+    // ALT widens it by including the NO_BUY_WARES - but only for the collection route,
+    // whose whole job is buying. On the supply templates ALT already means the supply
+    // filter, and letting it also widen the buying at office-less targets would have one
+    // key freeing hold space and filling it again in the same press.
+    let skip_no_buy = !(matches!(kind, RouteKind::Suck) && alt);
     let home_production = GAME_WORLD_PTR.get_town(load_town).get_production_values();
     let mut collect_buys = [0i32; 24];
     for ware_index in TRADE_WARES {
         let i = ware_index as usize;
         let ware_id = WareId::from_u16(ware_index).unwrap();
-        if home_production[i] <= 0 && !NO_BUY_WARES.contains(&ware_id) {
-            collect_buys[i] = buy_price(ware_index, PriceLevel::Lower70);
+        if home_production[i] > 0 || (skip_no_buy && NO_BUY_WARES.contains(&ware_id)) {
+            continue;
         }
+        collect_buys[i] = buy_price(ware_index, COLLECT_BUY_LEVEL);
     }
 
     let mut total_load = [0i32; 24];
@@ -1390,8 +966,17 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
             described.push(town_name);
             continue;
         }
+        if matches!(kind, RouteKind::Trade) {
+            // ALT widens the buying here rather than narrowing the supplies: this
+            // template supplies nothing to narrow.
+            let (price, amount, bought, skipped, sold) = town_trade_basket(town_index, !alt);
+            middle.push(builder::stop(town_index, builder::FLAG_X, price, amount));
+            let left = if skipped.is_empty() { String::new() } else { format!(", leaving [{}]", skipped.join(", ")) };
+            described.push(format!("{town_name} (buying [{}]{left}, selling {sold} others)", bought.join(", ")));
+            continue;
+        }
 
-        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index);
+        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index, alt);
         for i in 0..24 {
             total_load[i] = total_load[i].saturating_add(load_amount[i]);
         }
@@ -1424,7 +1009,14 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool) {
     if write_and_apply_route(ship_index, stops) {
         rename_ship(ship_index, &route_name);
         let action = if append { "appended to" } else { "set on" };
-        let verb = if matches!(kind, RouteKind::Suck) { "collect at T from" } else { "supply" };
+        let verb = match (kind, alt) {
+            (RouteKind::Suck, true) => "collect at T from (including the no-buy wares)",
+            (RouteKind::Suck, false) => "collect at T from",
+            (RouteKind::Trade, true) => "trade at Y with (buying everything produced)",
+            (RouteKind::Trade, false) => "trade at Y with",
+            (_, true) => "supply (skipping the low-value inputs)",
+            (_, false) => "supply",
+        };
         info!(
             "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops)",
             described.join(", ")
@@ -1496,11 +1088,49 @@ unsafe fn rename_ship(ship_index: u16, name: &str) {
     }
 }
 
+/// One target town's trade basket, the shape the F4 template repeats: buy what the town
+/// produces (at [STOP_BUY_LEVEL]) and sell what it does not (at [STOP_SELL_LEVEL]), all at
+/// MAX amounts - the price is the limit here, not a quantity, which is why this needs no
+/// consumption reading.
+/// With `skip_no_buy` the [NO_BUY_WARES] get no order where the town produces them.
+/// Returns (prices, amounts, bought names, skipped names, sold count).
+unsafe fn town_trade_basket(
+    town_index: u8,
+    skip_no_buy: bool,
+) -> ([i32; 24], [i32; 24], Vec<String>, Vec<String>, u32) {
+    let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
+    let mut price = [0i32; 24];
+    let mut amount = [0i32; 24];
+    let mut bought = Vec::new();
+    let mut skipped = Vec::new();
+    let mut sold = 0;
+    for ware_index in TRADE_WARES {
+        let i = ware_index as usize;
+        let ware_id = WareId::from_u16(ware_index).unwrap();
+        if production[i] > 0 {
+            if skip_no_buy && NO_BUY_WARES.contains(&ware_id) {
+                skipped.push(format!("{ware_id:?}"));
+                continue;
+            }
+            price[i] = -buy_price(ware_index, STOP_BUY_LEVEL);
+            bought.push(format!("{ware_id:?}"));
+        } else {
+            price[i] = sell_price(ware_index, STOP_SELL_LEVEL);
+            sold += 1;
+        }
+        amount[i] = builder::MAX_AMOUNT;
+    }
+    (price, amount, bought, skipped, sold)
+}
+
 /// One target town's supply basket: a week of its citizen and business consumption in
-/// raw units, rounded up to whole in-game units, with the R sell prices; wares the town
-/// produces itself and the NO_SUPPLY_WARES are excluded. Returns (amounts, prices,
-/// supplied ware count).
-unsafe fn town_supply_basket(town_index: u8) -> ([i32; 24], [i32; 24], u32) {
+/// raw units, rounded up to whole in-game units, with the R sell prices. Wares the town
+/// produces itself are always excluded; with `skip_no_supply` the [NO_SUPPLY_WARES] are
+/// too. Returns (amounts, prices, supplied ware count).
+///
+/// The quantity is a week of citizen **and** business consumption in both cases -
+/// `skip_no_supply` narrows which wares are carried, never how much of them.
+unsafe fn town_supply_basket(town_index: u8, skip_no_supply: bool) -> ([i32; 24], [i32; 24], u32) {
     let town = GAME_WORLD_PTR.get_town(town_index);
     let citizens = town.get_daily_consumptions_citizens();
     let businesses = town.get_daily_consumptions_businesses();
@@ -1513,7 +1143,7 @@ unsafe fn town_supply_basket(town_index: u8) -> ([i32; 24], [i32; 24], u32) {
         let i = ware_index as usize;
         let ware_id = WareId::from_u16(ware_index).unwrap();
         // A zero load amount is how the route templates express "do not supply this".
-        if production[i] > 0 || NO_SUPPLY_WARES.contains(&ware_id) {
+        if production[i] > 0 || (skip_no_supply && NO_SUPPLY_WARES.contains(&ware_id)) {
             continue;
         }
         // A week of what the town actually consumes - citizens and businesses - in raw
@@ -1528,7 +1158,7 @@ unsafe fn town_supply_basket(town_index: u8) -> ([i32; 24], [i32; 24], u32) {
         // ship returns, while the surplus just rides home.
         let scaling = ware_id.get_scaling();
         load_amount[i] = (weekly + scaling - 1) / scaling * scaling;
-        sell_prices[i] = sell_price(ware_index, PriceLevel::Center);
+        sell_prices[i] = sell_price(ware_index, SUPPLY_SELL_LEVEL);
         supplied += 1;
     }
     (load_amount, sell_prices, supplied)
@@ -1593,10 +1223,10 @@ unsafe fn on_setup_hotkey() {
             } else {
                 stocks[i]
             };
-            (-buy_price(ware_index, PriceLevel::Center), stock)
+            (-buy_price(ware_index, PriceLevel::Q), stock)
         } else {
             sold += 1;
-            (sell_price(ware_index, PriceLevel::Center), stocks[i])
+            (sell_price(ware_index, PriceLevel::Q), stocks[i])
         };
         // Executed directly (not enqueued) so the view refresh below sees the new values.
         execute_operation(&Operation::OfficeAutotradeSettingChange {
@@ -1778,8 +1408,8 @@ unsafe fn on_town_dump_hotkey() {
     // then buys (ctrl).
     let mut csv = String::from(
         "ware,base/unit,\
-         sell_Q_t1,sell_W_mid_t0_t1,sell_E_30_t0_t1,sell_R_t0,sell_T_70_0_t0,sell_Y_mid_0_t0,\
-         buy_Q_t2,buy_W_mid_t1_t2,buy_E_30_t1_t2,buy_R_t1,buy_T_70_t0_t1,buy_Y_mid_t0_t1,\
+         sell_Q_1.40,sell_W_1.45,sell_E_1.50,sell_R_1.55,sell_T_1.60,sell_Y_1.65,\
+         buy_Q_1.00,buy_W_1.05,buy_E_1.10,buy_R_1.15,buy_T_1.20,buy_Y_1.25,\
          cit/wk,bus/wk,prod/day,(t2-t1)/10,t0 units,t1 units,t2 units,t3 units\n",
     );
     for ware_index in TRADE_WARES {
@@ -1791,8 +1421,8 @@ unsafe fn on_town_dump_hotkey() {
         debug!(
             "{ware_id:?}: t=[{t0}, {t1}, {t2}, {t3}] raw ({} units of week supply), base {base_per_unit:.1}/unit, sell@t0 {}, buy@t1 {}",
             t0 / scaling,
-            sell_price(ware_index, PriceLevel::Center),
-            buy_price(ware_index, PriceLevel::Center),
+            sell_price(ware_index, PriceLevel::Q),
+            buy_price(ware_index, PriceLevel::Q),
         );
         let levels = LEVEL_KEYS.map(|(_, level)| level);
         let sells: Vec<String> = levels.iter().map(|&l| sell_price(ware_index, l).to_string()).collect();
@@ -1867,7 +1497,7 @@ unsafe extern "thiscall" fn unfreeze_port_hook(tasks: u32) {
 ///
 /// A frozen port turns arriving ships away, and an auto-trade ship that was routed
 /// through it can end up stopped - annoying to notice and to restart by hand, since
-/// nothing in the game tells you which ships were affected. F3 already stamps a
+/// nothing in the game tells you which ships were affected. The route keys already stamp a
 /// generated ship's route into its name ([route_ship_name]: [ROUTE_NAME_PREFIX] then one
 /// [town_code] per route town), so the name is a reliable, cheap statement of "this ship
 /// serves that town" - no route walking needed.

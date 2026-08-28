@@ -40,11 +40,13 @@ const ROUTE_DUMP_KEY: u32 = VK_F10.0 as u32;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 10] = [
+const PROBE_KEYS: [(u32, u32); 11] = [
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
     (DEBUG_PROBE1_KEY, MOD_ALT),
+    // The operation logger: the one permanent tool here, rather than a throwaway.
+    (DEBUG_PROBE1_KEY, MOD_CTRL | MOD_SHIFT),
     (ROUTE_DUMP_KEY, 0),
     (ROUTE_DUMP_KEY, MOD_CTRL),
     (ROUTE_DUMP_KEY, MOD_SHIFT),
@@ -78,6 +80,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, MOD_CTRL) => toggle_probe1_timeline(),
         (DEBUG_PROBE1_KEY, MOD_SHIFT) => debug_probe1_ship(),
         (DEBUG_PROBE1_KEY, MOD_ALT) => debug_probe_administrators(),
+        (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, 0) => debug_probe1(),
         (ROUTE_DUMP_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (ROUTE_DUMP_KEY, MOD_SHIFT) => debug_probe_ice(),
@@ -1315,4 +1318,51 @@ unsafe fn retire_probe_hang() {
     // if the game keeps running, press ALT+F10 and check that no 0x27 task is left
     // pending, which means the handler completed.
     retire_log("  task is queued; the handler runs on the next dispatcher pass. Frozen now = the bug. Still running = press ALT+F10 to check the task was consumed.");
+}
+
+// ---------------------------------------------------------------------------
+// The operation logger. Moved here from mod-auto-supply on 28 Aug 2026: it is a
+// debugging tool rather than a gameplay feature, and it had been sitting there
+// uncalled since the F9/F10 keys moved into this crate.
+//
+// It names the opcode behind any UI action in seconds, which is why it is the one
+// probe worth keeping permanently. Write-up: `.claude/notes/tools/operation-queue.md`.
+// ---------------------------------------------------------------------------
+
+/// Module-relative offset of the operation queue's drain call into the operation switch
+/// (`execute_operations` `0x00546870` calls `0x00535760` at `0x00546934`).
+const OP_SWITCH_DRAIN_CALL_OFFSET: u32 = 0x146934;
+/// Noisy periodic opcodes to omit, or the log drowns in them.
+const OP_LOGGER_NOISE: [u32; 3] = [0x94, 0x24, 0x7b];
+
+static OP_LOGGER_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe extern "thiscall" fn op_logger_hook(op: u32) {
+    let opcode = *(op as *const u32);
+    if !OP_LOGGER_NOISE.contains(&opcode) {
+        let bytes: Vec<String> = (0..0x14).map(|i| format!("{:02x}", *((op + i) as *const u8))).collect();
+        debug!("op {opcode:#04x}: {}", bytes.join(" "));
+    }
+    let hook = OP_LOGGER_HOOK.load(Ordering::SeqCst);
+    let original: extern "thiscall" fn(u32) = mem::transmute((*hook).old_absolute);
+    original(op);
+}
+
+/// CTRL+SHIFT+F9: start logging every operation the queue drains, so the next UI action
+/// names its own opcode. Press once, do the thing in-game, read DebugView.
+///
+/// Installing is one-way for the session - the hook stays until the game exits - and
+/// pressing again is a no-op rather than a second hook.
+unsafe fn install_op_logger() {
+    if !OP_LOGGER_HOOK.load(Ordering::SeqCst).is_null() {
+        notify("op logger: already running");
+        return;
+    }
+    match hook_call_rel32(OP_SWITCH_DRAIN_CALL_OFFSET, op_logger_hook as usize as u32) {
+        Ok(hook) => {
+            OP_LOGGER_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+            notify("op logger: running - perform the action to identify it");
+        }
+        Err(e) => error!("op logger: hook failed: {e:?}"),
+    }
 }

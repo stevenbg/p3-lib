@@ -35,45 +35,58 @@ pub unsafe fn difficulty_d() -> f32 {
     }
 }
 
-/// Which segment of a curve a level sits on: below or above the curve's central
-/// threshold (BUY: t1, SELL: t0).
-#[derive(Clone, Copy, Debug)]
-enum Segment {
-    Lower,
-    Upper,
-}
-
-/// Six positions on a price curve, shared by both directions. The first three lie on
-/// the segment below the curve's central threshold, the last three above it:
+/// The six price levels the Q W E R T Y keys set, in ASCENDING price order. Both ladders
+/// are given as **absolute factors on the base price**, evenly spaced 0.05 apart, rather
+/// than as positions on the price curve - the factor is what the player sets and what
+/// decides the margin, so it is the thing worth keeping stable.
 ///
-/// | level | BUY (t0 -> t1 -> t2) | SELL (0 -> t0 -> t1) |
-/// |-------|----------------------|----------------------|
-/// | LowerMid | mid t0..t1 (1.25) | mid 0..t0 ((d+1.4)/2) |
-/// | Lower70  | 70% t0->t1 (1.15) | 70% 0->t0 |
-/// | Center   | t1 (1.0, par)     | t0 (1.4, the supply price) |
-/// | Upper30  | 30% t1->t2 (0.94) | 30% t0->t1 (1.28) |
-/// | UpperMid | mid t1..t2 (0.90) | mid t0..t1 (1.20) |
-/// | Upper    | t2 (0.80)         | t1 (1.0) |
+/// | level | key | BUY | SELL | matched-pair margin |
+/// |-|-|-|-|-|
+/// | [PriceLevel::Q] | Q | 1.00 | 1.40 | +40.0% |
+/// | [PriceLevel::W] | W | 1.05 | 1.45 | +38.1% |
+/// | [PriceLevel::E] | E | 1.10 | 1.50 | +36.4% |
+/// | [PriceLevel::R] | R | 1.15 | 1.55 | +34.8% |
+/// | [PriceLevel::T] | T | 1.20 | 1.60 | +33.3% |
+/// | [PriceLevel::Y] | Y | 1.25 | 1.65 | +32.0% |
+///
+/// Every rung is profitable when bought and sold on the same letter, and buying on a
+/// letter at or below the letter you sell on can never lose money.
+///
+/// Where each lands on the curve, since that is what decides whether a trade fires at
+/// all: the buy ladder covers the upper half of the t0..t1 segment (Q is t1 itself, Y is
+/// the midpoint), and the sell ladder the upper part of the 0..t0 segment (Q is t0). In
+/// weeks of the town's consumption a buy leaves behind:
+///
+/// | | Q | W | E | R | T | Y |
+/// |-|-|-|-|-|-|-|
+/// | most wares | 3.0 | 2.8 | 2.6 | 2.4 | 2.2 | 2.0 |
+/// | grain (t1 is 5 weeks) | 5.0 | 4.6 | 4.2 | 3.8 | 3.4 | 3.0 |
+///
+/// Both ladders stay inside their segment for every trade difficulty (`d` is 1.8 to 2.2,
+/// and the sell segment spans 1.4 to `d`), so a level always names a reachable stock
+/// point. Unlike the previous curve-relative scheme the sell prices no longer move with
+/// `d`: the price you set is the price you get, and it is the stock it corresponds to
+/// that shifts instead.
 #[derive(Clone, Copy, Debug)]
 pub enum PriceLevel {
-    LowerMid,
-    Lower70,
-    Center,
-    Upper30,
-    UpperMid,
-    Upper,
+    Q,
+    W,
+    E,
+    R,
+    T,
+    Y,
 }
 
 impl PriceLevel {
-    /// The level as a segment and a fraction along it.
-    fn position(self) -> (Segment, f32) {
+    /// (buy factor, sell factor) - the ladder itself.
+    const fn factors(self) -> (f32, f32) {
         match self {
-            PriceLevel::LowerMid => (Segment::Lower, 0.5),
-            PriceLevel::Lower70 => (Segment::Lower, 0.7),
-            PriceLevel::Center => (Segment::Lower, 1.0),
-            PriceLevel::Upper30 => (Segment::Upper, 0.3),
-            PriceLevel::UpperMid => (Segment::Upper, 0.5),
-            PriceLevel::Upper => (Segment::Upper, 1.0),
+            PriceLevel::Q => (1.00, 1.40),
+            PriceLevel::W => (1.05, 1.45),
+            PriceLevel::E => (1.10, 1.50),
+            PriceLevel::R => (1.15, 1.55),
+            PriceLevel::T => (1.20, 1.60),
+            PriceLevel::Y => (1.25, 1.65),
         }
     }
 }
@@ -84,21 +97,16 @@ pub unsafe fn base_price_per_unit(ware_index: u16) -> f32 {
     *WARE_BASE_PRICES.add(ware_index as usize) * scaling
 }
 
-/// The buying curve's factor at a level: 1.5 at t0 -> 1.0 at t1 -> 0.8 at t2.
+/// The buying factor at a level. On the curve this is a point in `t0..t1`, where the
+/// buying factor runs 1.5 at t0 down to 1.0 at t1.
 pub fn buy_factor(level: PriceLevel) -> f32 {
-    match level.position() {
-        (Segment::Lower, f) => 1.5 - 0.5 * f,
-        (Segment::Upper, f) => 1.0 - 0.2 * f,
-    }
+    level.factors().0
 }
 
-/// The selling curve's factor at a level: d at an empty market -> 1.4 at t0 -> 1.0 at t1.
-pub unsafe fn sell_factor(level: PriceLevel) -> f32 {
-    let d = difficulty_d();
-    match level.position() {
-        (Segment::Lower, f) => d - (d - 1.4) * f,
-        (Segment::Upper, f) => 1.4 - 0.4 * f,
-    }
+/// The selling factor at a level. On the curve this is a point in `0..t0`, where the
+/// selling factor runs `d` at an empty market down to 1.4 at t0.
+pub fn sell_factor(level: PriceLevel) -> f32 {
+    level.factors().1
 }
 
 /// The maximum buy price at a level: the administrator drains the market down to that
