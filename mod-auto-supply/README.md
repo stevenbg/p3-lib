@@ -41,9 +41,17 @@ because it opened last.
 | F2 | The same, but with the 6stop office swap per target |
 | F3 | A collection route instead: nothing loaded at home, one buy stop per target at the E price for everything the home town does not produce itself, everything unloaded at home |
 | F4 | A trade circuit: nothing loaded at home, one self-contained trade stop per target - buy what that town produces at the R buy price, sell what it does not at the R sell price, Max amounts - and everything unloaded at home. No consumption figures and no office needed at any target; the price is the limit rather than a quantity |
+| Ctrl + F3 | A fetch route: collect a hand-picked ware list from everywhere it is made. The wares **and their prices** are the buy orders you left on the ship's **first stop**, the targets are every town that produces one of them, and the stops are ordered into the shortest round trip. Every stop buys the whole list at your prices; nothing loaded at home, everything unloaded there. Needs an existing route to read - see below |
 | Alt + F1 / F2 | Leaves the low-value industry inputs (bricks, pig iron, pitch, hemp) out of the supplies, freeing hold space for goods with a better margin |
 | Alt + F3 / F4 | Buys the no-buy wares (pitch, timber, salt, bricks, grain, hemp) as well, instead of leaving them in the town |
+| Alt + Ctrl + F3 | Calls at **every** town rather than only the ones that produce a wanted ware |
 | Shift + F1 / F2 / F3 / F4 | Any of the above, but targeting just the currently open town and APPENDING the generated stops to the existing route instead of replacing it (combines with Alt) |
+
+Alt is a filter everywhere, and on Ctrl+F3 the filter it relaxes is the one over **towns**
+rather than wares - the ware list there is written out by hand, so there is nothing left to
+widen. Ctrl+F3 takes no Shift: its targets are derived, so Shift's single open town has
+nothing to say.
+
 
 Alt is always a ware filter, never a quantity: it widens what a buying template takes and
 narrows what a supplying template carries. On F1 and F2 it does not touch the buy half of
@@ -61,7 +69,8 @@ creates orders.
 
 The route keys take both the home town (its first stop) and the targets (the rest) from
 the ship's own route; Shift and F4 use the town whose view is open, with the merchant's
-home town as the source. Route
+home town as the source. Ctrl+F3 is the exception - it reads the wares off the first stop
+and derives the targets from who produces them (see below). Route
 quantities are one week of each target
 town's real consumption - citizens plus businesses, the market hall consumption
 window's Total column, read live from the town - rounded up to whole in-game units;
@@ -87,6 +96,73 @@ sort together at the top of any name-sorted ship list, and costs no town: one da
 plus ten towns is exactly the 31 characters available. The name is also what the
 thawing-port feature below reads to decide which ships serve a town, so renaming a route
 ship by hand takes it out of that.
+
+## Fetch routes (Ctrl+F3)
+
+The other route keys decide *what* to carry from the towns you picked. A fetch route works
+the other way round: you pick the **wares**, and it finds the towns.
+
+The buy orders on the ship's first stop are the specification, prices included, so the
+ship's own route says what it is for. Set it up once - open the route window's goods dialog
+on the first stop and give each ware you want a buy order at the price you are willing to
+pay (Ctrl+Q..Y prices the whole stop off the ladder, or edit a ware by hand) - then press
+Ctrl+F3. What you get is:
+
+- the first stop's town as the home town, as with every other route key;
+- one buy stop for every town that **produces** at least one of the wanted wares, each
+  buying the whole wanted list at **your prices**, copied through ware by ware;
+- those stops ordered into the shortest round trip from home and back;
+- nothing loaded at home, everything unloaded into the home office at the end.
+
+This is the only route key that does not price itself, which is the point: the price is
+the whole control surface here. Every other template applies one level to a list it
+derived, so it can only offer a single letter for all of it; here you can pay near par for
+the bulk goods and reach for something scarce in the same route, and the numbers you see in
+the dialog are exactly the ones the route sails with.
+
+Production decides which towns are worth calling at, not what a stop buys once it is
+there. A producer keeps refilling between visits, whereas a town that happens to be
+holding twenty barrels of wine today is not a source to build a standing circuit around -
+but once the ship is in the harbour there is no reason to walk past the rest of the list,
+and your price limits are the filter anyway: a stop will not buy into a shortage.
+
+**Alt + Ctrl + F3 drops the production filter** and calls at every town on the map. Worth
+it when production is the wrong question: a town can sit on a wanted ware it does not make
+- imports, an AI trader's dumping ground, a mill that has since closed - and your price
+limits mean the ship buys only where there really is a surplus, so a call that finds
+nothing costs sailing time and nothing else. The tour is still the shortest one through all
+of them, which is what makes the wider sweep affordable.
+
+The Y price is the most aggressive in the mod, and deliberately so - you named these wares
+one at a time, so the route should outbid a producing town's own market rather than sail
+past it half empty. It drains a producer down to roughly two weeks of that town's own
+consumption (five weeks for grain; see the price model below).
+
+**It is a one-shot expansion.** The generated route replaces the first stop with the usual
+empty home bracket, so the buy orders that specified it are gone once it has been built -
+pressing Ctrl+F3 again reports that the first stop has no buy orders. The previous route is
+in `_backup.rou` as always, and re-marking the wares takes a few clicks. Refusals say which
+of the three inputs is missing: no route to read, no buy orders on the first stop, or no
+town but home producing any of them.
+
+### Ordering the stops
+
+The tour uses the game's own pathfinder - the one that moves the ships - so a leg is as
+long as the water route really is, around coastlines and along the sea lanes, not a
+straight line between two dots. It builds the full distance matrix over home plus the
+targets, takes a nearest-neighbour tour from home and then improves it by 2-opt until no
+segment reversal helps. For the handful of towns a ware list turns up that is optimal or
+within a percent of it, and it costs one keypress (all 24 towns would be 276 router calls).
+
+Travel time in this game is that distance divided by a per-ship speed factor - the same
+factor on every leg, from the ship's class, hull condition and load - so the shortest tour
+is also the fastest one, whatever ship ends up running it. Ordering on distance alone is
+not an approximation of travel time; it gives the identical ranking.
+
+The log line names the tour, its length, and what plain nearest neighbour would have cost,
+so the ordering is checkable. Only fetch routes are reordered: on the other keys the target
+order is the one you put in the ship's route by hand, and rearranging that would be a
+surprise.
 
 ## Thawing ports restart route ships
 
@@ -143,6 +219,10 @@ The generated orders use these levels:
 | F1 goods-dialog fill, F4 trade route | R | R |
 | F1 / F2 supply routes | E (at office-less targets) | Q |
 | F3 collection route | E | - |
+
+Ctrl+F3 is not in that table: it copies the buy prices off the ship's first stop, so its
+prices are yours rather than a level of the mod's. Ctrl+Q..Y in the goods dialog is a
+convenient way to set them, but nothing forces them onto the ladder.
 
 In stock terms the buy ladder covers the upper half of the t0..t1 segment and the sell
 ladder the upper part of 0..t0, so a buy leaves this many weeks of the town's consumption

@@ -18,7 +18,7 @@ use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
     auto_trader::skill_caps,
-    data::{enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
+    data::{convoy::CONVOY_SIZE, enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
     game_world::{GAME_WORLD_PTR, TICKS_PER_YEAR},
     hotkeys::{HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     operations::OPERATIONS_PTR,
@@ -40,7 +40,7 @@ const ROUTE_DUMP_KEY: u32 = VK_F10.0 as u32;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 11] = [
+const PROBE_KEYS: [(u32, u32); 12] = [
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
@@ -55,6 +55,9 @@ const PROBE_KEYS: [(u32, u32); 11] = [
     (ROUTE_DUMP_KEY, MOD_ALT),
     (ROUTE_DUMP_KEY, MOD_ALT | MOD_CTRL),
     (ROUTE_DUMP_KEY, MOD_ALT | MOD_SHIFT),
+    // The convoy-leader probe, for teaching mod-auto-supply's route keys to work on a
+    // convoy selection.
+    (ROUTE_DUMP_KEY, MOD_CTRL | MOD_SHIFT),
 ];
 
 /// Bind the registry and register the probe keys; called from start(). A missing
@@ -87,6 +90,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (ROUTE_DUMP_KEY, MOD_ALT) => retire_probe_inspect(),
         (ROUTE_DUMP_KEY, m) if m == MOD_ALT | MOD_CTRL => retire_probe_benign(),
         (ROUTE_DUMP_KEY, m) if m == MOD_ALT | MOD_SHIFT => retire_probe_hang(),
+        (ROUTE_DUMP_KEY, m) if m == MOD_CTRL | MOD_SHIFT => debug_probe_convoy(),
         (ROUTE_DUMP_KEY, 0) => dump_ship_routes(),
         _ => {}
     }
@@ -699,6 +703,200 @@ unsafe fn debug_probe1_ship() {
         ship.get::<u16>(0x40),
         ship.get::<i32>(0x120)
     ));
+}
+
+/// The convoy array, from `done/hotkey-supply.md`: records of [CONVOY_SIZE] bytes, and
+/// `convoy+0x10` is the LEAD SHIP INDEX - the ship that carries the convoy's trade route
+/// at [SHIP_ROUTE_HEAD_OFFSET]. `ship+0x8` is the ship's convoy index. This probe exists to
+/// confirm those two hops before mod-auto-supply's route keys start relying on them, which
+/// is needed because the ship panel reports the *clicked* member rather than the leader, so
+/// pressing a route key on a convoy currently reads an empty route.
+const SHIP_CONVOY_INDEX_OFFSET: u32 = 0x8;
+const CONVOY_LEAD_SHIP_OFFSET: u32 = 0x10;
+/// The ship's route flags; `+0x136 == 1` gates the game's own "route assigned" operation.
+const SHIP_ROUTE_FLAGS_OFFSET: u32 = 0x136;
+
+static PROBE_CONVOY_PRESSES: AtomicU32 = AtomicU32::new(0);
+
+/// CTRL+SHIFT+F10 (THROWAWAY): who leads the selected ship's convoy, and who holds its
+/// route.
+///
+/// Select a convoy (or any of its member ships) and press. The question it answers, in one
+/// line at the end: does `convoy+0x10` name the ship that actually carries the route head,
+/// so that resolving selection -> convoy -> lead is enough to make the route keys work on a
+/// convoy selection?
+///
+/// It reaches that by three independent routes, so a disagreement is visible rather than
+/// assumed:
+///
+/// 1. `convoy+0x10` - the candidate leader.
+/// 2. A linear scan of the whole ships array for every ship whose `+0x8` names this convoy,
+///    printing each one's route head. Slower than following a chain, but it cannot be
+///    fooled by a link field that means something else.
+/// 3. The `ship+0x6` chain from the candidate leader. **Read with suspicion**: that field
+///    doubles as the ships-tick list link (`done/port-freezing.md`), so this walk is here
+///    to be compared against the scan, not trusted.
+unsafe fn debug_probe_convoy() {
+    let ships = ShipsPtr::new();
+    let ships_size = ships.get_ships_size();
+    let pool_count = *ROUTE_STOP_POOL_COUNT;
+    let Some(selected) = selected_ship_index() else {
+        notify("probe convoy: no ship selected (a building window clears the selection)");
+        return;
+    };
+    let Some(ship) = ships.get_ship(selected) else {
+        notify(&format!("probe convoy: selected index {selected} out of range"));
+        return;
+    };
+
+    let press = PROBE_CONVOY_PRESSES.fetch_add(1, Ordering::SeqCst);
+    let mut out = Vec::new();
+    let route_head = |index: u16| -> Option<u16> {
+        let ship = ships.get_ship(index)?;
+        Some(*((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16))
+    };
+    // One ship's line: name, convoy index, route head and whether that head is a real pool
+    // entry - which is exactly the test mod-auto-supply's route reader applies.
+    let describe = |index: u16| -> String {
+        let Some(ship) = ships.get_ship(index) else {
+            return format!("ship {index}: OUT OF RANGE (ships_size {ships_size})");
+        };
+        let head = *((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16);
+        format!(
+            "ship {index} {:?}: convoy +0x8 {} | route head +0x132 {head} ({}) | flags +0x136 {:#04x} | merchant {} | status +0x134 {:#04x}",
+            ship.get_name(),
+            ship.get::<u16>(SHIP_CONVOY_INDEX_OFFSET),
+            if head < pool_count { "HAS ROUTE" } else { "no route" },
+            ship.get::<u8>(SHIP_ROUTE_FLAGS_OFFSET),
+            ship.get::<u8>(0x0),
+            ship.get::<u8>(0x134),
+        )
+    };
+
+    out.push(format!(
+        "=== press {press} tick {} | selection reports ship {selected} | ships_size {ships_size} convoys_size {} pool_count {pool_count} ===",
+        GAME_WORLD_PTR.get::<u32>(0x14),
+        ships.get_convoys_size()
+    ));
+    out.push(format!("selected: {}", describe(selected)));
+
+    let convoy_index = ship.get::<u16>(SHIP_CONVOY_INDEX_OFFSET);
+    let Some(convoy) = ships.get_convoy(convoy_index) else {
+        out.push(format!(
+            "convoy index {convoy_index} is not a valid convoy (convoys_size {}) - the selected ship sails alone, so the route keys already read it correctly",
+            ships.get_convoys_size()
+        ));
+        write_convoy_log(press, &out);
+        notify(&format!("probe convoy #{press}: ship {selected} is not in a convoy -> _probe_convoy.log"));
+        return;
+    };
+
+    // The candidate leader, and the whole convoy record so any other field is available
+    // for a later question without a second probe.
+    let lead = convoy.get::<u16>(CONVOY_LEAD_SHIP_OFFSET);
+    // +0x39 is raw: a convoy at sea holds a sentinel there, not a town, so print the value
+    // beside the name rather than trusting it. (Handing it to get_town_name unguarded is
+    // what crashed the first version of this probe - p3-api now bounds the lookup.)
+    let convoy_town = convoy.get_current_town_index();
+    out.push(format!(
+        "convoy {convoy_index} at {:#010x}: lead +0x10 {lead} | status +0x12 {:#06x} | town +0x39 {convoy_town:#06x} ({})",
+        convoy.address,
+        convoy.get_status(),
+        get_town_name(convoy_town as u8).unwrap_or_else(|| "not a town".into())
+    ));
+    for row in 0..(CONVOY_SIZE + 15) / 16 {
+        let base = row * 16;
+        let bytes: Vec<String> = (0..16u32)
+            .filter(|i| base + i < CONVOY_SIZE)
+            .map(|i| format!("{:02x}", convoy.get::<u8>(base + i)))
+            .collect();
+        out.push(format!("  convoy +{base:#04x}  {}", bytes.join(" ")));
+    }
+    out.push(format!("lead candidate: {}", describe(lead)));
+
+    // Route 2: the linear scan. Also the answer to "is the leader the ONLY member with a
+    // route head", which decides whether the lookup can be trusted blind.
+    let mut members = Vec::new();
+    let mut route_holders = Vec::new();
+    for index in 0..ships_size {
+        let Some(member) = ships.get_ship(index) else { continue };
+        if member.get::<u16>(SHIP_CONVOY_INDEX_OFFSET) != convoy_index {
+            continue;
+        }
+        members.push(index);
+        if route_head(index).is_some_and(|head| head < pool_count) {
+            route_holders.push(index);
+        }
+    }
+    out.push(format!("scan: {} member ship(s) with convoy index {convoy_index}", members.len()));
+    for &index in &members {
+        out.push(format!("  member {}", describe(index)));
+    }
+
+    // Route 3: the +0x6 chain from the leader, capped and compared against the scan.
+    let mut chain = Vec::new();
+    let mut cursor = lead;
+    for _ in 0..64 {
+        if cursor >= ships_size || chain.contains(&cursor) {
+            break;
+        }
+        chain.push(cursor);
+        let Some(member) = ships.get_ship(cursor) else { break };
+        cursor = member.get_next_ship_in_convoy();
+    }
+    out.push(format!(
+        "+0x6 chain from lead {lead}: [{}] (terminator {cursor}) - {}",
+        chain.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "),
+        if chain.len() == members.len() && chain.iter().all(|i| members.contains(i)) {
+            "AGREES with the scan"
+        } else {
+            "DISAGREES with the scan - +0x6 is also the ships-tick list link, so prefer the scan"
+        }
+    ));
+
+    // The verdict, which is the whole point of the press.
+    let verdict = match route_holders.as_slice() {
+        [] => format!("NO MEMBER HAS A ROUTE HEAD - this convoy has no applied route, so nothing to compare (give it a route first)"),
+        [only] if *only == lead => format!("CONFIRMED: convoy+0x10 ({lead}) is the sole route holder - selection -> +0x8 -> +0x10 is the fix"),
+        holders if holders.contains(&lead) => format!(
+            "PARTIAL: convoy+0x10 ({lead}) holds a route, but so do {:?} - the lookup works, but the route is not unique to the leader",
+            holders.iter().filter(|&&i| i != lead).collect::<Vec<_>>()
+        ),
+        holders => format!("REFUTED: convoy+0x10 says {lead}, but the route head is on {holders:?} - +0x10 is not the leader, or the leader is not the route holder"),
+    };
+    out.push(verdict.clone());
+    out.push(format!(
+        "selection was {}the leader{}",
+        if selected == lead { "" } else { "NOT " },
+        if selected == lead {
+            " - press again with a member ship selected to see the case the route keys hit"
+        } else {
+            ""
+        }
+    ));
+
+    write_convoy_log(press, &out);
+    notify(&format!("probe convoy #{press}: {verdict} -> _probe_convoy.log"));
+}
+
+/// Both the log file and DebugView, appended across presses so two selections compare
+/// directly.
+unsafe fn write_convoy_log(press: u32, out: &[String]) {
+    for line in out {
+        debug!("probe convoy: {line}");
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(press > 0)
+        .truncate(press == 0)
+        .open("_probe_convoy.log");
+    if let Ok(mut file) = file {
+        use std::io::Write;
+        for line in out {
+            let _ = writeln!(file, "{line}");
+        }
+    }
 }
 
 /// CTRL+F9 (THROWAWAY): the pirate timeline. Samples the pirate convoys into

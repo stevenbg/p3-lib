@@ -13,6 +13,12 @@ pub mod static_town_data;
 
 pub const TOWN_SIZE: u32 = 0x9F8;
 pub const TOWN_NAME_PTRS_ADDRESS: u32 = 0x006DDA00;
+/// Slots in the game's per-town arrays, the name pointer table included. 40 dwords puts
+/// that table at `0x006DDA00..0x006DDAA0`, comfortably short of the static town data at
+/// [static_town_data::TOWN_DATA_ADDRESS] (`0x006DDB90`), and matches the 40 raw town ids
+/// `GameWorldPtr::get_raw_town_ids` reads. Only the first `get_towns_count()` slots
+/// describe a town that exists; the rest are a table, not a promise.
+pub const TOWN_SLOTS: u8 = 40;
 
 /// Bits of the town flag word at `+0x2C8` ([TownPtr::get_flags]). The four crisis
 /// bits are the mask `0x04000A10` that `update_town_price_thresholds` tests at
@@ -182,13 +188,29 @@ pub const TOWN_NAME_SLOTS: u8 = 40;
 /// A town's name as its raw latin1 bytes, straight from the name bank - for
 /// byte-exact work against other game strings (matching, splicing), where decoding
 /// to UTF-8 would corrupt the comparison.
-pub fn get_town_name_bytes(town_index: u8) -> Option<Vec<u8>> {
+/// The name string for a town slot, or `None` when the slot names no town.
+///
+/// Both checks matter, and the second one was paid for: the table is filled at RUNTIME, so
+/// a slot outside the current map's towns holds whatever was there - not reliably a null -
+/// and walking a junk pointer as a latin1 string is an instant access violation. A probe
+/// passing an at-sea convoy's town field (`0xFF`) straight in took the game down exactly
+/// that way, faulting on `cmp byte [eax], 0` at an address that was never mapped. So
+/// callers may pass any `u8`: a raw field out of a game record, an index from an unbounded
+/// loop, a sentinel. This returns `None` rather than reading.
+fn town_name_ptr(town_index: u8) -> Option<*const u8> {
+    if town_index >= TOWN_SLOTS {
+        return None;
+    }
     unsafe {
         let town_names_ptr: *const *const u8 = TOWN_NAME_PTRS_ADDRESS as _;
-        let mut name_ptr = *town_names_ptr.add(town_index as _);
-        if name_ptr.is_null() {
-            return None;
-        }
+        let name_ptr = *town_names_ptr.add(town_index as usize);
+        crate::memory::is_readable(name_ptr as u32, 1).then_some(name_ptr)
+    }
+}
+
+pub fn get_town_name_bytes(town_index: u8) -> Option<Vec<u8>> {
+    let mut name_ptr = town_name_ptr(town_index)?;
+    unsafe {
         let mut bytes = Vec::new();
         while *name_ptr != 0 {
             bytes.push(*name_ptr);
@@ -199,13 +221,6 @@ pub fn get_town_name_bytes(town_index: u8) -> Option<Vec<u8>> {
 }
 
 pub fn get_town_name(town_index: u8) -> Option<String> {
-    unsafe {
-        let town_names_ptr: *const *const u8 = TOWN_NAME_PTRS_ADDRESS as _;
-        let town_name_ptr = *town_names_ptr.add(town_index as _);
-        if town_name_ptr.is_null() {
-            None
-        } else {
-            Some(latin1_ptr_to_string(town_name_ptr))
-        }
-    }
+    let name_ptr = town_name_ptr(town_index)?;
+    unsafe { Some(latin1_ptr_to_string(name_ptr)) }
 }

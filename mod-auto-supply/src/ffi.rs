@@ -68,7 +68,9 @@ const ROUTE_TRADE_KEY: u32 = VK_F4.0 as u32;
 const ROUTE_5STOP_KEY: u32 = VK_F1.0 as u32;
 /// The 6stop office-swap template.
 const ROUTE_6STOP_KEY: u32 = VK_F2.0 as u32;
-/// The collection ("suck") template.
+/// The collection ("suck") template. With CTRL, the fetch template: the same collection
+/// shape, but the wares come from the ship's own first stop and the targets from who
+/// produces them.
 const ROUTE_SUCK_KEY: u32 = VK_F3.0 as u32;
 /// DEL clears the selected ship's route (guarded on the goods dialog being closed).
 const CLEAR_ROUTE_KEY: u32 = VK_DELETE.0 as u32;
@@ -82,6 +84,10 @@ const CLEAR_ROUTE_KEY: u32 = VK_DELETE.0 as u32;
 // | F4 trade template | [STOP_BUY_LEVEL] R | [STOP_SELL_LEVEL] R |
 // | F1/F2 supply templates | [COLLECT_BUY_LEVEL] E | [SUPPLY_SELL_LEVEL] Q |
 // | F3 collection template | [COLLECT_BUY_LEVEL] E | - |
+//
+// The CTRL+F3 fetch template is deliberately absent: it copies the buy prices off the
+// ship's own first stop, so its prices are the player's, not a level of ours. Which is
+// also how it gets a per-ware price instead of one letter for the whole list.
 //
 // The office setup's Q is written at its own call site because it prices existing orders
 // rather than building a stop.
@@ -177,7 +183,7 @@ const OWNER_DIALOG: &std::ffi::CStr = c"auto-supply goods dialog";
 /// dump. (The F9/F10 debug probes live in mod-crash-reporter now.) The handlers
 /// never swallow, exactly like the old all-seeing hook, which always fell through
 /// to CallNextHookEx.
-const GLOBAL_KEYS: [(u32, u32); 18] = [
+const GLOBAL_KEYS: [(u32, u32); 20] = [
     (TOWN_DUMP_KEY, 0),
     (ROUTE_TRADE_KEY, 0),
     (ROUTE_TRADE_KEY, MOD_SHIFT),
@@ -195,9 +201,15 @@ const GLOBAL_KEYS: [(u32, u32); 18] = [
     (ROUTE_SUCK_KEY, MOD_SHIFT),
     (ROUTE_SUCK_KEY, MOD_ALT),
     (ROUTE_SUCK_KEY, MOD_ALT | MOD_SHIFT),
+    // The fetch template. ALT relaxes a filter here as everywhere else, but the TOWN
+    // filter rather than a ware one: it calls at every town instead of only the producers.
+    // No SHIFT variant - the targets are derived, so SHIFT's single open town has nothing
+    // to say.
+    (ROUTE_SUCK_KEY, MOD_CTRL),
+    (ROUTE_SUCK_KEY, MOD_CTRL | MOD_ALT),
     (CLEAR_ROUTE_KEY, 0),
 ];
-static GLOBAL_HANDLES: [AtomicU32; 18] = [const { AtomicU32::new(0) }; 18];
+static GLOBAL_HANDLES: [AtomicU32; 20] = [const { AtomicU32::new(0) }; 20];
 
 /// Office keys, registered while a trading office window is open (its vtable
 /// open/close hooks below): F1 and the price-level keys.
@@ -339,7 +351,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
 
-    info!("loaded: global route templates F1 5stop / F2 6stop / F3 collect / F4 trade (shift appends, alt relaxes each template's ware filter), DEL, F11; office and goods-dialog F1 shadow the global F1 while open; thaw restarts route ships");
+    info!("loaded: global route templates F1 5stop / F2 6stop / F3 collect / F4 trade / CTRL+F3 fetch (shift appends, alt relaxes each template's filter), DEL, F11; office and goods-dialog F1 shadow the global F1 while open; thaw restarts route ships");
     0
 }
 
@@ -408,6 +420,9 @@ unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
         (ROUTE_6STOP_KEY, m) => {
             on_route_hotkey(RouteKind::SixStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0)
         }
+        // CTRL turns F3 into the fetch template, which reads its wares off the ship - so
+        // it never appends, and ALT widens its target list to every town.
+        (ROUTE_SUCK_KEY, m) if m & MOD_CTRL != 0 => on_route_hotkey(RouteKind::Fetch, false, m & MOD_ALT != 0),
         (ROUTE_SUCK_KEY, m) => on_route_hotkey(RouteKind::Suck, m & MOD_SHIFT != 0, m & MOD_ALT != 0),
         // Internally guarded on the goods dialog being closed, as before.
         (CLEAR_ROUTE_KEY, 0) => on_clear_route_hotkey(),
@@ -540,6 +555,49 @@ unsafe fn selected_ship_index() -> Option<u16> {
     UIShipPanelPtr::new().get_selected_ship_index()
 }
 
+/// The ship a route key should act on for a given selection: the selected ship itself, or -
+/// when it sails in a convoy - the convoy's LEAD ship.
+///
+/// Every route key needs this, because a convoy keeps its whole route on the lead ship
+/// (`ship+0x132`; measured, the other members read `0xFFFF`) while the ship panel reports a
+/// member. Selecting the convoy *as a whole* reports a member too, so without this a route
+/// key on a convoy reads an empty route and refuses. Acting on the leader is also what the
+/// game itself does: it attaches a route loaded there to the whole convoy, and it names the
+/// convoy after its leader, so the generated `-LueRosSte` name lands where it belongs.
+///
+/// Conservative by construction - it falls back to the selection whenever anything fails to
+/// line up. `ship+0x8` is `0xFFFF` for a ship sailing alone (the game writes that into
+/// `+0x6`/`+0x8` at `0x004E13F2`), which `get_convoy` rejects on its bounds check; and the
+/// leader is only accepted if it names this same convoy back, so a member that has just left
+/// one cannot redirect a key onto a ship the player did not select.
+unsafe fn route_ship_index(selected: u16) -> u16 {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let Some(ship) = ships.get_ship(selected) else { return selected };
+    let convoy_index = ship.get_convoy_id();
+    let Some(convoy) = ships.get_convoy(convoy_index) else { return selected };
+    let lead = convoy.get_lead_ship_index();
+    if lead == selected {
+        return selected;
+    }
+    let Some(lead_ship) = ships.get_ship(lead) else {
+        error!("convoy {convoy_index} names lead ship {lead}, which is out of range - acting on the selected ship {selected}");
+        return selected;
+    };
+    if lead_ship.get_convoy_id() != convoy_index {
+        error!(
+            "convoy {convoy_index} names lead ship {lead}, but that ship is in convoy {} - acting on the selected ship {selected}",
+            lead_ship.get_convoy_id()
+        );
+        return selected;
+    }
+    info!(
+        "selection is ship {selected} {:?} of convoy {convoy_index}; acting on its lead ship {lead} {:?}, which carries the route",
+        ship.get_name(),
+        lead_ship.get_name()
+    );
+    lead
+}
+
 /// True if `ship_index` belongs to the player (walk the player merchant's ship chain).
 unsafe fn is_player_ship(ship_index: u16) -> bool {
     let ships = p3_api::ships::ShipsPtr::new();
@@ -642,10 +700,12 @@ unsafe fn on_clear_route_hotkey() {
         notify("Clear route: close the goods dialog first");
         return;
     }
-    let Some(ship_index) = selected_ship_index() else {
+    let Some(selected) = selected_ship_index() else {
         notify("Clear route: no ship selected");
         return;
     };
+    // A convoy's route lives on its lead ship, so clear it there - see [route_ship_index].
+    let ship_index = route_ship_index(selected);
     if !is_player_ship(ship_index) {
         notify("Clear route: the selected ship is not yours");
         return;
@@ -856,6 +916,16 @@ enum RouteKind {
     /// everything is unloaded there, so the route is a circuit that needs no
     /// consumption figures and no office at any target.
     Trade,
+    /// A collection route for a hand-picked ware list: the wares are the buy orders the
+    /// player left on the ship's own FIRST stop, and the targets are every town that
+    /// produces at least one of them (with ALT, every town at all), visited in the
+    /// shortest closed tour. Every stop buys the whole list at the prices that first stop
+    /// carries, copied through as-is - the only template that does not price itself.
+    ///
+    /// The only template whose ware list is explicit rather than derived from
+    /// production or consumption, and the only one that requires an existing route -
+    /// the first stop is its input.
+    Fetch,
 }
 
 /// F1/F2/F3: rebuild the selected ship's route from a supply template. The ship's current
@@ -874,6 +944,7 @@ enum RouteKind {
 /// |-|-|-|
 /// | F1 5stop, F2 6stop | supply everything the target consumes | leave out the [NO_SUPPLY_WARES] |
 /// | F3 collect, F4 trade | leave the [NO_BUY_WARES] in the town | buy those too |
+/// | CTRL+F3 fetch | call only at towns that produce a wanted ware | call at every town |
 ///
 /// For the supply templates, quantities are a week of each target's citizen and business
 /// consumption and prices the R levels. Wares a target produces itself are not supplied to
@@ -882,11 +953,20 @@ enum RouteKind {
 /// instead of the office-reset stops. F3 builds a collection route instead: one
 /// buy stop per target at the R price, skipping the NO_BUY_WARES and everything the
 /// home town produces itself.
+///
+/// [RouteKind::Fetch] (CTRL+F3) is the exception to the paragraph above: it takes neither
+/// its wares nor its targets from the same places. The ware list is the buy orders the
+/// player left on the ship's FIRST stop, the targets are every town that produces one of
+/// them, and their order is the shortest closed tour rather than the order they were
+/// discovered in - so it needs an existing route and takes no SHIFT. Its ALT is the one
+/// in the table above that filters TOWNS rather than wares.
 unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
-    let Some(ship_index) = selected_ship_index() else {
+    let Some(selected) = selected_ship_index() else {
         notify("Route: no ship selected");
         return;
     };
+    // A convoy carries its route, and its name, on the lead ship - see [route_ship_index].
+    let ship_index = route_ship_index(selected);
     if !is_player_ship(ship_index) {
         notify("Route: the selected ship is not yours");
         return;
@@ -908,7 +988,42 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
     };
     let load_town_name = get_town_name(load_town).unwrap_or_else(|| "<unknown>".into());
 
-    let targets: Vec<u8> = if append {
+    // What a fetch route collects, and for how much: the buy orders the player left on the
+    // ship's own first stop, wares and prices both. Resolved before the targets because it
+    // decides them - and refused loudly, since this is the one input the template cannot
+    // invent.
+    let fetch_buys = if matches!(kind, RouteKind::Fetch) {
+        let Some(first) = previous.first() else {
+            notify("Fetch route: the ship has no route - it needs a first stop carrying the buy orders to collect");
+            return;
+        };
+        let prices = fetch_buy_prices(first);
+        if !prices.iter().any(|&price| price > 0) {
+            notify(&format!(
+                "Fetch route: the first stop ({load_town_name}) has no buy orders - mark the wares to collect there first"
+            ));
+            return;
+        }
+        Some(prices)
+    } else {
+        None
+    };
+
+    let targets: Vec<u8> = if let Some(buys) = &fetch_buys {
+        // Every town that produces one of the wanted wares - or, with ALT, every town
+        // there is - in the shortest closed tour from home. The ship's previous stops say
+        // nothing here: the whole point is to discover the sources rather than list them
+        // by hand.
+        let towns = fetch_targets(load_town, buys, alt);
+        if towns.is_empty() {
+            notify(&format!(
+                "Fetch route: no town other than {load_town_name} produces [{}]",
+                ware_names(buys).join(", ")
+            ));
+            return;
+        }
+        order_towns_by_distance(load_town, towns)
+    } else if append {
         // Shift: append the template for the currently open town.
         let Some(town) = current_town_index() else {
             notify("Route: shift appends for the open town, but no town view is open");
@@ -956,6 +1071,7 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
         collect_buys[i] = buy_price(ware_index, COLLECT_BUY_LEVEL);
     }
 
+
     let mut total_load = [0i32; 24];
     let mut middle: Vec<TradeRouteStop> = Vec::new();
     let mut described: Vec<String> = Vec::new();
@@ -963,6 +1079,11 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
         let town_name = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
         if matches!(kind, RouteKind::Suck) {
             middle.push(builder::buy_stop(town_index, &collect_buys));
+            described.push(town_name);
+            continue;
+        }
+        if let Some(prices) = &fetch_buys {
+            middle.push(builder::buy_stop(town_index, prices));
             described.push(town_name);
             continue;
         }
@@ -1009,13 +1130,22 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
     if write_and_apply_route(ship_index, stops) {
         rename_ship(ship_index, &route_name);
         let action = if append { "appended to" } else { "set on" };
+        // Interpolated from the level constants rather than spelled out, so retuning a
+        // level cannot leave the report claiming the old letter.
         let verb = match (kind, alt) {
-            (RouteKind::Suck, true) => "collect at T from (including the no-buy wares)",
-            (RouteKind::Suck, false) => "collect at T from",
-            (RouteKind::Trade, true) => "trade at Y with (buying everything produced)",
-            (RouteKind::Trade, false) => "trade at Y with",
-            (_, true) => "supply (skipping the low-value inputs)",
-            (_, false) => "supply",
+            (RouteKind::Suck, true) => format!("collect at {COLLECT_BUY_LEVEL:?} from (including the no-buy wares)"),
+            (RouteKind::Suck, false) => format!("collect at {COLLECT_BUY_LEVEL:?} from"),
+            (RouteKind::Trade, true) => format!("trade at {STOP_BUY_LEVEL:?}/{STOP_SELL_LEVEL:?} with (buying everything produced)"),
+            (RouteKind::Trade, false) => format!("trade at {STOP_BUY_LEVEL:?}/{STOP_SELL_LEVEL:?} with"),
+            // Every fetch stop buys the same list at the same prices, so the list belongs
+            // in the verb rather than repeated once per town in `described`.
+            (RouteKind::Fetch, every_town) => format!(
+                "fetch [{}] (the first stop's own prices) from{}",
+                fetch_buys.map(|buys| ware_names(&buys).join(", ")).unwrap_or_default(),
+                if every_town { " every town, producer or not," } else { "" }
+            ),
+            (_, true) => "supply (skipping the low-value inputs)".to_string(),
+            (_, false) => "supply".to_string(),
         };
         info!(
             "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops)",
@@ -1162,6 +1292,174 @@ unsafe fn town_supply_basket(town_index: u8, skip_no_supply: bool) -> ([i32; 24]
         supplied += 1;
     }
     (load_amount, sell_prices, supplied)
+}
+
+/// What a fetch route collects, read off the buy orders the player left on the ship's own
+/// first stop: the maximum price per ware, 0 for a ware the route does not want.
+///
+/// A buy order is a NEGATED maximum price (see p3-rou's builder), so the sign of the price
+/// both identifies a buy and carries its limit - and unlike the amount it is unambiguous,
+/// because the game leaves stale positive base prices in slots that carry no instruction
+/// but only ever negates a price for a buy. The prices are copied through verbatim, so the
+/// first stop is the whole specification: which wares, and what each is worth paying. Set
+/// them in the goods dialog (CTRL+Q..Y prices a whole stop, or edit a ware by hand).
+fn fetch_buy_prices(first_stop: &TradeRouteStop) -> [i32; 24] {
+    let mut prices = [0i32; 24];
+    for ware_index in TRADE_WARES {
+        let i = ware_index as usize;
+        if first_stop.price[i] < 0 {
+            prices[i] = -first_stop.price[i];
+        }
+    }
+    prices
+}
+
+/// The wanted wares and the price each will be bought at, for reporting.
+fn ware_names(buy_prices: &[i32; 24]) -> Vec<String> {
+    TRADE_WARES
+        .filter(|&ware_index| buy_prices[ware_index as usize] > 0)
+        .map(|ware_index| format!("{:?}@{}", WareId::from_u16(ware_index).unwrap(), buy_prices[ware_index as usize]))
+        .collect()
+}
+
+/// The fetch route's targets: every town other than `home` that produces at least one of
+/// the wanted wares, or with `every_town` (ALT) simply every town other than `home`.
+///
+/// Production rather than stock, because this decides where a *standing* route calls: a
+/// town that happens to be holding a ware today is not a source to build a circuit around,
+/// while a producer keeps refilling between visits. What each stop then *buys* is the whole
+/// wanted list either way - see `fetch_buys` in [on_route_hotkey].
+///
+/// ALT drops the filter for the case the filter gets wrong: a town can hold a wanted ware
+/// without producing it - imports, an AI trader's dumping ground, a former producer - and
+/// the player's own price limits decide whether anything is actually bought, so a wasted
+/// call costs sailing time and nothing else. The price protects the money; production is
+/// only a guess at where the goods will be.
+unsafe fn fetch_targets(home: u8, buy_prices: &[i32; 24], every_town: bool) -> Vec<u8> {
+    let mut towns = Vec::new();
+    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
+        if town_index == home {
+            continue;
+        }
+        let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
+        // into_iter() rather than a bare TRADE_WARES.any(..): `any` takes &mut self, and
+        // calling it straight on a const would silently borrow a temporary copy.
+        let produces_wanted = TRADE_WARES.into_iter().any(|ware_index| {
+            let i = ware_index as usize;
+            buy_prices[i] > 0 && production[i] > 0
+        });
+        if every_town || produces_wanted {
+            towns.push(town_index);
+        }
+    }
+    towns
+}
+
+/// Order the target towns into the shortest closed tour that leaves `home` and comes back
+/// to it - the order the route's middle stops are generated in.
+///
+/// The distances are the game's own: [p3_api::class35::Class35Ptr::town_distance] runs the
+/// pathfinder the ships themselves use, so a leg is as long as the water route really is,
+/// coastlines and sea lanes included, not a straight line. Travel time divides that
+/// distance by a per-SHIP speed factor - the same factor on every leg - so the shortest
+/// tour is also the fastest one, whatever ship ends up running it, and the ship's type,
+/// hull condition and load never enter the ordering.
+///
+/// Nearest neighbour from home, then 2-opt until no segment reversal improves the tour.
+/// For the handful of towns a ware list produces this is optimal or within a percent of
+/// it, and it costs one keypress: 24 towns is 276 router calls and a few hundred
+/// reversals. If any distance is unavailable the discovery order is kept - a longer route
+/// beats no route.
+unsafe fn order_towns_by_distance(home: u8, towns: Vec<u8>) -> Vec<u8> {
+    // One target has no order to choose and two are symmetric: home-A-B-home is the same
+    // closed tour as home-B-A-home.
+    if towns.len() < 3 {
+        return towns;
+    }
+
+    let mut nodes = Vec::with_capacity(towns.len() + 1);
+    nodes.push(home);
+    nodes.extend_from_slice(&towns);
+    let mut ids = Vec::with_capacity(nodes.len());
+    for &town_index in &nodes {
+        match GAME_WORLD_PTR.find_town_id(town_index) {
+            Some(id) => ids.push(id),
+            None => {
+                warn!("fetch route: town {town_index} has no town id, keeping the discovery order");
+                return towns;
+            }
+        }
+    }
+
+    // The whole distance matrix up front, since 2-opt needs any pair. The router depends
+    // on nothing but the two endpoints' static coordinates, so half the matrix is enough
+    // and the numbers are the same in every save.
+    let n = nodes.len();
+    let router = p3_api::class35::Class35Ptr::new();
+    let mut distance = vec![0i32; n * n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let Some(d) = router.town_distance(ids[i], ids[j]) else {
+                warn!(
+                    "fetch route: the router found no route between towns {} and {}, keeping the discovery order",
+                    nodes[i], nodes[j]
+                );
+                return towns;
+            };
+            distance[i * n + j] = d;
+            distance[j * n + i] = d;
+        }
+    }
+    let leg = |a: usize, b: usize| distance[a * n + b];
+    let tour_length = |tour: &[usize]| -> i64 { (0..tour.len()).map(|i| leg(tour[i], tour[(i + 1) % tour.len()]) as i64).sum() };
+
+    // Nearest neighbour from home.
+    let mut tour = vec![0usize];
+    let mut visited = vec![false; n];
+    visited[0] = true;
+    while tour.len() < n {
+        let current = *tour.last().unwrap();
+        let next = (1..n).filter(|&j| !visited[j]).min_by_key(|&j| leg(current, j)).unwrap();
+        visited[next] = true;
+        tour.push(next);
+    }
+    let greedy_length = tour_length(&tour);
+
+    // 2-opt: reverse any stretch of the tour whose two cut legs get shorter for it. Home
+    // stays pinned at position 0 - it is the route's bracket, not a free stop, and the
+    // closing leg back to it is accounted for by the wrap in `after`. Every accepted
+    // reversal strictly shortens an integer length, so this terminates on its own; the
+    // pass cap only guarantees that a defect in the arithmetic cannot hang the game on a
+    // keypress.
+    for _ in 0..1000 {
+        let mut improved = false;
+        for i in 1..n - 1 {
+            for k in (i + 1)..n {
+                let (before, first, last, after) = (tour[i - 1], tour[i], tour[k], tour[(k + 1) % n]);
+                if leg(before, last) + leg(first, after) < leg(before, first) + leg(last, after) {
+                    tour[i..=k].reverse();
+                    improved = true;
+                }
+            }
+        }
+        if !improved {
+            break;
+        }
+    }
+    let final_length = tour_length(&tour);
+
+    let ordered: Vec<u8> = tour[1..].iter().map(|&i| nodes[i]).collect();
+    let names: Vec<String> = ordered
+        .iter()
+        .map(|&town_index| get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}")))
+        .collect();
+    debug!(
+        "fetch route: {} targets ordered into a closed tour of {final_length} from {} (nearest neighbour alone: {greedy_length}): [{}]",
+        ordered.len(),
+        get_town_name(home).unwrap_or_else(|| format!("town {home}")),
+        names.join(" -> ")
+    );
+    ordered
 }
 
 /// Returns the administrator view's office and its index, or logs why not.

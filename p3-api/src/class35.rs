@@ -106,6 +106,22 @@ impl Class35Ptr {
         self.get(0x1c)
     }
 
+    /// The sailing distance between two towns: the length of the path the game's own
+    /// router would take, in the octagonal units of [ShipRoutePtr::calculate_distance].
+    /// `None` when the router finds no route.
+    ///
+    /// Travel time divides this by a per-SHIP speed factor
+    /// ([ShipRoutePtr::calculate_travel_time]), never anything per-leg, so distance ranks
+    /// legs the same way for every ship: ordering a tour by distance orders it by travel
+    /// time too. The route object is freed here, so this can be called in a loop to build
+    /// a distance matrix.
+    pub unsafe fn town_distance(&self, source: TownId, destination: TownId) -> Option<i32> {
+        let route = self.calculate_town_route(source, destination)?;
+        let distance = route.calculate_distance();
+        route.free();
+        Some(distance)
+    }
+
     pub unsafe fn calculate_town_route(&self, source: TownId, destination: TownId) -> Option<ShipRoutePtr> {
         let source_data = StaticTownDataPtr::new(source);
         let destination_data = StaticTownDataPtr::new(destination);
