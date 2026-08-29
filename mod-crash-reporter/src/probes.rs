@@ -31,33 +31,43 @@ use p3_api::{
     town::get_town_name,
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
+use windows::core::s;
+use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F10, VK_F9};
 
+/// The two throwaway probe keys. Neither name says anything beyond "probe slot", and
+/// deliberately so: the bodies behind them are rewritten per investigation, so naming a key
+/// after whatever it happens to do this week only ages into a lie. Name the handlers, not
+/// the keys.
 const DEBUG_PROBE1_KEY: u32 = VK_F9.0 as u32;
-const ROUTE_DUMP_KEY: u32 = VK_F10.0 as u32;
+const DEBUG_PROBE2_KEY: u32 = VK_F10.0 as u32;
 
 /// The registry binding, null when hotkeys.dll is unavailable (probes inert).
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 12] = [
+const PROBE_KEYS: [(u32, u32); 14] = [
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
     (DEBUG_PROBE1_KEY, MOD_ALT),
     // The operation logger: the one permanent tool here, rather than a throwaway.
     (DEBUG_PROBE1_KEY, MOD_CTRL | MOD_SHIFT),
-    (ROUTE_DUMP_KEY, 0),
-    (ROUTE_DUMP_KEY, MOD_CTRL),
-    (ROUTE_DUMP_KEY, MOD_SHIFT),
+    // The d3d9 resource-list detector: one-shot check, and the continuous watch.
+    (DEBUG_PROBE1_KEY, MOD_CTRL | MOD_ALT),
+    (DEBUG_PROBE1_KEY, MOD_SHIFT | MOD_ALT),
+    (DEBUG_PROBE2_KEY, 0),
+    (DEBUG_PROBE2_KEY, MOD_CTRL),
+    (DEBUG_PROBE2_KEY, MOD_SHIFT),
     // The captain-retirement hang probe. Exact-match modifiers, so these three never
     // collide with each other or with plain F10.
-    (ROUTE_DUMP_KEY, MOD_ALT),
-    (ROUTE_DUMP_KEY, MOD_ALT | MOD_CTRL),
-    (ROUTE_DUMP_KEY, MOD_ALT | MOD_SHIFT),
+    (DEBUG_PROBE2_KEY, MOD_ALT),
+    (DEBUG_PROBE2_KEY, MOD_ALT | MOD_CTRL),
+    (DEBUG_PROBE2_KEY, MOD_ALT | MOD_SHIFT),
     // The convoy-leader probe, for teaching mod-auto-supply's route keys to work on a
     // convoy selection.
-    (ROUTE_DUMP_KEY, MOD_CTRL | MOD_SHIFT),
+    (DEBUG_PROBE2_KEY, MOD_CTRL | MOD_SHIFT),
 ];
 
 /// Bind the registry and register the probe keys; called from start(). A missing
@@ -84,14 +94,16 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, MOD_SHIFT) => debug_probe1_ship(),
         (DEBUG_PROBE1_KEY, MOD_ALT) => debug_probe_administrators(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
+        (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
+        (DEBUG_PROBE1_KEY, m) if m == MOD_SHIFT | MOD_ALT => toggle_probe_d3d9_watch(),
         (DEBUG_PROBE1_KEY, 0) => debug_probe1(),
-        (ROUTE_DUMP_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
-        (ROUTE_DUMP_KEY, MOD_SHIFT) => debug_probe_ice(),
-        (ROUTE_DUMP_KEY, MOD_ALT) => retire_probe_inspect(),
-        (ROUTE_DUMP_KEY, m) if m == MOD_ALT | MOD_CTRL => retire_probe_benign(),
-        (ROUTE_DUMP_KEY, m) if m == MOD_ALT | MOD_SHIFT => retire_probe_hang(),
-        (ROUTE_DUMP_KEY, m) if m == MOD_CTRL | MOD_SHIFT => debug_probe_convoy(),
-        (ROUTE_DUMP_KEY, 0) => dump_ship_routes(),
+        (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
+        (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
+        (DEBUG_PROBE2_KEY, MOD_ALT) => retire_probe_inspect(),
+        (DEBUG_PROBE2_KEY, m) if m == MOD_ALT | MOD_CTRL => retire_probe_benign(),
+        (DEBUG_PROBE2_KEY, m) if m == MOD_ALT | MOD_SHIFT => retire_probe_hang(),
+        (DEBUG_PROBE2_KEY, m) if m == MOD_CTRL | MOD_SHIFT => debug_probe_convoy(),
+        (DEBUG_PROBE2_KEY, 0) => dump_ship_routes(),
         _ => {}
     }
     0
@@ -915,21 +927,32 @@ static TIMELINE_ON: AtomicBool = AtomicBool::new(false);
 const TIMELINE_TICKS: u32 = 64;
 /// `advance_time`'s call to the ships tick, module-relative for `hook_call_rel32`.
 const SHIPS_TICK_CALL_OFFSET: u32 = 0x131011;
-static TIMELINE_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+static SHIPS_TICK_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 static TIMELINE_LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+/// The ships tick carries more than one sampler now - the pirate timeline and the d3d9
+/// list watch - so the hook is installed once and shared, and each sampler gates itself
+/// on its own flag. Two `hook_call_rel32` calls on one site would fight over it.
+unsafe fn ensure_ships_tick_hook() -> Result<(), String> {
+    if !SHIPS_TICK_HOOK_PTR.load(Ordering::SeqCst).is_null() {
+        return Ok(());
+    }
+    match hook_call_rel32(SHIPS_TICK_CALL_OFFSET, ships_tick_hook as usize as u32) {
+        Ok(hook) => {
+            SHIPS_TICK_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+            Ok(())
+        }
+        Err(e) => Err(format!("hooking the ships tick failed: {e:?}")),
+    }
+}
 
 unsafe fn toggle_probe1_timeline() {
     let on = !TIMELINE_ON.load(Ordering::SeqCst);
     if on {
-        if TIMELINE_HOOK_PTR.load(Ordering::SeqCst).is_null() {
-            match hook_call_rel32(SHIPS_TICK_CALL_OFFSET, ships_tick_timeline_hook as usize as u32) {
-                Ok(hook) => TIMELINE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-                Err(e) => {
-                    error!("probe1 timeline: hooking the ships tick failed: {e:?}");
-                    notify("probe1 timeline: hook failed");
-                    return;
-                }
-            }
+        if let Err(reason) = ensure_ships_tick_hook() {
+            error!("probe1 timeline: {reason}");
+            notify("probe1 timeline: hook failed");
+            return;
         }
         *TIMELINE_LOG.lock().unwrap() = std::fs::File::create("_probe1_timeline.log").ok();
     } else {
@@ -939,14 +962,17 @@ unsafe fn toggle_probe1_timeline() {
     notify(&format!("probe1 timeline: {}", if on { "on -> _probe1_timeline.log" } else { "off" }));
 }
 
-/// Wraps the ships tick: the original first, so the sample shows the state the tick left
-/// behind.
+/// Wraps the ships tick: the original first, so every sampler sees the state the tick
+/// left behind.
 #[no_mangle]
-unsafe extern "thiscall" fn ships_tick_timeline_hook(this: u32, tick: u32) {
-    let orig: extern "thiscall" fn(u32, u32) = mem::transmute((*TIMELINE_HOOK_PTR.load(Ordering::Relaxed)).old_absolute);
+unsafe extern "thiscall" fn ships_tick_hook(this: u32, tick: u32) {
+    let orig: extern "thiscall" fn(u32, u32) = mem::transmute((*SHIPS_TICK_HOOK_PTR.load(Ordering::Relaxed)).old_absolute);
     orig(this, tick);
     if TIMELINE_ON.load(Ordering::Relaxed) {
         sample_probe1_timeline(tick);
+    }
+    if D3D9_WATCH_ON.load(Ordering::Relaxed) {
+        sample_d3d9_list(tick);
     }
 }
 
@@ -1562,5 +1588,708 @@ unsafe fn install_op_logger() {
             notify("op logger: running - perform the action to identify it");
         }
         Err(e) => error!("op logger: hook failed: {e:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The d3d9 resource-list detector
+// ---------------------------------------------------------------------------------------
+
+/// GOG's DirectDraw -> D3D9 wrapper (`DDRAW.dll`, 1.5 MB - **not** the game's own
+/// `ddraw_Dll.dll`), module-relative. It prefers `0x18000000` and has loaded there in
+/// every report, but the handle is looked up anyway.
+const DDRAW_SURFACE_TABLE: u32 = 0x46e350;
+/// High-water mark (max used index + 1), never decremented.
+const DDRAW_SURFACE_HIGH_WATER: u32 = 0x49f638;
+/// The table is a fixed 50,000-slot array; the high-water mark is trusted only up to it.
+const DDRAW_SURFACE_TABLE_SLOTS: u32 = 50_000;
+/// The eight D3D9 objects a wrapper surface owns, released as an unrolled bank by both
+/// `Release()` (`DDRAW+0x26de0`) and the `{02020202}` lost-device command
+/// (`DDRAW+0x263c0`). The 22 Aug crash died releasing `+0x8b4`, the 28 Aug one `+0x8bc`.
+const DDRAW_SURFACE_D3D9_SLOTS: [u32; 8] = [0x8a8, 0x8ac, 0x8b0, 0x8b4, 0x8b8, 0x8bc, 0x8c0, 0x8c4];
+
+/// `d3d9.dll` object layout, read out of its own destructor chain rather than guessed:
+///
+/// - `0x10047e46`, the resource destructor, opens `mov edi,ecx / mov ecx,[edi+0x14]` - so
+///   the COM object the wrapper holds is `edi` and the internal resource is at `+0x14`;
+/// - `0x10062d47` (destroy resource) takes a `{ ?, resource }` descriptor, loads the
+///   resource from `+0x4` and the owning device from `resource+0x44`;
+/// - `0x10062de9` compares `[device+0x3c]` against the resource to decide whether it is
+///   the list head, then unlinks through `resource+0x78` (`next`) and `+0x7c` (`prev`).
+///   The store to `next->prev` at `0x10062df8` is the crashing instruction.
+/// Kept although nothing reads it any more: it is verified RE, and the story is the
+/// point. The first detector went `com+0x14 -> resource -> +0x44 -> device` because that
+/// is exactly what d3d9's destructor does - and it found nothing, because the wrapper had
+/// no COM resource to hand at the time of the press. The lesson was to *validate* a
+/// candidate rather than assume a path to it, which is what [device_check] does now.
+#[allow(dead_code)]
+const D3D9_COM_RESOURCE: u32 = 0x14;
+const D3D9_RES_FORMAT: u32 = 0x14;
+const D3D9_RES_WIDTH: u32 = 0x1c;
+const D3D9_RES_HEIGHT: u32 = 0x20;
+const D3D9_RES_DEVICE: u32 = 0x44;
+/// The dword the misaligned write clobbers on its way past. `0` on every healthy node
+/// seen so far; when the signature hits, its top byte is the missing low byte of `next`.
+const D3D9_RES_PAD: u32 = 0x74;
+const D3D9_RES_NEXT: u32 = 0x78;
+const D3D9_RES_PREV: u32 = 0x7c;
+const D3D9_DEV_LIST_HEAD: u32 = 0x3c;
+
+/// Stop walking here. A healthy list is orders of magnitude shorter, so reaching this
+/// means the links form a cycle - itself a finding.
+const LIST_WALK_CAP: u32 = 65_536;
+/// Enough to characterise the damage without writing a novel into the log.
+const MAX_FAULTS: usize = 16;
+const D3D9_LIST_LOG: &str = "_probe_d3d9_list.log";
+
+/// Number of regions [Guarded] remembers. `VirtualQuery` per read would make a
+/// thousand-node walk far too slow to run every tick, and a scan over a 4 MB data section
+/// slower still, so the outcome of each query is kept - **misses included**, which is what
+/// makes a wide scan affordable: free and reserved regions are huge, so one query rules
+/// out megabytes of candidates at a time.
+const GUARD_CACHE: usize = 64;
+/// A press must not hang the game if a scan goes wrong.
+const GUARD_MAX_QUERIES: u32 = 400_000;
+
+/// Guarded reads with a per-walk region cache. Built fresh for every check so a cached
+/// region can never outlive its commit: within one walk nothing is decommitted under us,
+/// across walks nothing is assumed.
+struct Guarded {
+    regions: [(u32, u32, bool); GUARD_CACHE],
+    next: usize,
+    queries: u32,
+}
+
+impl Guarded {
+    fn new() -> Self {
+        Self { regions: [(0, 0, false); GUARD_CACHE], next: 0, queries: 0 }
+    }
+
+    /// True when `addr .. addr+len` is committed and readable.
+    unsafe fn readable_len(&mut self, addr: u32, len: u32) -> bool {
+        let last = addr.wrapping_add(len - 1);
+        if last < addr {
+            return false;
+        }
+        for &(base, end, ok) in self.regions.iter() {
+            if end != 0 && addr >= base && last < end {
+                return ok;
+            }
+        }
+        if self.queries >= GUARD_MAX_QUERIES {
+            return false;
+        }
+        let mut mbi: MEMORY_BASIC_INFORMATION = core::mem::zeroed();
+        self.queries += 1;
+        if VirtualQuery(Some(addr as *const core::ffi::c_void), &mut mbi, core::mem::size_of::<MEMORY_BASIC_INFORMATION>()) == 0 {
+            return false;
+        }
+        let ok = mbi.State == MEM_COMMIT && mbi.Protect.0 != 0 && mbi.Protect.0 & (PAGE_NOACCESS.0 | PAGE_GUARD.0) == 0;
+        let base = mbi.BaseAddress as u32;
+        let end = base.wrapping_add(mbi.RegionSize as u32);
+        if end > base {
+            self.regions[self.next] = (base, end, ok);
+            self.next = (self.next + 1) % GUARD_CACHE;
+        }
+        ok && last < end
+    }
+
+    unsafe fn u32(&mut self, addr: u32) -> Option<u32> {
+        if !self.readable_len(addr, 4) {
+            return None;
+        }
+        Some(core::ptr::read_unaligned(addr as *const u32))
+    }
+
+    /// Only used by the device signature test, so a small fixed buffer is plenty.
+    unsafe fn bytes(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        if !self.readable_len(addr, out.len() as u32) {
+            return false;
+        }
+        core::ptr::copy_nonoverlapping(addr as *const u8, out.as_mut_ptr(), out.len());
+        true
+    }
+}
+
+/// The cheap arithmetic screen, and the reason the detector needs no dereference to spot
+/// the fault: NT heap user blocks are 8-byte aligned and live well above the first 64 KB,
+/// so both known-bad values fail here - `0x00009138` (28 Aug) on the range, `0x00008f3e`
+/// (22 Aug) on the alignment too.
+fn plausible_ptr(p: u32) -> bool {
+    p >= 0x0001_0000 && p < 0x8000_0000 && p & 7 == 0
+}
+
+struct ListVerdict {
+    head: u32,
+    nodes: u32,
+    faults: Vec<String>,
+    truncated: bool,
+}
+
+impl ListVerdict {
+    /// An empty list is **not** a pass. A device that owns no resources has had nothing
+    /// checked, and saying "clean" there is how a stale device hides everything behind it -
+    /// which is exactly what happened on the first live run, in the menu, right after the
+    /// device had been torn down.
+    fn checked_nothing(&self) -> bool {
+        self.head == 0 || self.nodes == 0
+    }
+
+    fn clean(&self) -> bool {
+        !self.checked_nothing() && self.faults.is_empty() && !self.truncated
+    }
+
+    /// Distinct states for the watch's change detection, so a slide into "nothing to
+    /// check" is reported rather than blending into a pass.
+    fn state(&self) -> u32 {
+        (self.faults.len() as u32) | (self.truncated as u32) << 16 | (self.checked_nothing() as u32) << 17
+    }
+}
+
+/// Walks `device+0x3c` and checks the doubly-linked invariant in one pass: every node's
+/// `prev` must be the node the walk arrived from, every node must belong to this device,
+/// and every `next` must be a plausible pointer. That is the whole of what
+/// `0x10062df8` relies on.
+unsafe fn walk_resource_list(g: &mut Guarded, device: u32) -> ListVerdict {
+    let mut v = ListVerdict { head: 0, nodes: 0, faults: Vec::new(), truncated: false };
+    let Some(head) = g.u32(device + D3D9_DEV_LIST_HEAD) else {
+        v.faults.push(format!("device {device:#010x}: the list head at +0x3c is unreadable"));
+        return v;
+    };
+    v.head = head;
+    let mut node = head;
+    let mut arrived_from = 0u32;
+    while node != 0 {
+        if !plausible_ptr(node) {
+            v.faults.push(format!(
+                "node #{}: the link from {arrived_from:#010x} points at {node:#010x}, not a plausible heap pointer",
+                v.nodes
+            ));
+            break;
+        }
+        let fields = (
+            g.u32(node + D3D9_RES_PREV),
+            g.u32(node + D3D9_RES_NEXT),
+            g.u32(node + D3D9_RES_DEVICE),
+            g.u32(node + D3D9_RES_PAD),
+        );
+        let (prev, next, owner, pad) = match fields {
+            (Some(a), Some(b), Some(c), Some(d)) => (a, b, c, d),
+            _ => {
+                v.faults.push(format!("node #{} at {node:#010x} is not fully readable", v.nodes));
+                break;
+            }
+        };
+        if prev != arrived_from {
+            v.faults.push(format!(
+                "node #{} at {node:#010x}: prev = {prev:#010x}, but the walk arrived from {arrived_from:#010x} - back link broken",
+                v.nodes
+            ));
+        }
+        if owner != device {
+            v.faults.push(format!(
+                "node #{} at {node:#010x}: +0x44 device = {owner:#010x}, expected {device:#010x} - foreign or recycled block",
+                v.nodes
+            ));
+        }
+        if next != 0 && !plausible_ptr(next) {
+            let what = describe_resource(g, node);
+            let hint = misaligned_hint(g, node, pad);
+            v.faults.push(format!(
+                "node #{} at {node:#010x}: next = {next:#010x} IS WILD - THIS is the node that crashes d3d9. \
+                 {what}, +0x74 = {pad:#010x}{hint}",
+                v.nodes
+            ));
+            break;
+        }
+        arrived_from = node;
+        node = next;
+        v.nodes += 1;
+        if v.nodes >= LIST_WALK_CAP {
+            v.truncated = true;
+            break;
+        }
+        if v.faults.len() >= MAX_FAULTS {
+            break;
+        }
+    }
+    v
+}
+
+unsafe fn describe_resource(g: &mut Guarded, node: u32) -> String {
+    match (g.u32(node + D3D9_RES_FORMAT), g.u32(node + D3D9_RES_WIDTH), g.u32(node + D3D9_RES_HEIGHT)) {
+        (Some(f), Some(w), Some(h)) => format!("format {f:#x} {w}x{h}"),
+        _ => "descriptor fields unreadable".to_string(),
+    }
+}
+
+/// Tests the crash's own signature on the spot. If a dword was stored at `node+0x77`
+/// instead of `+0x78`, the four bytes read from `+0x77` are still the pointer that was
+/// meant to go in, and `+0x74`'s top byte is its low byte. Confirming or refuting that
+/// per fault costs one unaligned read, so there is no reason not to.
+unsafe fn misaligned_hint(g: &mut Guarded, node: u32, pad: u32) -> String {
+    match g.u32(node + D3D9_RES_NEXT - 1) {
+        Some(shifted) if plausible_ptr(shifted) && pad >> 24 != 0 => {
+            format!(" - the dword at +0x77 reads {shifted:#010x}, a plausible pointer: SIGNATURE MATCHES, something stored it one byte low")
+        }
+        Some(shifted) => {
+            format!(" - the dword at +0x77 reads {shifted:#010x}, not a plausible pointer: signature does NOT match, this is a different corruption")
+        }
+        None => String::new(),
+    }
+}
+
+/// Two independent ways to recognise d3d9's internal device struct, either of which is
+/// conclusive on its own - so an empty resource list does not hide the device, and a
+/// device with no display name is still found by the list.
+///
+/// - the **round trip**: its `+0x3c` list head is a resource whose `+0x44` points back at
+///   it. Nothing else in memory does that by accident;
+/// - the **display name**: `device+0xc` holds the adapter's device name, `"\\.\DISPLAY1"`
+///   in the 28 Aug report. Not a guess about layout so much as a fingerprint.
+/// The two tests are **not** equally strong, which a live run made plain: after ESC into
+/// the menu the cached device still carried its display name while its resource list had
+/// been emptied, so it validated and the walk then reported "clean: 0 resources" - a check
+/// of nothing, dressed up as a pass. The round trip proves the device is *live*; the
+/// display name only proves the struct is *a* d3d9 device, dead or alive.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeviceProof {
+    /// `device+0x3c` is a resource whose `+0x44` points back. Conclusive, and only true
+    /// of a device that currently owns resources.
+    RoundTrip,
+    /// `device+0xc` holds the adapter name (`"\\.\DISPLAY1"` in the 28 Aug report). Weaker:
+    /// a torn-down device keeps it.
+    DisplayName,
+}
+
+unsafe fn device_check(g: &mut Guarded, device: u32) -> Option<DeviceProof> {
+    if !plausible_ptr(device) {
+        return None;
+    }
+    if let Some(head) = g.u32(device + D3D9_DEV_LIST_HEAD) {
+        if plausible_ptr(head) && g.u32(head + D3D9_RES_DEVICE) == Some(device) {
+            return Some(DeviceProof::RoundTrip);
+        }
+    }
+    let mut name = [0u8; 11];
+    if g.bytes(device + 0xc, &mut name) && &name == b"\\\\.\\DISPLAY" {
+        return Some(DeviceProof::DisplayName);
+    }
+    None
+}
+
+/// `strict` demands a live device. Discovery runs strict first and only falls back so that
+/// a genuinely idle device still gets reported rather than looking like "not found".
+unsafe fn device_accepts(g: &mut Guarded, device: u32, strict: bool) -> bool {
+    match device_check(g, device) {
+        Some(DeviceProof::RoundTrip) => true,
+        Some(DeviceProof::DisplayName) => !strict,
+        None => false,
+    }
+}
+
+/// The d3d9 internal device struct, found the first time and re-validated on every use -
+/// a real mode change recreates the device, so a cached pointer goes stale.
+static D3D9_DEVICE: AtomicU32 = AtomicU32::new(0);
+
+/// Bumped every time the device pointer changes, which is worth counting rather than
+/// inferring: d3d9 destroys and recreates the device on a real mode change, so this is a
+/// direct measure of how often the game takes the path the crash died on.
+static D3D9_DEVICE_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+unsafe fn d3d9_device(g: &mut Guarded) -> Result<(u32, String), String> {
+    // Only a device that still passes the round trip may be reused: a cached pointer that
+    // now validates on the display name alone is exactly the stale-device trap above.
+    let cached = D3D9_DEVICE.load(Ordering::Relaxed);
+    if cached != 0 && device_check(g, cached) == Some(DeviceProof::RoundTrip) {
+        return Ok((cached, "cached".to_string()));
+    }
+    let (device, how) = find_d3d9_device(g)?;
+    D3D9_DEVICE.store(device, Ordering::Relaxed);
+    let generation = D3D9_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed);
+    let route = if cached == 0 {
+        format!("{how}, first device of the session")
+    } else if cached == device {
+        // Revalidation failed but the same pointer came back: the device did not change,
+        // its list was momentarily unreadable or empty. Worth distinguishing.
+        format!("{how}, same device re-validated (generation {generation})")
+    } else {
+        format!("{how}, DEVICE REPLACED - was {cached:#010x} (generation {generation}, so the device has been recreated {generation} time(s) this session)")
+    };
+    Ok((device, route))
+}
+
+/// Wrapper globals that hold a D3D9 object, harvested from the lost-device recovery
+/// routine at `DDRAW+0x200e5` - the one place that touches all of them in a row. The
+/// device itself is first; the rest are whatever the wrapper keeps alive across a reset,
+/// and any of them is a usable starting point because they all lead to the same device.
+const DDRAW_OBJECT_GLOBALS: [(u32, &str); 5] = [
+    (0x459500, "device global"),
+    (0x16f6a8, "object global +0x16f6a8"),
+    (0x16f6a4, "object global +0x16f6a4"),
+    (0x44c834, "object global +0x44c834"),
+    (0x4591d4, "object global +0x4591d4"),
+];
+/// The wrapper's second object table (`DDRAW+0x46120c`, count at `+0x16f660`), released
+/// beside the surfaces in the same routine.
+const DDRAW_OBJECT_TABLE: u32 = 0x46120c;
+const DDRAW_OBJECT_TABLE_COUNT: u32 = 0x16f660;
+const DDRAW_OBJECT_TABLE_CAP: u32 = 256;
+/// How far into a COM object to look for the fields that lead to the device.
+const COM_SCAN_BYTES: u32 = 0x100;
+
+/// Everything a candidate COM object might be, all of it validated rather than assumed -
+/// which is the lesson of the first attempt, where `com+0x14` was read correctly out of
+/// d3d9's destructor but simply was not reachable from what the wrapper had to hand.
+unsafe fn device_from_candidate(g: &mut Guarded, com: u32, strict: bool) -> Option<(u32, &'static str)> {
+    if !plausible_ptr(com) {
+        return None;
+    }
+    // The candidate is itself the device.
+    if device_accepts(g, com, strict) {
+        return Some((com, "global is the device"));
+    }
+    // The candidate is a d3d9 resource: +0x44 is its device.
+    if let Some(device) = g.u32(com + D3D9_RES_DEVICE) {
+        if device_accepts(g, device, strict) {
+            return Some((device, "global is a resource"));
+        }
+    }
+    for offset in (0..COM_SCAN_BYTES).step_by(4) {
+        // A field that is the device, or that is a resource pointing at it.
+        if let Some(field) = g.u32(com + offset) {
+            if device_accepts(g, field, strict) {
+                return Some((field, "device in a COM field"));
+            }
+            if plausible_ptr(field) {
+                if let Some(device) = g.u32(field + D3D9_RES_DEVICE) {
+                    if device_accepts(g, device, strict) {
+                        return Some((device, "resource in a COM field"));
+                    }
+                }
+            }
+        }
+        // The device embedded in the candidate rather than pointed at.
+        if device_accepts(g, com + offset, strict) {
+            return Some((com + offset, "device embedded in the COM object"));
+        }
+    }
+    None
+}
+
+unsafe fn find_d3d9_device(g: &mut Guarded) -> Result<(u32, String), String> {
+    // A live device first. Only if there is none does an idle one count, and then the
+    // report says so, because "0 resources" must never read as a passed check.
+    match find_d3d9_device_pass(g, true) {
+        Ok(found) => Ok(found),
+        Err(strict_error) => match find_d3d9_device_pass(g, false) {
+            Ok((device, how)) => Ok((device, format!("{how}, IDLE DEVICE - it owns no resources"))),
+            Err(_) => Err(strict_error),
+        },
+    }
+}
+
+unsafe fn find_d3d9_device_pass(g: &mut Guarded, strict: bool) -> Result<(u32, String), String> {
+    let base = ddraw_base()?;
+
+    for (offset, what) in DDRAW_OBJECT_GLOBALS {
+        if let Some(value) = g.u32(base + offset) {
+            if let Some((device, how)) = device_from_candidate(g, value, strict) {
+                return Ok((device, format!("{what} -> {how}")));
+            }
+        }
+    }
+
+    let surfaces = g.u32(base + DDRAW_SURFACE_HIGH_WATER).unwrap_or(0).min(DDRAW_SURFACE_TABLE_SLOTS);
+    for index in 0..surfaces {
+        let Some(surface) = g.u32(base + DDRAW_SURFACE_TABLE + index * 4) else { continue };
+        if !plausible_ptr(surface) {
+            continue;
+        }
+        for slot in DDRAW_SURFACE_D3D9_SLOTS {
+            let Some(com) = g.u32(surface + slot) else { continue };
+            if let Some((device, how)) = device_from_candidate(g, com, strict) {
+                return Ok((device, format!("surface table slot {index}/{slot:#x} -> {how}")));
+            }
+        }
+    }
+
+    let objects = g.u32(base + DDRAW_OBJECT_TABLE_COUNT).unwrap_or(0).min(DDRAW_OBJECT_TABLE_CAP);
+    for index in 0..objects {
+        let Some(com) = g.u32(base + DDRAW_OBJECT_TABLE + index * 4) else { continue };
+        if let Some((device, how)) = device_from_candidate(g, com, strict) {
+            return Ok((device, format!("object table entry {index} -> {how}")));
+        }
+    }
+
+    // Last resort: the device pointer is stored *somewhere* in the wrapper's data, so
+    // sweep it. Affordable only because [Guarded] caches misses - the free regions the
+    // garbage points into are ruled out a megabyte at a time.
+    if let Some((from, device, how)) = scan_ddraw_data(g, base, strict) {
+        return Ok((device, format!("data scan at {from:#010x} -> {how}")));
+    }
+
+    Err(format!(
+        "no d3d9 device found (DDRAW at {base:#010x}, {surfaces} surface slots, {objects} object slots, {} VirtualQuery)",
+        g.queries
+    ))
+}
+
+/// Walks DDRAW's writable sections looking for a stored pointer that validates as the
+/// device. Section bounds are read from the loaded PE headers rather than hardcoded.
+unsafe fn scan_ddraw_data(g: &mut Guarded, base: u32, strict: bool) -> Option<(u32, u32, &'static str)> {
+    for (start, size) in writable_sections(g, base) {
+        let mut addr = start;
+        let end = start.wrapping_add(size);
+        while addr < end {
+            if let Some(value) = g.u32(addr) {
+                if plausible_ptr(value) && device_accepts(g, value, strict) {
+                    return Some((addr, value, "stored device pointer"));
+                }
+            }
+            addr = addr.wrapping_add(4);
+            if g.queries >= GUARD_MAX_QUERIES {
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// `(virtual address, virtual size)` of every writable section of a loaded module.
+unsafe fn writable_sections(g: &mut Guarded, base: u32) -> Vec<(u32, u32)> {
+    const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+    let mut out = Vec::new();
+    let Some(pe_offset) = g.u32(base + 0x3c) else { return out };
+    let pe = base.wrapping_add(pe_offset);
+    if g.u32(pe) != Some(0x0000_4550) {
+        return out;
+    }
+    // NumberOfSections is the u16 at pe+0x6, SizeOfOptionalHeader the u16 at pe+0x14 -
+    // both the *low* half of the dword that contains them.
+    let (Some(sections), Some(opt_size)) = (g.u32(pe + 0x6).map(|v| v & 0xFFFF), g.u32(pe + 0x14).map(|v| v & 0xFFFF)) else {
+        return out;
+    };
+    let table = pe.wrapping_add(0x18).wrapping_add(opt_size);
+    for index in 0..sections.min(32) {
+        let header = table.wrapping_add(index * 40);
+        let (Some(vsize), Some(rva), Some(flags)) = (g.u32(header + 0x8), g.u32(header + 0xc), g.u32(header + 0x24)) else {
+            continue;
+        };
+        if flags & IMAGE_SCN_MEM_WRITE != 0 && vsize > 0 && vsize < 0x0400_0000 {
+            out.push((base.wrapping_add(rva), vsize));
+        }
+    }
+    out
+}
+
+unsafe fn ddraw_base() -> Result<u32, String> {
+    let module = GetModuleHandleA(s!("DDRAW.dll")).map_err(|e| format!("DDRAW.dll not loaded ({e})"))?;
+    let base = module.0 as u32;
+    if base == 0 {
+        return Err("DDRAW.dll handle is null".to_string());
+    }
+    Ok(base)
+}
+
+/// What the wrapper actually had to hand, dumped when discovery fails so the next attempt
+/// is aimed rather than guessed.
+unsafe fn d3d9_diagnostics(g: &mut Guarded) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(base) = ddraw_base() else {
+        out.push("DDRAW.dll is not loaded".to_string());
+        return out;
+    };
+    out.push(format!(
+        "  gate +0x459504 = {:?}, surface high-water = {:?}, object count = {:?}",
+        g.u32(base + 0x459504),
+        g.u32(base + DDRAW_SURFACE_HIGH_WATER),
+        g.u32(base + DDRAW_OBJECT_TABLE_COUNT),
+    ));
+    for (offset, what) in DDRAW_OBJECT_GLOBALS {
+        let value = g.u32(base + offset);
+        out.push(format!("  {what} [{:#010x}] = {value:#010x?}", base + offset));
+        if let Some(value) = value {
+            if plausible_ptr(value) {
+                out.push(format!("    {}", dump_dwords(g, value, 16)));
+            }
+        }
+    }
+    let surfaces = g.u32(base + DDRAW_SURFACE_HIGH_WATER).unwrap_or(0).min(16);
+    for index in 0..surfaces {
+        let surface = g.u32(base + DDRAW_SURFACE_TABLE + index * 4);
+        out.push(format!("  surface[{index}] = {surface:#010x?}"));
+        if let Some(surface) = surface {
+            if plausible_ptr(surface) {
+                let slots: Vec<String> = DDRAW_SURFACE_D3D9_SLOTS
+                    .iter()
+                    .map(|slot| format!("{slot:#x}={:#010x?}", g.u32(surface + slot)))
+                    .collect();
+                out.push(format!("    {}", slots.join(" ")));
+            }
+        }
+    }
+    out
+}
+
+unsafe fn dump_dwords(g: &mut Guarded, addr: u32, count: u32) -> String {
+    let mut parts = Vec::new();
+    for index in 0..count {
+        match g.u32(addr + index * 4) {
+            Some(value) => parts.push(format!("{value:08x}")),
+            None => parts.push("????????".to_string()),
+        }
+    }
+    format!("{addr:#010x}: {}", parts.join(" "))
+}
+
+/// CTRL+ALT+F9: one-shot check of d3d9's resource list, for the crash in
+/// `.claude/notes/todo/device-lost-crash.md`.
+///
+/// That crash is `d3d9+0x62df8` storing through a resource's `next` link while the GOG
+/// wrapper tears a surface down, and the resource is otherwise live and coherent - one
+/// field was hit by a 4-byte pointer write landing at `resource+0x77` instead of `+0x78`,
+/// one byte low. Waiting for the crash is hopeless: the release path runs on every
+/// display-mode change and on exit, while the corrupted resource is rare, so the crash
+/// needs both to coincide. The defect is static though, and d3d9 keeps every resource of
+/// a device on a doubly-linked list - so a broken link is visible **at rest**, with no
+/// mode switch, no release and no crash needed. Press this to check now; SHIFT+ALT+F9
+/// watches continuously and timestamps the moment a link breaks.
+unsafe fn debug_probe_d3d9_list() {
+    let mut g = Guarded::new();
+    let mut out = Vec::new();
+    let (device, route) = match d3d9_device(&mut g) {
+        Ok(found) => found,
+        Err(reason) => {
+            let line = format!("d3d9 list: {reason}");
+            out.push(line.clone());
+            out.extend(d3d9_diagnostics(&mut g));
+            write_d3d9_log(&out);
+            notify(&line);
+            return;
+        }
+    };
+    let verdict = walk_resource_list(&mut g, device);
+    out.push(format!(
+        "d3d9 list: device {device:#010x} (via {route}), head {:#010x}, {} resources, {} VirtualQuery",
+        verdict.head, verdict.nodes, g.queries
+    ));
+    if verdict.truncated {
+        out.push(format!("WALK TRUNCATED at {LIST_WALK_CAP} nodes - the links form a cycle"));
+    }
+    for fault in &verdict.faults {
+        out.push(format!("FAULT {fault}"));
+    }
+    let headline = if verdict.checked_nothing() {
+        "d3d9 list NOT CHECKED: the device owns no resources (torn down, or between modes) - press again".to_string()
+    } else if verdict.clean() {
+        format!("d3d9 list clean: {} resources, links consistent", verdict.nodes)
+    } else {
+        format!("d3d9 list BROKEN: {} fault(s) over {} resources", verdict.faults.len(), verdict.nodes)
+    };
+    out.push(headline.clone());
+    write_d3d9_log(&out);
+    notify(&format!("{headline} -> {D3D9_LIST_LOG}"));
+}
+
+/// SHIFT+ALT+F9: watch the list continuously, off the ships tick so it samples at every
+/// game speed. Quiet by design - it writes only when the fault state changes, plus a
+/// heartbeat, so a clean session leaves a handful of lines and the first broken link is
+/// timestamped to the tick.
+static D3D9_WATCH_ON: AtomicBool = AtomicBool::new(false);
+/// A day between heartbeats (a day is 256 ticks).
+const D3D9_WATCH_HEARTBEAT: u32 = 256;
+/// Floor on wall-clock time between walks. The tick is the right *trigger* - it fires at
+/// every game speed - but it is the wrong *rate*: fast-forward advances up to a whole day
+/// per frame, which would run the walk 256 times in one frame. 100 ms bounds the cost
+/// whatever the speed and is still far finer than any action a player can take.
+const D3D9_WATCH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+static D3D9_WATCH_LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// True at most once per [D3D9_WATCH_MIN_INTERVAL].
+fn d3d9_watch_due() -> bool {
+    let now = std::time::Instant::now();
+    let Ok(mut last) = D3D9_WATCH_LAST.lock() else { return false };
+    if last.is_some_and(|at| now.duration_since(at) < D3D9_WATCH_MIN_INTERVAL) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+unsafe fn toggle_probe_d3d9_watch() {
+    let on = !D3D9_WATCH_ON.load(Ordering::SeqCst);
+    if on {
+        if let Err(reason) = ensure_ships_tick_hook() {
+            error!("d3d9 watch: {reason}");
+            notify(&format!("d3d9 watch: {reason}"));
+            return;
+        }
+    }
+    D3D9_WATCH_ON.store(on, Ordering::SeqCst);
+    let line = format!("d3d9 watch: {}", if on { "on" } else { "off" });
+    write_d3d9_log(&[line.clone()]);
+    notify(&format!("{line} -> {D3D9_LIST_LOG}"));
+}
+
+/// Runs on every ships tick. Allocation-free while the list is clean: the walk only
+/// builds strings when it finds a fault, and the heartbeat formats once a day.
+unsafe fn sample_d3d9_list(tick: u32) {
+    static LAST_TICK: AtomicU32 = AtomicU32::new(0);
+    static LAST_STATE: AtomicU32 = AtomicU32::new(u32::MAX);
+    if !d3d9_watch_due() {
+        return;
+    }
+    let mut g = Guarded::new();
+    let (device, _) = match d3d9_device(&mut g) {
+        Ok(found) => found,
+        Err(_) => return,
+    };
+    let verdict = walk_resource_list(&mut g, device);
+    let state = verdict.state();
+    let changed = state != LAST_STATE.swap(state, Ordering::Relaxed);
+    let due = tick.wrapping_sub(LAST_TICK.load(Ordering::Relaxed)) >= D3D9_WATCH_HEARTBEAT;
+    if !changed && !due {
+        return;
+    }
+    LAST_TICK.store(tick, Ordering::Relaxed);
+    let mut out = Vec::new();
+    let prefix = format!("tick {tick} day {} time {:#04x}", tick >> 8, tick & 0xFF);
+    if verdict.checked_nothing() {
+        out.push(format!("{prefix} nothing to check - the device owns no resources"));
+    } else if verdict.clean() {
+        out.push(format!("{prefix} {}clean, {} resources", if changed { "RECOVERED " } else { "" }, verdict.nodes));
+    } else {
+        out.push(format!(
+            "{prefix} {}BROKEN: {} fault(s) over {} resources, device {device:#010x}",
+            if changed { "FIRST SEEN " } else { "" },
+            verdict.faults.len(),
+            verdict.nodes
+        ));
+        if verdict.truncated {
+            out.push(format!("  cycle: walk truncated at {LIST_WALK_CAP} nodes"));
+        }
+        for fault in &verdict.faults {
+            out.push(format!("  FAULT {fault}"));
+        }
+    }
+    write_d3d9_log(&out);
+    if changed && !verdict.clean() {
+        notify(&format!("d3d9 list BROKE at tick {tick} - see {D3D9_LIST_LOG}"));
+    }
+}
+
+/// Appended, never truncated: two presses days apart, and a watch spanning a whole
+/// session, all compare in one file.
+fn write_d3d9_log(lines: &[String]) {
+    for line in lines {
+        debug!("{line}");
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(D3D9_LIST_LOG) {
+        use std::io::Write;
+        for line in lines {
+            let _ = writeln!(file, "{line}");
+        }
+        let _ = file.flush();
     }
 }
