@@ -136,13 +136,15 @@ pub unsafe extern "C" fn start() -> u32 {
 /// discriminator (non-zero = the `% 11` captain path) and decides one thing here: whether
 /// the wage the record already carries was computed from the skills we just clamped.
 ///
-/// - pirate: the initializer computed the wage inline at `0x004FE104`, *before* this
-///   hook ran, so a clamp leaves it overstated - recompute.
-/// - captain: the initializer wrote `0`, which a clamp cannot make stale, and the callers
-///   that do want a real wage compute it *after* the allocator returns - the tavern path
-///   at `0x00526A87` (which skips it for pirates precisely because the initializer already
-///   did it), and the ship path at `0x0050AEE7`. Both therefore already see clamped
-///   skills, which is why the wage shown in the tavern stays consistent with them.
+/// - pirate (`captain_flag == 0`): the initializer computed the wage inline at
+///   `0x004FE104`, *before* this hook ran, so a clamp leaves it overstated - recompute.
+///   (The tavern spawn at `0x00526A87` runs `0x004FE190` once more for this kind after
+///   the allocator returns - same formula, now from the clamped skills, so the two
+///   agree; it is captains that site skips, not pirates.)
+/// - captain (`captain_flag != 0`): the initializer wrote `0`, which a clamp cannot make
+///   stale, and it stays 0 until something computes a real wage after the allocator
+///   returns - e.g. the create-onto-a-ship path at `0x0050AEE7` - which by then sees
+///   clamped skills. Recomputing here would wrongly replace the 0 with a hire-time wage.
 #[no_mangle]
 unsafe extern "thiscall" fn initializer_hook(record: u32, index: u32, captain_flag: u32) {
     let original: extern "thiscall" fn(u32, u32, u32) =

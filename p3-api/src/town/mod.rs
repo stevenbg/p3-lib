@@ -31,6 +31,42 @@ pub const TOWN_FLAG_PIRATE_ATTACK: u32 = 0x800;
 /// port of %s is frozen.") and cleared by scheduled task `0x35` (`0x004E94A4`,
 /// "The port of %s is open again."). See `.claude/notes/done/port-freezing.md`.
 pub const TOWN_FLAG_FROZEN: u32 = 0x0400_0000;
+
+/// Bits of the **built-structures mask** at `+0x76C` ([TownPtr::get_buildings]) - one
+/// bit per unique town structure, set when the building is added to the town by
+/// `0x00521900` (its 48-entry dispatch on the building id, index table `0x00522690`,
+/// jump table `0x0052262C`). Each case also refuses when its own bit is already set,
+/// which is what makes these buildings one-per-town.
+///
+/// Named against the building-name block at `0x006A5688`..`0x006A5750`, which is in
+/// building-id order and aligns on five independently known ids (Warehouse `0x1E`,
+/// Hospital `0x29`, Mint `0x2A`, School `0x2B`, Chapel `0x2C`). [TOWN_BUILDING_MINT] is
+/// corroborated a second way: the population-levels routine tests exactly this bit at
+/// `0x0051C671` for the rich divisor the gitbook derived as `has_mint`.
+pub const TOWN_BUILDING_MARKET_HALL: u32 = 0x1;
+pub const TOWN_BUILDING_TOWN_HALL: u32 = 0x2;
+pub const TOWN_BUILDING_ARMOURY: u32 = 0x8;
+pub const TOWN_BUILDING_TAVERN: u32 = 0x20;
+/// Prerequisite of both [TOWN_BUILDING_MINT] and [TOWN_BUILDING_SCHOOL], and itself
+/// gated on all seven of `0x7F` (`(mask & 0x27F) == 0x7F` at `0x00521D39`).
+pub const TOWN_BUILDING_CHURCH: u32 = 0x200;
+/// Divides the rich-citizen target by 213 instead of 320 (`0x0051C671`), i.e. a +50%
+/// rich-citizen target. Like [TOWN_BUILDING_SCHOOL] that is its *only* effect - three
+/// readers in the executable, this one, the setter and the AI planner's "already has
+/// one" test - so the Mint does nothing to money despite the name, which the player
+/// independently confirmed from play. Requires [TOWN_BUILDING_CHURCH].
+pub const TOWN_BUILDING_MINT: u32 = 0x400;
+pub const TOWN_BUILDING_LENDERS_HOUSE: u32 = 0x800;
+/// The only mechanical effect is on the beggar intake: the daily beggar pass
+/// `0x0051C0E0` multiplies its *increase* step by 1.3 - `floor((13 * step + 9) / 10)`
+/// at `0x0051C1B1` - and nothing else in the executable reads this bit except the
+/// setter and the AI's "town already has one" test at `0x0051F893`. Requires
+/// [TOWN_BUILDING_CHURCH]. See `.claude/notes/done/town-school.md`.
+pub const TOWN_BUILDING_SCHOOL: u32 = 0x1000;
+pub const TOWN_BUILDING_GUILD_HALL: u32 = 0x2000;
+pub const TOWN_BUILDING_PUBLIC_BATH: u32 = 0x4000;
+pub const TOWN_BUILDING_SHIPYARD: u32 = 0x1_0000;
+
 pub const WARE_BASE_PRICES: *const f32 = 0x00673A18 as _;
 
 #[derive(Debug)]
@@ -88,6 +124,19 @@ impl TownPtr {
     /// Whether the town's port is iced in, i.e. [TOWN_FLAG_FROZEN] is set.
     pub fn is_port_frozen(&self) -> bool {
         self.get_flags() & TOWN_FLAG_FROZEN != 0
+    }
+
+    /// The mask of unique structures the town has, one bit each - see the
+    /// `TOWN_BUILDING_*` constants. Written by `0x00521900` when a building is added;
+    /// the town's ordinary houses, farms and workshops are not in here.
+    pub fn get_buildings(&self) -> u32 {
+        unsafe { self.get(0x76c) }
+    }
+
+    /// Whether the town has the given structure, e.g.
+    /// `town.has_building(TOWN_BUILDING_SCHOOL)`.
+    pub fn has_building(&self, building: u32) -> bool {
+        self.get_buildings() & building != 0
     }
 
     /// Accumulated cold, the input to the ice model. The daily ice pass
