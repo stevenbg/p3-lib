@@ -13,6 +13,7 @@ pub mod letters;
 pub mod memory;
 pub mod merchant;
 pub mod missions;
+pub mod names;
 pub mod mods;
 pub mod operation;
 pub mod operations;

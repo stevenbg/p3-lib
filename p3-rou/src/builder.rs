@@ -28,6 +28,23 @@ pub const MAX_AMOUNT: i32 = 1_000_000_000;
 /// Route instructions exist only for the first 20 wares - the route window has no
 /// weapons - so the weapon slots of every amount array must stay zero.
 pub const TRADE_WARE_COUNT: usize = 20;
+/// The most stops a route may have if the auto-trade window is ever to be opened on it.
+///
+/// The window builds exactly 20 row widgets when it is created (`mov eax,0x14` at
+/// `0x00489E07`), as two parallel arrays embedded in the window object: `+0x2340` stride
+/// `0xF8` and `+0x589C` stride `0xE8`. Both end exactly where the next member begins
+/// (`0x36A0` and `0x6ABC`), so there is no slack to grow into.
+///
+/// The routine that fills them (`0x004934B0`) walks the whole stop chain and **never
+/// checks the row count** - it stops only when the chain wraps to its first stop. Stop 21
+/// therefore writes past the last row into unconstructed memory, and the `CString`
+/// assignment at `0x004C7780` dereferences a null `m_pchData`, crashing at `0x0064F234`
+/// with a read of `0xFFFFFFF4`.
+///
+/// The stop pool itself holds 150 (`[0x006DD72C]`, capacity word at `0x006DD72A`), so a
+/// longer route is perfectly legal *data* - it just cannot be displayed. Vanilla never
+/// builds one, because the window clamps its own "add a stop" row to 20 at `0x0049379D`.
+pub const MAX_DISPLAYABLE_STOPS: usize = 20;
 /// Raw units per in-game unit: wares measured in loads (1 load = 10 barrels).
 pub const LOAD_SCALING: i32 = 2000;
 /// Raw units per in-game unit: wares measured in barrels.
@@ -176,6 +193,28 @@ pub fn bracketed_route(load_town: u8, load_amount: [i32; 24], middle: Vec<TradeR
     stops.push(stop(load_town, FLAG_R | FIRST_STOP_MARKER, [0i32; 24], load_amount));
     stops.extend(middle);
     stops.push(stop(load_town, FLAG_X, [0i32; 24], all_trade_wares(-MAX_AMOUNT)));
+    stops
+}
+
+/// A pure collection route: **one** home stop that transfers the whole ship into the
+/// office, then the buying stops.
+///
+/// A route is a closed loop, so the ship comes back to the first stop after the last
+/// target - a trailing home stop would only repeat what this one does. Spending the slot
+/// on the leading stop instead means the hold is emptied before the buying starts, and
+/// costs one stop fewer against [MAX_DISPLAYABLE_STOPS].
+///
+/// This is [bracketed_route]'s shape minus the load (a collection route loads nothing at
+/// home) and minus the redundant tail.
+pub fn collecting_route(load_town: u8, middle: Vec<TradeRouteStop>) -> Vec<TradeRouteStop> {
+    let mut stops = Vec::with_capacity(middle.len() + 1);
+    stops.push(stop(
+        load_town,
+        FLAG_R | FIRST_STOP_MARKER,
+        [0i32; 24],
+        all_trade_wares(-MAX_AMOUNT),
+    ));
+    stops.extend(middle);
     stops
 }
 

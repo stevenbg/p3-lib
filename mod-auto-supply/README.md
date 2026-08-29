@@ -39,9 +39,9 @@ because it opened last.
 | F11 | Dump thresholds, base prices, all price levels and the weekly citizen/business consumptions to the log and to `<TownName>.csv` in the game directory |
 | F1 (nothing open) | Rebuild the selected ship's route as a 5stop supply route. The ship's current route provides the towns - its first stop becomes the home town, the remaining unique towns in order the targets (a ship without a route uses the merchant's home town and targets the open town view): load a week of every target's demand at the home office, then per target sell it there and reset that office's stock, and finally haul everything home. Targets without a player office get a combined sell-and-buy stop instead, since office transfers would be wiped there: sells as usual, and buys at the E price for everything except the no-buy wares and what the home town produces itself. The previous route is saved to `_backup.rou` first |
 | F2 | The same, but with the 6stop office swap per target |
-| F3 | A collection route instead: nothing loaded at home, one buy stop per target at the E price for everything the home town does not produce itself, everything unloaded at home |
+| F3 | A collection route instead: one buy stop per target at the E price for everything the home town does not produce itself. A single home stop, at the front, transfers the whole hold into the office; the route loops back to it, so there is no home stop at the end |
 | F4 | A trade circuit: nothing loaded at home, one self-contained trade stop per target - buy what that town produces at the R buy price, sell what it does not at the R sell price, Max amounts - and everything unloaded at home. No consumption figures and no office needed at any target; the price is the limit rather than a quantity |
-| Ctrl + F3 | A fetch route: collect a hand-picked ware list from everywhere it is made. The wares **and their prices** are the buy orders you left on the ship's **first stop**, the targets are every town that produces one of them, and the stops are ordered into the shortest round trip. Every stop buys the whole list at your prices; nothing loaded at home, everything unloaded there. Needs an existing route to read - see below |
+| Ctrl + F3 | A fetch route: collect a hand-picked ware list from everywhere it is made. The wares **and their prices** are the buy orders you left on the ship's **first stop**, the targets are every town that produces one of them, and the stops are ordered into the shortest round trip. Every stop buys the whole list at your prices. The single home stop transfers the whole hold into the office before the buying starts, and the route loops back to it - so there is no separate home stop at the end. Needs an existing route to read - see below |
 | Alt + F1 / F2 | Leaves the low-value industry inputs (bricks, pig iron, pitch, hemp) out of the supplies, freeing hold space for goods with a better margin |
 | Alt + F3 / F4 | Buys the no-buy wares (pitch, timber, salt, bricks, grain, hemp) as well, instead of leaving them in the town |
 | Alt + Ctrl + F3 | Calls at **every** town rather than only the ones that produce a wanted ware |
@@ -58,7 +58,7 @@ narrows what a supplying template carries. On F1 and F2 it does not touch the bu
 an office-less target's stop - those keep leaving the no-buy wares alone, so one press
 cannot free hold space and refill it at the same time.
 | F1 (goods dialog) | With the route window's goods dialog open: fill the displayed stop's empty ware slots - buy what the stop's town produces at the Ctrl+R price (Ctrl+F1 includes the no-buy wares), sell everything else at the Alt+R price, Max amounts. Existing instructions, office transfers included, stay untouched |
-| DEL | Clear the selected ship's route entirely (own ships only; refused while the goods dialog is open, since it displays a stop of that route). The route is saved to `_backup.rou` first |
+| DEL | Clear the selected ship's route entirely (own ships only; refused while the goods dialog is open, since it displays a stop of that route). The route is saved to `_backup.rou` first, and the ship is given a fresh name from the game's own ship-name pool - the route keys name a ship after its towns, so a cleared ship should not keep advertising a route it no longer has |
 
 In the goods dialog the price keys refresh the display the way the dialog's own stop
 arrows do, which starts a new Undo session: Undo covers changes made since - the same
@@ -112,7 +112,12 @@ Ctrl+F3. What you get is:
 - one buy stop for every town that **produces** at least one of the wanted wares, each
   buying the whole wanted list at **your prices**, copied through ware by ware;
 - those stops ordered into the shortest round trip from home and back;
-- nothing loaded at home, everything unloaded into the home office at the end.
+- one home stop, at the front, transferring the whole hold into the home office.
+
+That last point is worth spelling out: the route is a closed loop, so the ship arrives back
+at the first stop after the last town and unloads there. A separate home stop at the end
+would do the same thing twice, so there is not one - which also leaves a stop spare against
+the 20 the auto-trade window can display.
 
 This is the only route key that does not price itself, which is the point: the price is
 the whole control surface here. Every other template applies one level to a list it

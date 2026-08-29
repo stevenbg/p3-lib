@@ -14,7 +14,7 @@ use p3_api::{
     town::get_town_name,
     ui::{ui_ship_panel::UIShipPanelPtr, ui_trading_office_window::UITradingOfficeWindowPtr},
 };
-use p3_rou::{builder, TradeRouteStop};
+use p3_rou::{builder, builder::MAX_DISPLAYABLE_STOPS, TradeRouteStop};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DELETE, VK_F1, VK_F11, VK_F2, VK_F3, VK_F4};
 
 use crate::prices::{buy_price, sell_price, PriceLevel};
@@ -730,8 +730,46 @@ unsafe fn on_clear_route_hotkey() {
     }
     let ships = p3_api::ships::ShipsPtr::new();
     let name = ships.get_ship(ship_index).map(|s| s.get_name()).unwrap_or_default();
-    notify(&format!("Route cleared: {} stops removed from {name}", previous.len()));
+
+    // The route keys rename the ship after its towns, so a cleared ship would keep a name
+    // describing a route it no longer has. Put it back on a pool name, the way a
+    // newly built ship gets one.
+    let renamed = match random_ship_name() {
+        Some(pool_name) => {
+            rename_ship(ship_index, &pool_name);
+            format!(", renamed {pool_name}")
+        }
+        None => String::new(),
+    };
+    notify(&format!("Route cleared: {} stops removed from {name}{renamed}", previous.len()));
 }
+
+/// A name drawn from the game's own ship-name pool (`scripts/NamenSchiffe_eng.txt`), the
+/// list a newly built ship is named from.
+///
+/// The game picks its index by stepping a shared counter (`state = (state + step) % 307`
+/// at `0x0050E1A6`, rejecting values past the pool count). This deliberately does **not**
+/// reuse that: the state lives on a game object and advancing it would perturb the
+/// sequence the game's own naming draws from. A local mix of the game clock and a call
+/// counter is enough - the only requirement is that pressing DEL twice does not hand out
+/// the same name twice in the same tick.
+unsafe fn random_ship_name() -> Option<String> {
+    let count = p3_api::names::ship_name_count();
+    if count == 0 {
+        warn!("clear route: the ship-name pool is empty - leaving the name alone");
+        return None;
+    }
+    let nth = NAME_PICKS.fetch_add(1, Ordering::Relaxed);
+    let mut x = GAME_WORLD_PTR.get_game_time_raw() ^ nth.wrapping_mul(0x9E37_79B9);
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7FEB_352D);
+    x ^= x >> 15;
+    let name = p3_api::names::get_ship_name((x % count as u32) as u16)?;
+    Some(name.iter().map(|&b| b as char).collect())
+}
+
+/// Counts calls to [random_ship_name] so two presses inside one game tick differ.
+static NAME_PICKS: AtomicU32 = AtomicU32::new(0);
 
 /// Ctrl/Alt+QWERTY while the goods dialog is open: reprice the stop being edited, in
 /// place. The dialog edits the applied route's pool record directly (verified: its +/-
@@ -885,6 +923,9 @@ unsafe fn has_player_office(town_index: u8) -> bool {
 
 /// Write the stops as the route file and apply them to the ship, normalising the
 /// logical-first marker onto the first stop. Returns false and logs on failure.
+///
+/// Callers must have clamped to [`MAX_DISPLAYABLE_STOPS`] already - opening the auto-trade
+/// window on a longer route crashes the game.
 unsafe fn write_and_apply_route(ship_index: u16, mut stops: Vec<TradeRouteStop>) -> bool {
     for (i, stop) in stops.iter_mut().enumerate() {
         if i == 0 {
@@ -933,9 +974,13 @@ enum RouteKind {
 /// remaining unique towns, in order, the targets (further occurrences of the home town
 /// are ignored; a ship without a route uses the merchant's home town and the open town
 /// view). The generated route repeats the template's action stops once per target,
-/// bracketed by a home load stop (summed quantities) and a home unload stop. With
-/// shift held, the target is just the currently open town and the generated stops are
-/// APPENDED to the existing route instead of replacing it.
+/// bracketed by a home load stop (summed quantities) and a home unload stop - except the
+/// collection templates ([RouteKind::Suck] and [RouteKind::Fetch]), which load nothing and
+/// so use a **single** home stop that transfers the hold into the office
+/// (`builder::collecting_route`); the route loops back to it, so a trailing home stop
+/// would only repeat it. With shift held, the target is
+/// just the currently open town and the generated stops are APPENDED to the existing
+/// route instead of replacing it.
 ///
 /// **What ALT means depends on the template**, because each has a different filter worth
 /// relaxing - in both cases it is a ware filter, never a quantity:
@@ -952,7 +997,7 @@ enum RouteKind {
 /// player office get a combined sell-and-buy trade stop (buying their produce at T)
 /// instead of the office-reset stops. F3 builds a collection route instead: one
 /// buy stop per target at the R price, skipping the NO_BUY_WARES and everything the
-/// home town produces itself.
+/// home town produces itself, behind the single home transfer stop.
 ///
 /// [RouteKind::Fetch] (CTRL+F3) is the exception to the paragraph above: it takes neither
 /// its wares nor its targets from the same places. The ware list is the buy orders the
@@ -1116,7 +1161,15 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
         }
     }
 
-    let template = builder::bracketed_route(load_town, total_load, middle);
+    // The two collection templates load nothing at home and only ever bring goods back,
+    // so they use the one-stop home bracket: the leading home stop transfers the hold into
+    // the office and the route loops straight back to it, making a trailing home stop
+    // redundant. The supply and trade templates still need the load stop at the front.
+    let template = if matches!(kind, RouteKind::Suck | RouteKind::Fetch) {
+        builder::collecting_route(load_town, middle)
+    } else {
+        builder::bracketed_route(load_town, total_load, middle)
+    };
     let stops = if append {
         let mut stops = previous;
         stops.extend(template);
@@ -1124,6 +1177,18 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
     } else {
         template
     };
+    // The auto-trade window has exactly 20 row widgets and no bound check, so a longer
+    // route crashes the game the moment the player opens it - see MAX_DISPLAYABLE_STOPS.
+    // Appending is what actually reaches this: a full "every town" fetch is well past 20.
+    let mut stops = stops;
+    if stops.len() > MAX_DISPLAYABLE_STOPS {
+        let dropped = stops.len() - MAX_DISPLAYABLE_STOPS;
+        stops.truncate(MAX_DISPLAYABLE_STOPS);
+        warn!(
+            "route: clamped to the auto-trade window's {MAX_DISPLAYABLE_STOPS} rows - dropped the last {dropped} stop(s)"
+        );
+        notify(&format!("Route clamped to {MAX_DISPLAYABLE_STOPS} stops ({dropped} dropped)"));
+    }
     let stop_count = stops.len();
     let route_name = route_ship_name(&stops);
 
