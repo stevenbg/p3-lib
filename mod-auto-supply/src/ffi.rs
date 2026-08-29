@@ -213,8 +213,9 @@ static GLOBAL_HANDLES: [AtomicU32; 20] = [const { AtomicU32::new(0) }; 20];
 
 /// Office keys, registered while a trading office window is open (its vtable
 /// open/close hooks below): F1 and the price-level keys.
-const OFFICE_KEYS: [(u32, u32); 15] = [
+const OFFICE_KEYS: [(u32, u32); 16] = [
     (SETUP_KEY, 0),
+    (CLEAR_ROUTE_KEY, 0),
     (SETUP_KEY, MOD_CTRL),
     (SETUP_KEY, MOD_ALT),
     (LEVEL_KEYS[0].0, MOD_CTRL),
@@ -230,7 +231,7 @@ const OFFICE_KEYS: [(u32, u32); 15] = [
     (LEVEL_KEYS[5].0, MOD_CTRL),
     (LEVEL_KEYS[5].0, MOD_ALT),
 ];
-static OFFICE_HANDLES: [AtomicU32; 15] = [const { AtomicU32::new(0) }; 15];
+static OFFICE_HANDLES: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
 
 /// Goods-dialog keys, registered after every populate (the dialog's open - the
 /// Goods button and the dialog's own arrows) and unregistered on its close: F1 fill
@@ -434,15 +435,17 @@ unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
 /// Office keys, live only while a trading office window is open. The handlers still
 /// resolve the office themselves, so a stray press during teardown is a no-op.
 ///
-/// **These swallow the keystroke.** F1 is also a global route key, and the registry
+/// **These swallow the keystroke.** F1 and DEL are also global keys, and the registry
 /// dispatches newest-first, so declining here would let the global handler fire too and
-/// build a route while setting up the office. Returning nonzero stops the walk, which is
-/// what makes the shadowing work; ownership is the rule, not success - F1 belongs to the
-/// office window while it is open even when the action refuses (wrong view), because
-/// refusing with a popup is a better answer than silently doing the other thing.
+/// build a route while setting up the office - or, for DEL, wipe the selected ship's route
+/// while resetting the office. Returning nonzero stops the walk, which is what makes the
+/// shadowing work; ownership is the rule, not success - both keys belong to the office
+/// window while it is open even when the action refuses (wrong view), because refusing
+/// with a popup is a better answer than silently doing the other thing.
 #[no_mangle]
 unsafe extern "C" fn office_hotkeys(vk: u32, mods: u32) -> u32 {
     match (vk, mods) {
+        (CLEAR_ROUTE_KEY, 0) => on_reset_office_hotkey(),
         (SETUP_KEY, MOD_CTRL) => on_lock_staples_hotkey(),
         (SETUP_KEY, MOD_ALT) => on_lock_building_materials_hotkey(),
         (SETUP_KEY, 0) => on_setup_hotkey(),
@@ -820,8 +823,8 @@ unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Option<PriceLe
 /// trade orders for the stop's own town - buy what it produces (at STOP_BUY_LEVEL),
 /// sell everything else (at STOP_SELL_LEVEL), MAX amounts - the same shape as a stop of
 /// the F4 trade template, but written in place and preserving every existing instruction,
-/// office transfers included. With
-/// `skip_no_buy_wares` the [NO_BUY_WARES] get no order where the town produces them.
+/// office transfers included. With `skip_no_buy_wares` the [NO_BUY_WARES] are not bought
+/// where the town produces them - they get a sell order like anything else, not no order.
 /// The instruction order is recomputed into the builder's cargo order.
 unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares: bool) {
     let record = *ROUTE_STOP_POOL + stop_index * ROUTE_STOP_SIZE;
@@ -849,14 +852,17 @@ unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares
             untouched += 1;
             continue;
         }
-        if production[i] > 0 {
-            if skip_no_buy_wares && NO_BUY_WARES.contains(&ware_id) {
-                skipped.push(format!("{ware_id:?}"));
-                continue;
-            }
+        // Same rule as the F4 trade stop: buy the production minus the NO_BUY_WARES, sell
+        // everything else - a produced NO_BUY_WARE included. Kept identical on purpose;
+        // the two are documented as the same shape.
+        let produced = production[i] > 0;
+        if produced && !(skip_no_buy_wares && NO_BUY_WARES.contains(&ware_id)) {
             price[i] = -buy_price(ware_index, STOP_BUY_LEVEL);
             bought.push(format!("{ware_id:?}"));
         } else {
+            if produced {
+                skipped.push(format!("{ware_id:?}"));
+            }
             price[i] = sell_price(ware_index, STOP_SELL_LEVEL);
             sold += 1;
         }
@@ -872,10 +878,10 @@ unsafe fn on_dialog_setup_hotkey(dialog: u32, stop_index: u32, skip_no_buy_wares
     let skipped = if skipped.is_empty() {
         String::new()
     } else {
-        format!(", skipping [{}]", skipped.join(", "))
+        format!(", selling not buying [{}]", skipped.join(", "))
     };
     info!(
-        "dialog setup for the {town} stop: buying [{}]{skipped}, selling {sold} others, {untouched} existing instructions untouched",
+        "dialog setup for the {town} stop: buying [{}]{skipped}, selling {sold}, {untouched} existing instructions untouched",
         bought.join(", ")
     );
     notify(&format!(
@@ -1137,8 +1143,12 @@ unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
             // template supplies nothing to narrow.
             let (price, amount, bought, skipped, sold) = town_trade_basket(town_index, !alt);
             middle.push(builder::stop(town_index, builder::FLAG_X, price, amount));
-            let left = if skipped.is_empty() { String::new() } else { format!(", leaving [{}]", skipped.join(", ")) };
-            described.push(format!("{town_name} (buying [{}]{left}, selling {sold} others)", bought.join(", ")));
+            let left = if skipped.is_empty() {
+                String::new()
+            } else {
+                format!(", selling not buying [{}]", skipped.join(", "))
+            };
+            described.push(format!("{town_name} (buying [{}]{left}, selling {sold})", bought.join(", ")));
             continue;
         }
 
@@ -1302,14 +1312,18 @@ unsafe fn town_trade_basket(
     for ware_index in TRADE_WARES {
         let i = ware_index as usize;
         let ware_id = WareId::from_u16(ware_index).unwrap();
-        if production[i] > 0 {
-            if skip_no_buy && NO_BUY_WARES.contains(&ware_id) {
-                skipped.push(format!("{ware_id:?}"));
-                continue;
-            }
+        // Buy the town's production minus the NO_BUY_WARES; sell everything else - which
+        // includes a NO_BUY_WARE the town produces. A sell order costs nothing: the price
+        // is a minimum, so it either trades at a price worth having or does not fire. Give
+        // every ware an order rather than reason about which ones could pay off.
+        let produced = production[i] > 0;
+        if produced && !(skip_no_buy && NO_BUY_WARES.contains(&ware_id)) {
             price[i] = -buy_price(ware_index, STOP_BUY_LEVEL);
             bought.push(format!("{ware_id:?}"));
         } else {
+            if produced {
+                skipped.push(format!("{ware_id:?}"));
+            }
             price[i] = sell_price(ware_index, STOP_SELL_LEVEL);
             sold += 1;
         }
@@ -1644,6 +1658,55 @@ unsafe fn provision_and_lock(what: &str, targets: &[(WareId, i32)]) {
     }
     info!("{what} in {town}: locked {} wares, raised [{}]", targets.len(), raised.join(", "));
     notify(&format!("Locked {what} in {town} ({} amounts raised)", raised.len()));
+    refresh_administrator_view();
+}
+
+/// DEL in the office window: clear every auto-trade order back to nothing - no buy, no
+/// sell, amount 0, and the "lock amount" checkbox unticked.
+///
+/// The inverse of [on_setup_hotkey], which is why it lives on the same window: setup only
+/// ever fills in wares that have no order, so without a reset there is no way to undo it
+/// short of twenty manual edits. A price of `0` is what the game itself means by "no
+/// order" - [on_setup_hotkey] uses exactly that test to decide which wares it may touch.
+///
+/// This shadows the global route-clear DEL for as long as the window is open, the same way
+/// the office F1 shadows the global route F1.
+unsafe fn on_reset_office_hotkey() {
+    let Some((office, office_index, town)) = resolve_office() else {
+        return;
+    };
+    let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    let prices = office.get_administrator_trade_prices();
+    let locks = office.get_administrator_trade_lock_bitmap();
+
+    let mut cleared = 0;
+    let mut unlocked = 0;
+    for ware_index in TRADE_WARES {
+        let ware_id = WareId::from_u16(ware_index).unwrap();
+        let i = ware_index as usize;
+        if prices[i] != 0 {
+            cleared += 1;
+        }
+        if locks & (1 << i) != 0 {
+            unlocked += 1;
+        }
+        // Executed directly rather than enqueued, so the refresh below sees the new values.
+        execute_operation(&Operation::OfficeAutotradeSettingChange {
+            stock: 0,
+            price: 0,
+            office_index: office_index as _,
+            ware_id,
+        });
+        execute_operation(&Operation::OfficeAutotradeLockChange {
+            ware_id,
+            town_index: town_index as u16,
+            merchant_index: merchant_index as u16,
+            lock: false,
+        });
+    }
+    info!("reset in {town}: cleared {cleared} orders, unlocked {unlocked} amounts");
+    notify(&format!("Office reset in {town}: {cleared} orders cleared, {unlocked} unlocked"));
     refresh_administrator_view();
 }
 
