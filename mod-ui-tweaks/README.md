@@ -54,3 +54,82 @@ The keys are dispatched through the shared hotkey registry (`hotkeys.dll`, see
 `mod-hotkeys`), registered session-globally; without the registry they are inert
 while the time-scale detour itself keeps working (at whatever scale was last set,
 i.e. x1 on a fresh start).
+
+## Pirate attacks no longer interrupt fast forward
+
+When a notorious pirate robs someone else's ship the game announces
+`<pirate name> has struck again` - a video, or a ticker message if event videos are off -
+and **drops you back to normal speed**. It happens often enough to make fast forward
+unusable.
+
+While the game is **in fast forward**, this mod suppresses that one event entirely: no
+video, no message, no speed change. At every other speed it is left completely alone, so
+nothing is hidden while you are actually watching. No other event is affected - sieges,
+blockades, plagues, fires and ships finished all still interrupt.
+
+### How it works
+
+The announcement is two calls, not one:
+
+```
+60eb53:  je   0x60ebb6        ; the victim is you -> vanilla skips the announcement here
+60eb55:  mov  ecx,[0x006CC7E8]   <-- the only way in
+60eb5d:  call 0x00469380         ; open and SHOW the window
+60eba7:  call 0x00469AF0         ; populate it
+60ebac:  mov  eax,[0x006DE4B4]
+60ebb1:  mov  [0x006E59D8],eax   ; stamp when the last event fired
+60ebb6:  ...                     <-- the only way out
+```
+
+**Both calls have to go together.** Suppressing only the populate leaves the window on
+screen with nothing in it, and the render loop faults indexing `window+0x3BC` with the
+still-`-1` event type. That was a real crash during development, not a hypothetical.
+
+So the mod detours the region's single entry instead of hooking either call: in fast
+forward it jumps straight to the single exit, and otherwise performs the instruction it
+replaced and carries on. Nothing branches into the region's interior - checked across the
+whole executable - and the skip reuses a path the game already has, since the `je` one
+instruction earlier takes the same exit when the robbed merchant is you.
+
+It also skips the `0x006E59D8` stamp at `0x0060EBB1`. That is a **30-day cooldown**: its
+only reader (`0x0060E9B3`) tests `stamp + 30 days < now` to re-arm a fallback that lets an
+announcement through when it would otherwise be skipped. Leaving it alone means a
+suppressed event does not consume the quota, so announcements are throttled per 30 days of
+*visible* play rather than per 30 days of game time - you may see them a little more often
+at normal speed than vanilla would. The alternative is worse: stamping while suppressing
+would let an announcement you never saw silence a later one you would have.
+
+The six replaced bytes are verified before anything is written, so a different game build
+refuses to patch rather than corrupting code.
+
+## The auction is announced late, not a day early
+
+Vanilla announces `Tomorrow there will be an auction in %s.` at **midnight**, and
+holds the auction at midnight the following day - a full 24 hours later. That
+announcement also stops fast forward, so it is easy to be interrupted, forget, and
+still miss the auction. This mod moves the announcement to **22:30 the same day**,
+1.5 hours of warning. **The auction itself does not move.**
+
+### How it works
+
+The auction is a scheduled task (kind `0x0A`, handler `0x004E2CD4`). Task due times
+and the game clock (`[0x006DE4B4]`) are both in **1/256 of a day**, so the low byte
+of a due time *is* the time of day and `mov byte [esi],0` means "align to midnight".
+Three of those exist in the auction task; the mod rewrites the immediate of two:
+
+|Address|What it schedules|Patched|
+|-|-|-|
+|`0x004E2DFC`|the announcement|yes|
+|`0x004E2EFB`|the announcement again, when the town already has an auction running and this one slips a day|yes|
+|`0x004E2FDA`|**the auction itself**|no - moving it would drag the auction along and change nothing about the gap|
+
+The announcement state then adds a whole day and re-aligns to zero, discarding the
+offset, so the auction stays at midnight whatever the announcement is set to.
+
+Retuning is one constant, `AUCTION_ANNOUNCE_TIME_OF_DAY`: `0x80` = noon (12 h of
+warning), `0xC0` = 18:00 (6 h), `0xE0` = 21:00 (3 h), `0xF0` = 22:30 (1.5 h, the
+default), `0x00` = vanilla. `0xFF` is one tick and not useful.
+
+Both sites are verified to read `c6 06 00` before anything is written, so a
+different game build refuses to patch and `start()` fails loudly rather than
+corrupting code.

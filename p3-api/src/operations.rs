@@ -6,6 +6,11 @@ use crate::{data::p3_ptr::P3Pointer, operation::Operation};
 
 pub const OPERATIONS_PTR: OperationsPtr = OperationsPtr::new();
 const OPERATIONS_ADDRESS: u32 = 0x006DF2F0;
+/// The value of the speed level that means fast forward.
+pub const FAST_FORWARD_LEVEL: u32 = 1;
+/// `ops+0x92C`, the speed level, as an absolute address - for assembly operands, where a
+/// method call is not available.
+pub const GAME_SPEED_LEVEL_ADDRESS: u32 = OPERATIONS_ADDRESS + 0x092C;
 static EXECUTE_OPERATION_ADDRESS: u32 = 0x00535760;
 static ENQUEUE_OPERATION_ADDRESS: u32 = 0x0054AA70;
 static TRANSFER_LOADED_TRADEROUTE_ADDRESS: u32 = 0x005492D0;
@@ -38,6 +43,17 @@ impl OperationsPtr {
 
     pub unsafe fn get_player_merchant_index(&self) -> i32 {
         self.get(0x0924)
+    }
+
+    /// The game speed level: `0` normal play, `1` fast forward, `2` local map. See
+    /// [crate::operation::Operation::SetGameSpeed] for the tick pacer that reads it.
+    pub unsafe fn get_game_speed_level(&self) -> u32 {
+        self.get(0x092C)
+    }
+
+    /// Whether the world is running in fast forward (level `1`).
+    pub unsafe fn is_fast_forward(&self) -> bool {
+        self.get_game_speed_level() == FAST_FORWARD_LEVEL
     }
 
     pub unsafe fn get_unpacked_traderoute_ptr(&self) -> *mut c_void {
