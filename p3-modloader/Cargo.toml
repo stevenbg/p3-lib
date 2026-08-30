@@ -16,4 +16,6 @@ version = "0.48"
 features = [
     "Win32_Foundation",
     "Win32_System_Memory",
+    "Win32_System_SystemServices",
+    "Win32_System_LibraryLoader",
 ]

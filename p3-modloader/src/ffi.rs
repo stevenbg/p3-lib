@@ -8,11 +8,33 @@ use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 const WINMAIN_ADDRESS: u32 = 0x0064BE10;
+
+/// Sets the PEB BeingDebugged flag so `IsDebuggerPresent()` returns true, which is what
+/// unlocks the gated `win_dbg_logger` output of the modloader and of **every mod**. It
+/// lives here because this DLL is an import of the exe: its `DllMain` runs before any
+/// game code and before any mod loads, so no mod's `start()` logs are ever swallowed by
+/// directory order again (the gap `mod-tavern-details` used to plug). No real debugger
+/// attaches; output still reaches DebugView via `OutputDebugString`.
+///
+/// Debug builds only: release builds compile the `debug!`/`info!` logging away
+/// entirely (the workspace sets `log`'s `release_max_level_error`), so there is
+/// nothing to unlock - and a handed-over build should not fake a debugger.
+#[cfg(all(target_arch = "x86", debug_assertions))]
+unsafe fn fake_being_debugged() {
+    let peb: *mut u8;
+    std::arch::asm!("mov {}, fs:[0x30]", out(reg) peb);
+    // PEB + 0x02 = BeingDebugged (u8).
+    *peb.add(2) = 1;
+}
+
+#[cfg(not(all(target_arch = "x86", debug_assertions)))]
+unsafe fn fake_being_debugged() {}
 static HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 
 #[no_mangle]
 extern "system" fn DllMain(_hist_dll: *const u8, fdw_reason: u32, _lpv_reserved: *const u8) -> u32 {
     if fdw_reason == DLL_PROCESS_ATTACH {
+        unsafe { fake_being_debugged() };
         let _ = log::set_logger(&win_dbg_logger::DEBUGGER_LOGGER);
         log::set_max_level(log::LevelFilter::Trace);
         debug!("DllMain patching WinMain call");

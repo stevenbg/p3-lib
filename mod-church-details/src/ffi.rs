@@ -44,25 +44,10 @@ const UPDATE_ORIGINAL: [u8; 6] = [0x8b, 0x87, 0x30, 0x1d, 0x00, 0x00];
 const WINDOW_OPEN_POINTER_OFFSET: u32 = UIChurchWindowPtr::VTABLE_OFFSET + 0x120;
 static WINDOW_OPEN_HOOK: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Sets the PEB BeingDebugged flag so `IsDebuggerPresent()` returns true, which is what
-/// unlocks `win_dbg_logger`'s output. `mod-tavern-details` does the same, but the loader
-/// walks `mods\` in directory order and `church_details` sorts before `tavern_details` -
-/// so without this the load-time lines below are swallowed and the mod looks like it never
-/// loaded. The flag is idempotent, so setting it twice costs nothing.
-#[cfg(target_arch = "x86")]
-unsafe fn fake_being_debugged() {
-    let peb: *mut u8;
-    std::arch::asm!("mov {}, fs:[0x30]", out(reg) peb);
-    *peb.add(2) = 1;
-}
-
-#[cfg(not(target_arch = "x86"))]
-unsafe fn fake_being_debugged() {}
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> u32 {
     let _ = log::set_logger(&win_dbg_logger::DEBUGGER_LOGGER);
-    fake_being_debugged();
     // Not Trace: the page calls p3-api lookups every frame, and their trace! lines would
     // flood the debug log.
     log::set_max_level(log::LevelFilter::Info);
