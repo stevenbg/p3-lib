@@ -98,6 +98,17 @@ plus ten towns is exactly the 31 characters available. The name is also what the
 thawing-port feature below reads to decide which ships serve a town, so renaming a route
 ship by hand takes it out of that.
 
+## Crew rescue: stalled routes hire their own sailors
+
+A route ship that loses sailors (pirates, mostly) trades at its next stop and then
+stalls: the game deactivates the route and posts `%s's trade route: crew number too
+low`. This mod intercepts that message at its single creation site (`0x00519D72`) and,
+when the tavern of the town the ship is docked in can cover the shortfall, hires up to
+the type's sailing minimum (the game's hire operation, opcode `0x04`) and re-activates
+the route (opcode `0x68`, the route window's own button) - the vanilla message never
+appears; a ticker line says `<ship>: hired N sailors, route resumed` instead. If the
+tavern cannot cover the shortfall, nothing is touched and the vanilla message shows.
+
 ## Fetch routes (Ctrl+F3)
 
 The other route keys decide *what* to carry from the towns you picked. A fetch route works

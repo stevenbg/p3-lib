@@ -15,6 +15,22 @@ pub const LETTER_TYPE_TAVERN_MISSION: u8 = 0x71;
 /// before accepting an offer (`0x005A7279`).
 pub const TASK_OPCODE_TAVERN_MISSION: u16 = 0x1b;
 
+/// The ship/route status notes filed through the creator `0x00548CA0` - a thiscall on
+/// the operations object with six stack args `(merchant, 0, 0, town, subtype,
+/// ship_index)` (`ret 0x18`). The renderer (`0x005483F6`) dispatches the letter's
+/// subtype (0..0x2A) through the case map at `0x00548834` and the jump table at
+/// `0x005487E8`; the trade-route texts ("%s's trade route: ...") live in the pointer
+/// table at `0x006B04F4` (indexed 6..11). Subtype 5 is the "has docked in %s" note;
+/// subtypes 0x24..0x28 are the route-stopped notes, 0x28 being "crew number too low".
+///
+/// Subtype 0x28 has exactly one creation site, `0x00518AB2`, guarded by the game's
+/// actual departure check at `0x00518A96`: `cmp [ship+0x40], MIN_SAILORS[type]` - crew
+/// below the `0x673660` table files 0x28, at-or-above files the generic subtype 0
+/// instead (`0x00518ABD`). mod-auto-supply hooks that site to hire the shortfall.
+pub const ROUTE_NOTE_KIND_CREW_TOO_LOW: u32 = 0x28;
+/// `0x00518AB2`, module-relative for `hook_call_rel32`.
+pub const ROUTE_NOTE_CREW_TOO_LOW_CALL_SITE_OFFSET: u32 = 0x00118AB2;
+
 /// The global message pool - every letter a merchant receives, chained per merchant.
 #[derive(Clone, Debug, Copy)]
 pub struct LettersPtr {

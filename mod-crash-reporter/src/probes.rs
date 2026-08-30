@@ -98,7 +98,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_SHIFT | MOD_ALT => toggle_probe_d3d9_watch(),
-        (DEBUG_PROBE1_KEY, 0) => debug_probe1(),
+        (DEBUG_PROBE1_KEY, 0) => debug_probe_ship_crew(),
         (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
         (DEBUG_PROBE2_KEY, MOD_ALT) => retire_probe_inspect(),
@@ -359,6 +359,44 @@ unsafe fn dump_ship_routes() {
 /// 0x18), the record count word at `0x006DD748` (valid slots are `< count`, the same test
 /// the auction reader uses). Record: `+0x0` due time dword, `+0x4` word, `+0x6` kind
 /// word, `+0x8`..`+0x17` four data dwords.
+/// F9: raw crew-related fields of the SELECTED ship, for the crew-rescue false
+/// negative (30 Aug 2026: the game posted "crew number too low" while ship+0x40 read
+/// 10 - either +0x40 is not the crew, or the departure check uses another threshold).
+unsafe fn debug_probe_ship_crew() {
+    let Some(index) = selected_ship_index() else {
+        notify("ship crew probe: no ship selected");
+        return;
+    };
+    let ships = ShipsPtr::new();
+    let Some(ship) = ships.get_ship(index) else {
+        notify("ship crew probe: index does not resolve");
+        return;
+    };
+    let a = ship.address;
+    let type_byte = *((a + 0x0e) as *const u8);
+    let grade = *((a + 0x0f) as *const u8);
+    let crew = *((a + 0x40) as *const u16);
+    let word_3e = *((a + 0x3e) as *const u16);
+    let byte_3c = *((a + 0x3c) as *const u8);
+    let byte_3d = *((a + 0x3d) as *const u8);
+    let byte_3f = *((a + 0x3f) as *const u8);
+    let status = *((a + 0x134) as *const u16);
+    let flags_136 = *((a + 0x136) as *const u16);
+    let word_138 = *((a + 0x138) as *const u16);
+    let min = ship.get_min_sailors();
+    let berths = ship.get_free_sailor_berths();
+    let line = format!(
+        "ship {index} '{}' at {a:#010x}: type {type_byte:#04x} (&3={}) +0xF={grade} | crew(+0x40)={crew} min(table)={min} berths(0x5184F0)={berths} | +0x3C={byte_3c:#04x} +0x3D={byte_3d:#04x} +0x3E={word_3e} +0x3F={byte_3f:#04x} | status(+0x134)={status:#x} flags(+0x136)={flags_136:#06x} +0x138={word_138:#06x} | town(+0x39)={:?} capacity={}",
+        ship.get_name(),
+        type_byte & 3,
+        ship.get_last_town_index(),
+        ship.get_capacity(),
+    );
+    info!("{line}");
+    notify("ship crew probe -> DebugView");
+}
+
+#[allow(dead_code)]
 unsafe fn debug_probe1() {
     let mut out: Vec<String> = Vec::new();
     let now = GAME_WORLD_PTR.get_game_time_raw();

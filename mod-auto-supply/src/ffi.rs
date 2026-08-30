@@ -277,7 +277,7 @@ unsafe fn unregister_group(handles: &[AtomicU32]) {
 
 /// Post an in-game popup on the event ticker (the top-left "Game speed:" boxes),
 /// mirrored to the debug log.
-unsafe fn notify(text: &str) {
+pub(crate) unsafe fn notify(text: &str) {
     info!("{text}");
     let latin1: Vec<u8> = text.chars().map(|c| if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }).collect();
     p3_api::ui::ui_notifications::UINotificationsPtr::new().post_event(&latin1);
@@ -300,6 +300,10 @@ pub unsafe extern "C" fn start() -> u32 {
             register_group(OWNER_GLOBAL, &GLOBAL_KEYS, &GLOBAL_HANDLES, global_hotkeys);
         }
         Err(reason) => warn!("hotkeys registry unavailable ({reason}) - all keys inert"),
+    }
+
+    if let Err(reason) = crate::crew_rescue::install() {
+        warn!("crew rescue unavailable ({reason}) - the game's own message stands");
     }
 
     // The office keys are registered while a trading office window is open, off its
