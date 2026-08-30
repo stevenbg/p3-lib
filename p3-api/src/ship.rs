@@ -160,6 +160,17 @@ impl ShipPtr {
         self.get_status() <= 3
     }
 
+    /// Is the ship actually lying at the quay, rather than still entering the port?
+    ///
+    /// The stricter form of [Self::is_in_port]: it excludes the documented entering
+    /// state `3`. `0` is lying in the port (the dock function `0x00519C90` writes it);
+    /// `1` was measured on a visibly docked route ship (30 Aug 2026 probes); `2` is
+    /// written together with the moored flag (`or [ship+0x3C],0x20` at `0x0050209B`),
+    /// so all three are on the docked side.
+    pub fn is_docked(&self) -> bool {
+        self.get_status() < 3
+    }
+
     /// The crew on board, the word at `+0x40` (summed into the merchant's fleet crew
     /// at `0x004F7E27`, raised by the hire-sailors operation 0x04).
     pub fn get_crew(&self) -> u16 {
