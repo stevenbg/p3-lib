@@ -48,7 +48,7 @@ use std::{
 use hooklet::windows::x86::{deploy_rel32_raw, X86Rel32Type};
 use log::{error, info, warn};
 use p3_api::{
-    hotkeys::HotkeysApi,
+    hotkeys::{HotkeysApi, MOD_ALT, MOD_CTRL},
     memory::write_readonly,
     operations::GAME_SPEED_LEVEL_ADDRESS,
     ui::{
@@ -112,7 +112,7 @@ const AUCTION_ANNOUNCE_ORIGINAL: [u8; 3] = [0xc6, 0x06, 0x00];
 
 /// Post an in-game popup on the event ticker (the top-left boxes), mirrored to the
 /// debug log. The ticker renders over the local map too.
-unsafe fn notify(text: &str) {
+pub(crate) unsafe fn notify(text: &str) {
     info!("{text}");
     let latin1: Vec<u8> = text.chars().map(|c| if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }).collect();
     UINotificationsPtr::new().post_event(&latin1);
@@ -146,6 +146,9 @@ pub unsafe extern "C" fn start() -> u32 {
             // Session-global, so the handles are never stored.
             api.register(OWNER, VK_MULTIPLY.0 as u32, 0, speed_hotkeys);
             api.register(OWNER, VK_DIVIDE.0 as u32, 0, speed_hotkeys);
+            api.register(OWNER, b'S' as u32, MOD_CTRL, crate::sailors::hire_sailors_hotkey);
+            api.register(OWNER, b'S' as u32, MOD_ALT, crate::sailors::hire_sailors_hotkey);
+            api.register(OWNER, b'S' as u32, MOD_CTRL | MOD_ALT, crate::sailors::hire_sailors_hotkey);
         }
         Err(reason) => warn!("hotkeys registry unavailable ({reason}) - the speed keys are inert"),
     }

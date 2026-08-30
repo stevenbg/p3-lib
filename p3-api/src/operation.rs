@@ -23,6 +23,30 @@ pub enum Operation {
     RepairShip {
         ship_index: u32,
     },
+    /// Hire sailors from the ship's town's tavern (opcode 0x04, handler 0x00537C20).
+    ///
+    /// The handler resolves the town from the ship's own `+0x39` and does all the
+    /// clamping itself: the request is reduced to the crew the ship can still take
+    /// (`0x005184F0`) and to the owner's available sailors in that town (`0x004F6CA0`,
+    /// see `MerchantPtr::get_available_sailors`), then the sailor pool is drawn down,
+    /// the crew word at `ship+0x40` raised, and the town's beggar pool reduced. So a
+    /// generous count simply hires "as many as possible".
+    HireSailors {
+        ship_index: u32,
+        count: u32,
+    },
+    /// Dismiss sailors into the ship's town (opcode 0x05, handler 0x00537DD0).
+    ///
+    /// Guards: the ship must have crew and be in port (`ship+0x134 < 4`). The dismissed
+    /// sailors rejoin the town as beggars (`town+0x2E4`) and citizens (`town+0x2D4`).
+    /// A partial dismissal costs crew morale - `ship+0x3E` drops by
+    /// `count*2560/(crew+1)`, floored at 0 - while dismissing everyone (count >= crew)
+    /// zeroes crew and morale outright. Both paths recompute the cargo figures
+    /// (0x005182B0) and refresh (0x00517770).
+    DismissSailors {
+        ship_index: u32,
+        count: u32,
+    },
     ShipMoveWares {
         amount: i32,
         ship_index: u16,
@@ -174,6 +198,18 @@ impl Operation {
                 let opcode: u32 = 0x03;
                 op[0..4].copy_from_slice(&opcode.to_le_bytes());
                 op[0x04..0x08].copy_from_slice(&ship_id.to_le_bytes());
+            }
+            Operation::HireSailors { ship_index, count } => {
+                let opcode: u32 = 0x04;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&ship_index.to_le_bytes());
+                op[0x08..0x0c].copy_from_slice(&count.to_le_bytes());
+            }
+            Operation::DismissSailors { ship_index, count } => {
+                let opcode: u32 = 0x05;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&ship_index.to_le_bytes());
+                op[0x08..0x0c].copy_from_slice(&count.to_le_bytes());
             }
             Operation::ShipMoveWares {
                 amount,

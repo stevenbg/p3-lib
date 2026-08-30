@@ -55,6 +55,28 @@ The keys are dispatched through the shared hotkey registry (`hotkeys.dll`, see
 while the time-scale detour itself keeps working (at whatever scale was last set,
 i.e. x1 on a fresh start).
 
+## CTRL+S / ALT+S / CTRL+ALT+S manage the crew in port
+
+With a ship selected and docked in a harbour:
+
+- **CTRL+S fills to the maximum** the game itself would hire: the type's full crew (the
+  byte table at `0x673664`: 10/16/30/24) plus a cargo-derived term, bounded by the room
+  left - the hire cap the game computes at `0x005184F0`, the same routine the tavern's
+  Sailors page clamps its input with.
+- **ALT+S hires the bare sailing minimum**: up to the type's minimum (Snaikka 5, Crayer
+  8, Cog 10, Holk 12 - read from the game's own table at `0x673660`, not hardcoded).
+  The cheap option for a trader that only needs to move.
+- **CTRL+ALT+S dismisses the whole crew** into the town: the game's dismiss operation
+  (opcode `0x05`, handler `0x00537DD0`) returns them as beggars and citizens and zeroes
+  crew and morale.
+
+A ticker message says what happened (`hiring 4 sailors toward the minimum (1 -> 5)`), or
+why nothing did (at sea, already sailable/full, no sailors aboard, tavern empty, tavern
+ran short). The hires go through the real hire operation (opcode `0x04`, handler
+`0x00537C20`), which re-clamps every request and draws down the merchant's sailor pool
+(`0x004F6CA0`) and the town's beggars. The keys are consumed only when a player ship is
+selected; otherwise the game still sees them.
+
 ## Pirate attacks no longer interrupt fast forward
 
 When a notorious pirate robs someone else's ship the game announces

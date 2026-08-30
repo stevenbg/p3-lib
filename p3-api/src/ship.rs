@@ -5,6 +5,14 @@ use crate::{
 
 pub const SHIP_SIZE: u32 = 0x180;
 
+/// The per-type **minimum sailors to sail**, four bytes indexed by ship type
+/// (`ship+0xE & 3`): Snaikka 5, Crayer 8, Cog 10, Holk 12. 26 readers in the exe -
+/// among them an AI spawn path that writes it straight into the crew word
+/// (`movzx dx,[ecx+0x673660] / mov [esi+0x40],dx` at `0x00519FE5`). The neighbouring
+/// table at `0x00673664` (10/16/30/24) is the type's **full crew**, the figure the
+/// speed math rewards up to and the hire operation fills toward - not the minimum.
+pub const MIN_SAILORS_TABLE_ADDRESS: u32 = 0x00673660;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ShipPtr {
     pub address: u32,
@@ -150,6 +158,43 @@ impl ShipPtr {
     /// becomes enterable and its tavern reachable, before it has docked.
     pub fn is_in_port(&self) -> bool {
         self.get_status() <= 3
+    }
+
+    /// The crew on board, the word at `+0x40` (summed into the merchant's fleet crew
+    /// at `0x004F7E27`, raised by the hire-sailors operation 0x04).
+    pub fn get_crew(&self) -> u16 {
+        unsafe { self.get(0x40) }
+    }
+
+    /// The sailors this ship still wants, as the game computes it (`0x005184F0`,
+    /// `thiscall(ship)`): the shortfall below the type's **full crew** (the byte table
+    /// at `0x00673664` = 10/16/30/24) plus a cargo-derived term - 1/400 of the figure
+    /// `0x005182B0` recomputes into `ship+0x118` by walking the 24 ware amounts at
+    /// `+0x54` with the barrels/loads scale table `0x00672C14` (its exact meaning is
+    /// unverified; armament plays no part anywhere here) - capped by the remaining room
+    /// (`ship+0xF x type_static + capacity/1000`, floored at 20, minus the crew).
+    /// `ship+0xF` is plausibly the build grade a shipyard's experience sets (better
+    /// yards produce ships with more capacity) - unverified.
+    ///
+    /// This routine is the authority on "how many sailors can this ship take": the
+    /// tavern's Sailors page clamps its input field with exactly it (two calls at
+    /// `0x005D517C`/`0x005D518F`, overwriting an entry that exceeds it), and the hire
+    /// operation's handler re-clamps every request through it. This
+    /// is the figure the hire-sailors handler (opcode 0x04, `0x00537C20`) clamps a
+    /// request to - so a tavern hire fills toward *full performance*, not toward the
+    /// bare sailing minimum ([Self::get_min_sailors]); `<= 0` means nothing wanted.
+    pub fn get_free_sailor_berths(&self) -> i32 {
+        let free_berths: extern "thiscall" fn(u32) -> i32 = unsafe { std::mem::transmute(0x005184F0u32) };
+        free_berths(self.address)
+    }
+
+    /// The minimum sailors this ship needs to sail at all: the per-type byte table at
+    /// [MIN_SAILORS_TABLE_ADDRESS], indexed by `ship+0xE & 3`. Snaikka 5, Crayer 8,
+    /// Cog 10, Holk 12 - in-game verified 30 Aug 2026, and independent of upgrade
+    /// level. Read from the game's own table rather than hardcoded.
+    pub fn get_min_sailors(&self) -> u8 {
+        let type_index: u8 = unsafe { self.get::<u8>(0x0e) } & 3;
+        unsafe { *((MIN_SAILORS_TABLE_ADDRESS + type_index as u32) as *const u8) }
     }
 
     pub fn get_name(&self) -> String {
