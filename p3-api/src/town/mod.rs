@@ -7,6 +7,8 @@ use crate::{
     latin1_ptr_to_string,
 };
 
+pub mod beggars;
+pub mod church;
 pub mod map;
 pub mod shipyard;
 pub mod static_town_data;
@@ -23,6 +25,10 @@ pub const TOWN_SLOTS: u8 = 40;
 /// Bits of the town flag word at `+0x2C8` ([TownPtr::get_flags]). The four crisis
 /// bits are the mask `0x04000A10` that `update_town_price_thresholds` tests at
 /// `0x005280B7`.
+/// Blocks beggar growth entirely (`0x0051C1xx`), and with it the feed-the-poor influx:
+/// the influx tests `flags & 0x800008 == 0x800000`, so a town carrying this gets nothing
+/// and does not even consume the trigger bit.
+pub const TOWN_FLAG_NO_BEGGAR_GROWTH: u32 = 0x8;
 pub const TOWN_FLAG_WINTER: u32 = 0x2;
 pub const TOWN_FLAG_SIEGE: u32 = 0x10;
 pub const TOWN_FLAG_BLOCKADE: u32 = 0x200;
@@ -155,6 +161,38 @@ impl TownPtr {
     /// yesterday's level.
     pub fn get_ice_level(&self) -> u8 {
         unsafe { self.get(0x9bd) }
+    }
+
+    /// The town's **total citizens**, all classes together (`town + 0x2D4`). The beggar
+    /// routine recomputes it as the sum of the four class counts; the well's build limit
+    /// (`0x005220C1`) and the feeding-the-poor gate both read it.
+    pub fn get_citizens(&self) -> i32 {
+        unsafe { self.get(0x2d4) }
+    }
+
+    /// Satisfaction per class, `town + 0x300` with stride 2 - **rich, wealthy, poor**, in
+    /// that order. Signed: an unhappy class goes negative. The feeding-the-poor gate reads
+    /// the poor entry (`town + 0x304`) with `movsx`.
+    pub fn get_satisfactions(&self) -> [i16; 3] {
+        unsafe { [self.get(0x300), self.get(0x302), self.get(0x304)] }
+    }
+
+    /// The town's **beggars** (`town + 0x2E4`) - the labour intake, outside the jobs
+    /// identity. See [crate::town::beggars].
+    pub fn get_beggars(&self) -> i32 {
+        unsafe { self.get(0x2e4) }
+    }
+
+    /// Beggar satisfaction (`town + 0x306`) - the fourth entry of the satisfaction array,
+    /// past the three classes [Self::get_satisfactions] covers. It drives the beggar
+    /// equilibrium and is never lowered.
+    pub fn get_beggar_satisfaction(&self) -> i16 {
+        unsafe { self.get(0x306) }
+    }
+
+    /// The poor's satisfaction - [Self::get_satisfactions] index 2.
+    pub fn get_poor_satisfaction(&self) -> i16 {
+        self.get_satisfactions()[2]
     }
 
     pub fn get_production_values(&self) -> [i32; 24] {

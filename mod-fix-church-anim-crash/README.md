@@ -3,6 +3,35 @@
 Fixes the game crashing when the church window opens after a save load
 (access violation at `0x0046B49D`, a write through a NULL pointer).
 
+## What ships now: the root fix
+
+**Updated 29 Aug 2026.** The crash's precondition is a single vanilla defect: the church
+window's mode field (`+0x1D30`) is **never initialised by its constructor**
+(`0x005C88E0`), which initialises the neighbouring `+0x1D5F` two instructions before
+returning and misses this one. Only four sites in the executable write the field - the
+close method (to `-1`), `set_mode`, and two page setters - so a freshly constructed window
+carries whatever its heap block came with.
+
+Two faces, both seen in play:
+
+- **The crash.** After a quit-to-menu the window is rebuilt from a *recycled* block holding
+  a stale mode `> 0`, and the tick streams a frame into a NULL array.
+- **A blank first page.** On a cold start the block reads `0`, so the window dispatches page
+  0 rather than the `-1` empty page it settles on after its first close. Harmless in
+  vanilla - but it is the same field, and it is what made the defect visible:
+  `mod-church-details` draws on page `-1`, and its page was missing on the first church of
+  a session and present on every one after.
+
+So the mod now hooks the constructor's single call site (`0x00426BBD`) and writes `-1` -
+the same value the close method uses - into the mode of the object it returns. That removes
+the precondition instead of catching the consequence, and fixes the cold-open page as a
+side effect.
+
+**The previous fix is kept, dormant.** Three byte patches in the tick plus guards on the
+animation player's unguarded methods live on in `src/tick_patch.rs`, compiled but never
+called. If the crash ever returns, call `tick_patch::install()` from `start()`: the two are
+independent and can run together. Everything below describes that fix.
+
 ## The bug
 
 Building-interior windows share one animation player (a global object recreated

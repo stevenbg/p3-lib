@@ -10,6 +10,7 @@ pub mod ddraw;
 pub mod font;
 pub mod graphics;
 pub mod rich_text;
+pub mod ui_church_window;
 pub mod ui_event_window;
 pub mod ui_notifications;
 pub mod ui_local_map_window;

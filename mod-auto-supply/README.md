@@ -42,8 +42,8 @@ because it opened last.
 | F3 | A collection route instead: one buy stop per target at the E price for everything the home town does not produce itself. A single home stop, at the front, transfers the whole hold into the office; the route loops back to it, so there is no home stop at the end |
 | F4 | A trade circuit: nothing loaded at home, one self-contained trade stop per target - buy that town's production at the R buy price, **sell everything else** at the R sell price, Max amounts - and everything unloaded at home. "Everything else" includes any no-buy ware the town produces: it is dropped from the buying, not from the stop. No consumption figures and no office needed at any target; the price is the limit rather than a quantity |
 | Ctrl + F3 | A fetch route: collect a hand-picked ware list from everywhere it is made. The wares **and their prices** are the buy orders you left on the ship's **first stop**, the targets are every town that produces one of them, and the stops are ordered into the shortest round trip. Every stop buys the whole list at your prices. The single home stop transfers the whole hold into the office before the buying starts, and the route loops back to it - so there is no separate home stop at the end. Needs an existing route to read - see below |
-| Alt + F1 / F2 | Leaves the low-value industry inputs (bricks, pig iron, pitch, hemp) out of the supplies, freeing hold space for goods with a better margin |
-| Alt + F3 / F4 | Buys the no-buy wares (pitch, timber, salt, bricks, grain, hemp) as well, instead of leaving them in the town |
+| Alt + F1 / F2 | Leaves the low-value industry inputs (bricks, pig iron, pitch, hemp) out of the supplies, freeing hold space for goods with citizen consumption |
+| Alt + F3 / F4 | Buys the no-buy wares (pitch, timber, salt, bricks, grain, hemp) as well |
 | Alt + Ctrl + F3 | Calls at **every** town rather than only the ones that produce a wanted ware |
 | Shift + F1 / F2 / F3 / F4 | Any of the above, but targeting just the currently open town and APPENDING the generated stops to the existing route instead of replacing it (combines with Alt) |
 

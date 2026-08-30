@@ -6,6 +6,7 @@ members = [
     "cprcli",
     "mod-auto-supply",
     "mod-ui-tweaks",
+    "mod-church-details",
     "mod-crash-reporter",
     "mod-debug-navpoint-matrix",
     "mod-debug-window-lifecycle",

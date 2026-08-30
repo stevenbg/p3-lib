@@ -45,6 +45,29 @@ impl MerchantPtr {
         unsafe { self.get(0x19) }
     }
 
+    /// Fleet statistics, recomputed by `update_merchant_reputation_and_value`
+    /// (`0x004F7BB0`, ship loop at `0x004F7DB5`): total capacity of the merchant's ships.
+    pub fn get_fleet_capacity(&self) -> i32 {
+        unsafe { self.get(0x470) }
+    }
+
+    /// Total **crew** across the merchant's ships (`ship+0x40` summed at `0x004F7E27`).
+    /// This is the metric the quarterly task `0x2C` governor watches - see
+    /// `.claude/notes/todo/game-settings.md`.
+    pub fn get_fleet_crew(&self) -> i32 {
+        unsafe { self.get(0x474) }
+    }
+
+    /// Ships not in state `0x11`/`0x0E` (the loop's skip states at `0x004F7DDD`).
+    pub fn get_active_ship_count(&self) -> u16 {
+        unsafe { self.get(0x478) }
+    }
+
+    /// Every ship of the merchant, active or not.
+    pub fn get_total_ship_count(&self) -> i32 {
+        unsafe { self.get(0x47c) }
+    }
+
     /// This merchant's rank **in one town**, as a byte at `+0x39C + town_index`. It is
     /// recomputed next to `update_merchant_reputation_and_value` from the per-town
     /// reputation float at `+0x2FC + town*4` and the company value at `+0x46C` (the
