@@ -98,7 +98,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_SHIFT | MOD_ALT => toggle_probe_d3d9_watch(),
-        (DEBUG_PROBE1_KEY, 0) => debug_probe_ship_crew(),
+        (DEBUG_PROBE1_KEY, 0) => debug_probe_route_travel_time(),
         (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
         (DEBUG_PROBE2_KEY, MOD_ALT) => retire_probe_inspect(),
@@ -359,9 +359,112 @@ unsafe fn dump_ship_routes() {
 /// 0x18), the record count word at `0x006DD748` (valid slots are `< count`, the same test
 /// the auction reader uses). Record: `+0x0` due time dword, `+0x4` word, `+0x6` kind
 /// word, `+0x8`..`+0x17` four data dwords.
-/// F9: raw crew-related fields of the SELECTED ship, for the crew-rescue false
-/// negative (30 Aug 2026: the game posted "crew number too low" while ship+0x40 read
-/// 10 - either +0x40 is not the crew, or the departure check uses another threshold).
+/// F9: travel-time breakdown of the SELECTED ship's trade route.
+///
+/// Per leg (consecutive route towns, closing back to the first): the router's distance
+/// and the game's own travel-time formula (`0x00516A2E`):
+/// `8 * distance / ((base_speed * capacity_factor >> 12) * health_factor >> 10)`,
+/// assuming **full load and 100% hull** - capacity_factor = 4096 - 614 (the caller at
+/// `0x00516A2E` computes `4096 - 614 * cargo_raw / capacity_raw`), health_factor = 256
+/// (`clamp(165 + 130 * health / max_health, 204, 256)`).
+///
+/// The output unit is not pinned yet, so both the raw figure and raw/256 (the
+/// 1/256-day candidate) are printed - compare against an in-game ETA to calibrate.
+/// The idle line assumes the 6-hour dwell per stop (the in-port counter `ship+0x138`
+/// is acted on at 0x40 = 64 ticks = 6 h), so a measured lap can confirm both at once.
+unsafe fn debug_probe_route_travel_time() {
+    const FULL_LOAD_CAPACITY_FACTOR: u32 = 4096 - 614;
+    const FULL_HEALTH_FACTOR: u32 = 256;
+    const IDLE_TICKS_PER_STOP: u32 = 0x40;
+
+    let Some(selected) = selected_ship_index() else {
+        notify("route time probe: no ship selected");
+        return;
+    };
+    let ships = ShipsPtr::new();
+    let Some(ship) = ships.get_ship(selected) else {
+        notify("route time probe: selection does not resolve");
+        return;
+    };
+    let ship_type = ship.get_type();
+
+    // The route's towns in chain order (the sum over a closed loop is rotation-proof).
+    let pool = *ROUTE_STOP_POOL;
+    let pool_count = *ROUTE_STOP_POOL_COUNT;
+    let head = *((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16);
+    let mut towns: Vec<u8> = Vec::new();
+    if pool != 0 && head < pool_count {
+        let mut idx = head;
+        for _ in 0..64 {
+            let stop = pool + idx as u32 * ROUTE_STOP_SIZE;
+            towns.push(*((stop + 2) as *const u8));
+            let next = *(stop as *const u16);
+            if next == idx || next >= pool_count || next == head {
+                break;
+            }
+            idx = next;
+        }
+    }
+    if towns.len() < 2 {
+        notify("route time probe: the ship has no route with at least two stops");
+        return;
+    }
+
+    let class35 = p3_api::class35::Class35Ptr::new();
+    let mut total_time: u32 = 0;
+    let mut total_distance: i64 = 0;
+    let mut lines = Vec::new();
+    for i in 0..towns.len() {
+        let from = towns[i];
+        let to = towns[(i + 1) % towns.len()];
+        if from == to {
+            continue;
+        }
+        let name = |t: u8| get_town_name(t).unwrap_or_else(|| format!("town {t}"));
+        let (Some(from_id), Some(to_id)) = (GAME_WORLD_PTR.find_town_id(from), GAME_WORLD_PTR.find_town_id(to)) else {
+            notify("route time probe: a town has no id");
+            return;
+        };
+        let Some(route) = class35.calculate_town_route(from_id, to_id) else {
+            notify(&format!("route time probe: no route {} -> {}", name(from), name(to)));
+            return;
+        };
+        let distance = route.calculate_distance();
+        let time = route.calculate_travel_time(ship_type, FULL_HEALTH_FACTOR, FULL_LOAD_CAPACITY_FACTOR);
+        route.free();
+        total_time += time;
+        total_distance += distance as i64;
+        lines.push(format!(
+            "  {} -> {}: distance {distance}, time {time} ({:.2} days if /256)",
+            name(from),
+            name(to),
+            time as f64 / 256.0
+        ));
+    }
+    let stops = towns.len() as u32;
+    let idle = stops * IDLE_TICKS_PER_STOP;
+    info!(
+        "route time for ship {selected} '{}' ({ship_type:?}, full load, full health): {} legs, total distance {total_distance}, sailing {total_time} ({:.2} days if /256), + {stops} stops x {IDLE_TICKS_PER_STOP} idle = {} ({:.2} days if /256)",
+        ship.get_name(),
+        lines.len(),
+        total_time as f64 / 256.0,
+        total_time + idle,
+        (total_time + idle) as f64 / 256.0
+    );
+    for line in &lines {
+        info!("{line}");
+    }
+    notify(&format!(
+        "Route: sailing {:.2}d + idle {:.2}d = {:.2}d (if unit is 1/256 day) -> DebugView",
+        total_time as f64 / 256.0,
+        idle as f64 / 256.0,
+        (total_time + idle) as f64 / 256.0
+    ));
+}
+
+/// The crew-rescue false negative of 30 Aug 2026, closed: the game posted "crew number
+/// too low" for a different letter than assumed. Kept for the next crew question.
+#[allow(dead_code)]
 unsafe fn debug_probe_ship_crew() {
     let Some(index) = selected_ship_index() else {
         notify("ship crew probe: no ship selected");

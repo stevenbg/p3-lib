@@ -205,7 +205,7 @@ unsafe fn route_stop_records(ship_index: u16) -> Vec<u32> {
     records
 }
 
-unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
+pub(crate) unsafe fn read_ship_route(ship_index: u16) -> Vec<TradeRouteStop> {
     route_stop_records(ship_index).into_iter().map(|record| read_pool_stop(record)).collect()
 }
 
@@ -567,7 +567,7 @@ pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
             continue;
         }
 
-        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index, alt);
+        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index, alt, 7);
         for i in 0..24 {
             total_load[i] = total_load[i].saturating_add(load_amount[i]);
         }
@@ -747,14 +747,57 @@ unsafe fn town_trade_basket(
     (price, amount, bought, skipped, sold)
 }
 
-/// One target town's supply basket: a week of its citizen and business consumption in
-/// raw units, rounded up to whole in-game units, with the R sell prices. Wares the town
-/// produces itself are always excluded; with `skip_no_supply` the [NO_SUPPLY_WARES] are
-/// too. Returns (amounts, prices, supplied ware count).
+/// The load a supply route must carry for these targets at **current** consumption:
+/// the sum of each town's [town_supply_basket] amounts for `days` days of citizen and
+/// business consumption, rounded up per town, minus what each target produces itself.
+/// `skip_no_supply` mirrors ALT on the route keys; the goods dialog's ALT+F1 and
+/// CTRL+ALT+F1 pass false - they set quantities for all goods.
+pub(crate) unsafe fn supply_load_for_towns(targets: &[u8], skip_no_supply: bool, days: i32) -> [i32; 24] {
+    let mut total = [0i32; 24];
+    for &town_index in targets {
+        let (load_amount, _, _) = town_supply_basket(town_index, skip_no_supply, days);
+        for i in 0..24 {
+            total[i] = total[i].saturating_add(load_amount[i]);
+        }
+    }
+    total
+}
+
+/// The full-load, full-hull duration of a route in game days, rounded up: the summed
+/// travel time of every leg (consecutive stops' towns; a same-town leg is free) plus
+/// the 6-hour dwell at each stop (`ship+0x138` acted on at 0x40 = 64 ticks).
+/// Calibrated against a sailed lap 30 Aug 2026 - see p3-api's
+/// `ShipRoutePtr::calculate_travel_time`. `None` when the router fails a leg.
+pub(crate) unsafe fn route_duration_days(stop_towns: &[u8], ship_type: p3_api::data::enums::ShipType) -> Option<u32> {
+    const FULL_LOAD_CAPACITY_FACTOR: u32 = 4096 - 614;
+    const FULL_HEALTH_FACTOR: u32 = 256;
+    const IDLE_TICKS_PER_STOP: u32 = 0x40;
+    const TICKS_PER_DAY: u32 = 256;
+
+    let class35 = p3_api::class35::Class35Ptr::new();
+    let mut ticks = stop_towns.len() as u32 * IDLE_TICKS_PER_STOP;
+    for i in 0..stop_towns.len() {
+        let from = stop_towns[i];
+        let to = stop_towns[(i + 1) % stop_towns.len()];
+        if from == to {
+            continue;
+        }
+        let route = class35.calculate_town_route(GAME_WORLD_PTR.find_town_id(from)?, GAME_WORLD_PTR.find_town_id(to)?)?;
+        let time = route.calculate_travel_time(ship_type, FULL_HEALTH_FACTOR, FULL_LOAD_CAPACITY_FACTOR);
+        route.free();
+        ticks += time;
+    }
+    Some(ticks.div_ceil(TICKS_PER_DAY))
+}
+
+/// One target town's supply basket: `days` days of its citizen and business consumption
+/// in raw units, rounded up to whole in-game units, with the R sell prices. Wares the
+/// town produces itself are always excluded; with `skip_no_supply` the [NO_SUPPLY_WARES]
+/// are too. Returns (amounts, prices, supplied ware count).
 ///
-/// The quantity is a week of citizen **and** business consumption in both cases -
+/// The quantity is citizen **and** business consumption in both cases -
 /// `skip_no_supply` narrows which wares are carried, never how much of them.
-unsafe fn town_supply_basket(town_index: u8, skip_no_supply: bool) -> ([i32; 24], [i32; 24], u32) {
+unsafe fn town_supply_basket(town_index: u8, skip_no_supply: bool, days: i32) -> ([i32; 24], [i32; 24], u32) {
     let town = GAME_WORLD_PTR.get_town(town_index);
     let citizens = town.get_daily_consumptions_citizens();
     let businesses = town.get_daily_consumptions_businesses();
@@ -770,18 +813,18 @@ unsafe fn town_supply_basket(town_index: u8, skip_no_supply: bool) -> ([i32; 24]
         if production[i] > 0 || (skip_no_supply && NO_SUPPLY_WARES.contains(&ware_id)) {
             continue;
         }
-        // A week of what the town actually consumes - citizens and businesses - in raw
-        // units. Not the t0 threshold: that is a comfortable stock level, inflated by
+        // What the town actually consumes - citizens and businesses - in raw units.
+        // Not the t0 threshold: that is a comfortable stock level, inflated by
         // minimum floors and construction reserves, so it would have us ferrying goods
         // that never disappear.
-        let weekly = (citizens[i] + businesses[i]).saturating_mul(7);
-        if weekly == 0 {
+        let period = (citizens[i] + businesses[i]).saturating_mul(days);
+        if period == 0 {
             continue; // the town does not consume it
         }
         // Rounded UP to whole in-game units: undersupply empties the office before the
         // ship returns, while the surplus just rides home.
         let scaling = ware_id.get_scaling();
-        load_amount[i] = (weekly + scaling - 1) / scaling * scaling;
+        load_amount[i] = (period + scaling - 1) / scaling * scaling;
         sell_prices[i] = sell_price(ware_index, SUPPLY_SELL_LEVEL);
         supplied += 1;
     }

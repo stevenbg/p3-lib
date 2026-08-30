@@ -46,6 +46,19 @@ impl ShipRoutePtr {
         distance
     }
 
+    /// The game's travel-time formula (`0x00516A2E`), returning **game ticks (1/256
+    /// day)** - in-game verified 30 Aug 2026: a 3-stop loop computed at 13.74 days
+    /// (empty hold, full hull, plus 6 h dwell per stop) was sailed in "14 days and some
+    /// hours".
+    ///
+    /// The factors, decoded from the game's own caller:
+    /// - `capacity_factor` = `4096 - 614 * cargo_raw / capacity_raw`
+    ///   ([CAPACITY_FACTOR_MAX] when empty, 3482 when full - a full hold costs 15%);
+    /// - `health_factor` = `clamp(165 + 130 * health / max_health, 204, 256)`
+    ///   ([HEALTH_FACTOR_MAX] at full hull; the floor caps the damage penalty at ~20%).
+    ///
+    /// A route ship additionally sits 6 hours (64 ticks) at each stop: the in-port
+    /// counter `ship+0x138` is acted on at 0x40.
     pub unsafe fn calculate_travel_time(&self, ship_type: ShipType, health_factor: u32, capacity_factor: u32) -> u32 {
         let capacity_scaled_speed = (ship_type.get_base_speed() as u32 * capacity_factor) >> 12;
         let speed_factor = (capacity_scaled_speed * health_factor) >> 10;

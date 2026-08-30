@@ -147,9 +147,11 @@ static OFFICE_HANDLES: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
 /// Goods-dialog keys, registered after every populate (the dialog's open - the
 /// Goods button and the dialog's own arrows) and unregistered on its close: F1 fill
 /// and the price-level keys, repricing the displayed stop.
-const DIALOG_KEYS: [(u32, u32); 14] = [
+const DIALOG_KEYS: [(u32, u32); 16] = [
     (SETUP_KEY, 0),
     (SETUP_KEY, MOD_CTRL),
+    (SETUP_KEY, MOD_ALT),
+    (SETUP_KEY, MOD_CTRL | MOD_ALT),
     (LEVEL_KEYS[0].0, MOD_CTRL),
     (LEVEL_KEYS[0].0, MOD_ALT),
     (LEVEL_KEYS[1].0, MOD_CTRL),
@@ -163,7 +165,7 @@ const DIALOG_KEYS: [(u32, u32); 14] = [
     (LEVEL_KEYS[5].0, MOD_CTRL),
     (LEVEL_KEYS[5].0, MOD_ALT),
 ];
-static DIALOG_HANDLES: [AtomicU32; 14] = [const { AtomicU32::new(0) }; 14];
+static DIALOG_HANDLES: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
 
 unsafe fn register_group(owner: &'static std::ffi::CStr, keys: &[(u32, u32)], handles: &[AtomicU32], handler: HotkeyHandler) {
     let Some(api) = hotkeys() else { return };
@@ -401,6 +403,11 @@ unsafe extern "C" fn dialog_hotkeys(vk: u32, mods: u32) -> u32 {
     match (vk, mods) {
         // F1: fill the displayed stop's empty slots with buy/sell orders (plain
         // skips the NO_BUY_WARES, ctrl buys everything).
+        // ALT+F1: load quantities from the supplied towns' current consumption (a week);
+        // CTRL+ALT+F1: the same, but for the route's computed lap time in days.
+        (SETUP_KEY, m) if m & MOD_ALT != 0 => {
+            crate::goods_dialog::on_dialog_load_quantities_hotkey(dialog, stop_index, m & MOD_CTRL != 0)
+        }
         (SETUP_KEY, m) => crate::goods_dialog::on_dialog_setup_hotkey(dialog, stop_index, m & MOD_CTRL == 0),
         _ => {
             if let Some(level) = level_of(vk) {

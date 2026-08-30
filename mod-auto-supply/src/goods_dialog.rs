@@ -106,6 +106,72 @@ pub(crate) unsafe fn reprice_dialog_stop(dialog: u32, stop_index: u32, sell: Opt
     crate::ffi::notify(&format!("{what}: {updated} wares of the {town} stop"));
 }
 
+/// ALT+F1 / CTRL+ALT+F1 while the goods dialog is open: set the displayed stop's
+/// QUANTITIES to what the route's supplied towns require - the sum of each one's
+/// current citizen and business consumption ([crate::routes::supply_load_for_towns],
+/// all goods, no no-supply filter). ALT+F1 loads a fixed week, the figure the route
+/// keys use at generation time; CTRL+ALT+F1 (`for_route_duration`) loads the route's
+/// **actual lap time** instead - the summed leg travel times at full load and full
+/// hull plus the 6-hour dwell per stop ([crate::routes::route_duration_days]), rounded
+/// up to whole days. Meant for the home load stop of a supply route, whose quantities
+/// go stale as the towns grow. Quantities ONLY: amounts are written for all 24 wares
+/// (0 where no target needs the ware); prices, directions and the instruction order
+/// are untouched.
+///
+/// "Supplied towns" = the unique towns of the opened route, minus the first stop's
+/// town (the home).
+pub(crate) unsafe fn on_dialog_load_quantities_hotkey(dialog: u32, stop_index: u32, for_route_duration: bool) {
+    let ship_index = *((dialog + DIALOG_SHIP_INDEX_OFFSET) as *const u32) as u16;
+    let route = crate::routes::read_ship_route(ship_index);
+    let Some(home) = route.first().map(|stop| stop.town_index) else {
+        crate::ffi::notify("Load quantities: the dialog's ship has no route");
+        return;
+    };
+    let mut targets: Vec<u8> = Vec::new();
+    for stop in route.iter().skip(1) {
+        if stop.town_index != home && !targets.contains(&stop.town_index) {
+            targets.push(stop.town_index);
+        }
+    }
+    if targets.is_empty() {
+        crate::ffi::notify("Load quantities: the route has no towns besides the home");
+        return;
+    }
+    let days = if for_route_duration {
+        let stop_towns: Vec<u8> = route.iter().map(|stop| stop.town_index).collect();
+        let Some(ship) = p3_api::ships::ShipsPtr::new().get_ship(ship_index) else {
+            crate::ffi::notify("Load quantities: the dialog's ship does not resolve");
+            return;
+        };
+        match crate::routes::route_duration_days(&stop_towns, ship.get_type()) {
+            Some(days) => days as i32,
+            None => {
+                crate::ffi::notify("Load quantities: the router failed a leg - no duration");
+                return;
+            }
+        }
+    } else {
+        7
+    };
+    let total = crate::routes::supply_load_for_towns(&targets, false, days);
+
+    // Quantities only: prices, directions and the instruction order stay untouched.
+    let record = *crate::routes::ROUTE_STOP_POOL + stop_index * crate::routes::ROUTE_STOP_SIZE;
+    core::ptr::copy_nonoverlapping(total.as_ptr(), (record + 124) as *mut i32, 24);
+    refresh_goods_dialog(dialog, stop_index);
+
+    let wares = total.iter().filter(|&&a| a > 0).count();
+    let town_names: Vec<String> = targets
+        .iter()
+        .map(|&t| get_town_name(t).unwrap_or_else(|| format!("town {t}")))
+        .collect();
+    info!("load quantities ({days} days) for [{}]: {wares} wares set on the displayed stop", town_names.join(", "));
+    crate::ffi::notify(&format!(
+        "Load quantities for {days} days, {} towns: {wares} wares",
+        targets.len()
+    ));
+}
+
 /// F1 while the goods dialog is open: fill the displayed stop's EMPTY ware slots with
 /// trade orders for the stop's own town - buy what it produces (at crate::routes::STOP_BUY_LEVEL),
 /// sell everything else (at crate::routes::STOP_SELL_LEVEL), MAX amounts - the same shape as a stop of
