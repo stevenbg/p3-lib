@@ -538,7 +538,7 @@ unsafe fn is_windows_system_code(addr: u32) -> bool {
     upper.contains(":\\WINDOWS\\") || upper.contains(":/WINDOWS/")
 }
 
-unsafe fn module_of(addr: u32) -> Option<(String, u32)> {
+pub(crate) unsafe fn module_of(addr: u32) -> Option<(String, u32)> {
     let mbi = query(addr)?;
     if mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE {
         return None;

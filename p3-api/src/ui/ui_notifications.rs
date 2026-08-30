@@ -28,17 +28,32 @@ impl UINotificationsPtr {
     }
 
     /// Post a popup on the event ticker (the top-left boxes where "Game speed:"
-    /// messages appear). The text is latin1 without a NUL; the game copies it into
-    /// the slot's own string object (0x0042B6A0). No-op unless the ticker is ready -
-    /// see [Self::can_post_event].
+    /// messages appear). The text is latin1 without a NUL; the enqueue's slot copies
+    /// the characters into its own string (0x0064F390 is assign-from-chars). No-op
+    /// unless the ticker is ready - see [Self::can_post_event].
+    ///
+    /// The enqueue (0x0042B6A0) takes the game's refcounted string **by value and
+    /// releases it before returning** - `InterlockedDecrement` on the dword 0xC before
+    /// the character data at 0x0064F267, and a pool free if that reaches zero - exactly
+    /// like its right-ticker sibling 0x0042BB20. Until 30 Aug 2026 this method passed a
+    /// bare Rust byte pointer here, so **every ticker post decremented a dword 12 bytes
+    /// into whichever heap block preceded the buffer**: the process-wide heap corruption
+    /// hunted down in `.claude/notes/todo/device-lost-crash.md` (d3d9 resource links and
+    /// a CoreMessaging object were the observed victims, four fatal crashes). The text
+    /// is now handed over as a real game string, constructed the way the game itself
+    /// does it (nil data, then assign-from-chars), so the callee's release balances
+    /// this ownership exactly and frees through the game's own pools.
     pub unsafe fn post_event(&self, text: &[u8]) {
         if !self.can_post_event() {
             return;
         }
         let mut buf = text.to_vec();
         buf.push(0);
-        let enqueue: extern "thiscall" fn(this: u32, text: *const u8) = mem::transmute(0x0042B6A0);
-        enqueue(self.address, buf.as_ptr());
+        let assign: extern "thiscall" fn(*mut u32, *const u8) -> *mut u32 = mem::transmute(STRING_ASSIGN_FROM_CHARS);
+        let mut string: u32 = *STRING_NIL_HEADER_PTR + 0xc;
+        assign(&mut string, buf.as_ptr());
+        let enqueue: extern "thiscall" fn(this: u32, text: u32) = mem::transmute(0x0042B6A0);
+        enqueue(self.address, string);
     }
 
     /// Whether [Self::post_event] would reach a constructed widget.
@@ -78,3 +93,12 @@ const EVENT_QUEUE_COUNT: u32 = 0x488;
 const EVENT_QUEUE_CAPACITY: u8 = 5;
 /// The slot member that stays null until the scrollmap's ticker widgets are built.
 const EVENT_SLOT_READY: u32 = 0x94;
+
+/// `thiscall(this, chars) -> this`: the game string's assign-from-C-string. Allocates
+/// or reuses the refcounted block (header 0xC bytes before the data) and copies the
+/// NUL-terminated characters. Same routine `mod-tavern-details` uses to build the
+/// replacement letter popup.
+const STRING_ASSIGN_FROM_CHARS: u32 = 0x0064F390;
+/// The shared empty-string block every default-constructed game string points into
+/// (data = block + 0xC); the release routine 0x0064F253 refuses to free it by address.
+const STRING_NIL_HEADER_PTR: *const u32 = 0x006C7CD0 as _;

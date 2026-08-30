@@ -9,21 +9,21 @@
 //!
 //! Debug builds only: the module is `#[cfg(debug_assertions)]`-gated in lib.rs, so
 //! `--release` builds carry none of this.
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::mem;
 
 use hooklet::windows::x86::{hook_call_rel32, CallRel32Hook};
 use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
-    auto_trader::skill_caps,
     data::{convoy::CONVOY_SIZE, enums::WareId, office::OFFICE_SIZE, p3_ptr::P3Pointer},
-    game_world::{GAME_WORLD_PTR, TICKS_PER_YEAR},
+    game_world::{GAME_WORLD_PTR, },
     hotkeys::{HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     operations::OPERATIONS_PTR,
     scheduled_tasks::{
-        scheduled_task::{SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE, SCHEDULED_TASK_OPCODE_UNFREEZE_PORT},
+        scheduled_task::{SCHEDULED_TASK_OPCODE_UNFREEZE_PORT},
         SCHEDULED_TASKS_PTR,
     },
     ship::SHIP_SIZE,
@@ -33,7 +33,9 @@ use p3_api::{
 };
 use windows::core::s;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+use windows::Win32::System::Diagnostics::Debug::{AddVectoredExceptionHandler, GetThreadContext, SetThreadContext, CONTEXT, EXCEPTION_POINTERS};
 use windows::Win32::System::Memory::{VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS};
+use windows::Win32::System::Threading::GetCurrentThread;
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F10, VK_F9};
 
 /// The two throwaway probe keys. Neither name says anything beyond "probe slot", and
@@ -103,7 +105,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE2_KEY, m) if m == MOD_ALT | MOD_CTRL => retire_probe_benign(),
         (DEBUG_PROBE2_KEY, m) if m == MOD_ALT | MOD_SHIFT => retire_probe_hang(),
         (DEBUG_PROBE2_KEY, m) if m == MOD_CTRL | MOD_SHIFT => debug_probe_convoy(),
-        (DEBUG_PROBE2_KEY, 0) => dump_ship_routes(),
+        (DEBUG_PROBE2_KEY, 0) => debug_probe_town_levy(),
         _ => {}
     }
     0
@@ -228,6 +230,43 @@ unsafe fn debug_probe_dialog_modes() {
 }
 
 /// F10: walk every ship's route chain and dump the stops.
+/// F10 (rewritten per investigation, 30 Aug 2026): is the low byte of `town+0x6F8` the
+/// TAX level? The satisfaction town-modifier block subtracts `low_byte^2 / 20`
+/// (`0x0051CA7D`); the byte defaults to 10 at town init (`0x00528C64`) and the setter
+/// `0x00529FF2` writes a new low byte, ORs the date serial into the upper bits, and puts
+/// an amount into `town+0x6F4`.
+///
+/// Protocol: open the log, press F10 (baseline, all towns), change one town's tax, press
+/// again. If the low byte follows the tax slider and the upper bits jump to "now", the
+/// field is the tax level and the satisfaction penalty is tax^2/20.
+unsafe fn debug_probe_town_levy() {
+    let now = GAME_WORLD_PTR.get_game_time_raw();
+    let mut out: Vec<String> = vec![format!("=== town levy dump | tick {now} ({now:#010x}) ===")];
+    for i in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
+        let town = GAME_WORLD_PTR.get_town(i);
+        if town.address == 0 {
+            continue;
+        }
+        let f4 = *((town.address + 0x6f4) as *const i32);
+        let f8 = *((town.address + 0x6f8) as *const u32);
+        let level = f8 & 0xff;
+        let stamp = f8 & !0xff;
+        let sat = town.get_satisfactions();
+        out.push(format!(
+            "{:12} +0x6F4 {f4:8} | +0x6F8 level {level:3} stamp {stamp:#010x} ({}) | sat r/w/p {}/{}/{}",
+            get_town_name(i).unwrap_or_else(|| format!("<{i}>")),
+            if stamp == 0 { "never".into() } else { format!("{:.0} days ago", (now.wrapping_sub(stamp)) as f64 / 256.0) },
+            sat[0], sat[1], sat[2],
+        ));
+    }
+    for l in &out {
+        info!("{l}");
+    }
+    append_probe_log("_probe_tax.log", &out);
+    notify("town levy dumped");
+}
+
+#[allow(dead_code)]
 unsafe fn dump_ship_routes() {
     let pool = *ROUTE_STOP_POOL;
     let pool_count = *ROUTE_STOP_POOL_COUNT;
@@ -305,231 +344,90 @@ unsafe fn dump_ship_routes() {
 ///   one level at a time and stops at 215.
 /// - **the round counter between 0 and 31**, consistent with the day of the year: it is
 ///   reset below day 10 and the scan returns early above `0x1F`.
+/// F9 (rewritten per investigation, 30 Aug 2026): dump every scheduled-task record of
+/// kind 0x2C - the quarterly wealth-growth governor (`0x004DEA20`, see
+/// `todo/game-settings.md`). Two open questions this dump answers across two presses a
+/// game-quarter apart:
+///
+/// - is the record's `+0x8` the previous WEALTH (the handler stores it at `0x004DEB4A`)
+///   or a DATE serial (the dispatcher stub restamps "data+0x8" at `0x004D8937`)? If both
+///   writes hit the same field the governor is broken vanilla. The dump prints the game
+///   time and the richest player's wealth beside it, so the value identifies itself.
+/// - how does `+0xC` (the governed rate) move once the wealth ratio bands?
+///
+/// The task collection is the object at `0x006DD73C`: `+0x0` the record array (stride
+/// 0x18), the record count word at `0x006DD748` (valid slots are `< count`, the same test
+/// the auction reader uses). Record: `+0x0` due time dword, `+0x4` word, `+0x6` kind
+/// word, `+0x8`..`+0x17` four data dwords.
 unsafe fn debug_probe1() {
     let mut out: Vec<String> = Vec::new();
-    let ships = ShipsPtr::new();
-    let traders = ships.get_auto_traders_size();
-    let ship_count = ships.get_ships_size();
-    let merchants = GAME_WORLD_PTR.get_merchants_count();
     let now = GAME_WORLD_PTR.get_game_time_raw();
-    let local: u32 = *(0x006DFC14 as *const u32);
-    let press = PROBE1_PRESSES.fetch_add(1, Ordering::SeqCst);
-
-    // Which save this block came from. The loaded file name is not kept anywhere the mod
-    // can read, so the block is keyed by the player himself plus a hash of the world's
-    // town list - enough to group blocks by save, and the tick orders them within one.
-    // An optional `_probe1_save.txt` in the game folder adds a label of your own.
-    let label = std::fs::read_to_string("_probe1_save.txt")
-        .map(|text| text.lines().next().unwrap_or("").trim().to_string())
-        .unwrap_or_default();
-    // Which save folder the game writes to: the path builder at 0x005473A6 picks
-    // `Save\Kam`, `Save\Ein` or `Save\Mehr` off this byte of the setup object.
-    let mode = *((*(0x006CC3E8 as *const u32) + 0xd) as *const u8);
-    let campaign = match mode {
-        5 => "Kam",
-        3 => "Ein",
-        0..=2 => "Mehr",
-        _ => "?",
-    };
-    // FNV-1a over the town id list at `game_world+0x18`, which world generation fills:
-    // constant within a save, different between worlds.
-    let world = GAME_WORLD_PTR.get::<[u8; 40]>(0x18).iter().fold(0x811c_9dc5u32, |hash, &byte| {
-        (hash ^ byte as u32).wrapping_mul(0x0100_0193)
-    });
+    let rank = *(0x006DE52C as *const u8);
+    let local = OPERATIONS_PTR.get_player_merchant_index();
     let player = GAME_WORLD_PTR.get_merchant(local as u16);
-
     out.push(format!(
-        "=== press {press} | save: {} campaign {campaign}({mode}) world {world:#010x} | tick {now} year {} day-of-year {} ({}.{}) ===",
-        if label.is_empty() { "<no _probe1_save.txt>".to_string() } else { format!("\"{label}\"") },
+        "=== task-0x2C dump | tick {now} ({:#010x}) year {} day {} | difficulty global {rank} | player money {} company value {} ===",
+        now,
         GAME_WORLD_PTR.get_year(),
         GAME_WORLD_PTR.get_day_of_year(),
-        GAME_WORLD_PTR.get_day_of_month(),
-        GAME_WORLD_PTR.get_month(),
-    ));
-    out.push(format!(
-        "player: merchant {local} {} {} of {} | money {} company value {} | traders {traders} ships {ship_count} merchants {merchants}",
-        player.get_name(),
-        player.get_family_name(),
-        get_town_name(player.get_hometown_index()).unwrap_or_else(|| "?".into()),
         player.get_money(),
         player.get_company_value(),
     ));
 
-    // The scan keeps its round counter in the ten-day task's own data at `+0x8`;
-    // `counter & 7` is the `captain_index & 7` the next run will process.
-    let mut group = None;
-    for index in 0..SCHEDULED_TASKS_PTR.get_tasks_size() {
-        let task = SCHEDULED_TASKS_PTR.get_scheduled_task(index);
-        if task.get_opcode() != SCHEDULED_TASK_OPCODE_TEN_DAY_UPDATE {
+    let array = *(0x006DD73C as *const u32);
+    let count = *(0x006DD748 as *const u16) as u32;
+    if !p3_api::memory::is_readable(array, count as usize * 0x18) {
+        notify("task probe: collection unreadable");
+        return;
+    }
+    let mut found = 0;
+    for i in 0..count {
+        let rec = array + i * 0x18;
+        let kind = *((rec + 0x6) as *const u16);
+        if kind != 0x2C {
             continue;
         }
-        let due = task.get_due_timestamp();
-        let counter = task.get_data_dword(0x8);
-        group = Some(counter & 7);
-        out.push(format!(
-            "ten-day task {index}: due {due} (in {:.1} days) | data+0x0 {} counter {counter} -> group {}{}",
-            due.wrapping_sub(now) as f32 / 256.0,
-            task.get_data_dword(0),
-            counter & 7,
-            if counter > 0x1f { " | SCAN DISABLED, counter past 0x1f" } else { "" },
-        ));
-    }
-    if group.is_none() {
-        out.push("ten-day task: NOT FOUND in the queue".to_string());
-    }
-
-    // `merchant+0x8 == 0` is a human player (verified in done/pirate-ai.md): his
-    // captains take the random path and only his administrators gain at all.
-    let human: Vec<bool> = (0..merchants).map(|i| GAME_WORLD_PTR.get_merchant(i).get_control_word() == 0).collect();
-    let words: Vec<String> = (0..merchants)
-        .map(|i| format!("{i}={:04x}{}", GAME_WORLD_PTR.get_merchant(i).get_control_word(), if human[i as usize] { "*" } else { "" }))
-        .collect();
-    out.push(format!("merchant control words (* = human, random path): {}", words.join(" ")));
-
-    // Where each record sits: chained to a town = that tavern, `ship+0x42` = that ship,
-    // `office+0x2F2` = administrator of that office, anything else unplaced.
-    // Which growth path the scan gives this owner's captains. It walks merchants and
-    // their ship chains, so a ship with no owner (0xFF - pirate ships and empty slots) is
-    // never visited at all.
-    let path_of = |owner: u16| {
-        if owner >= merchants {
-            "no owner, never scanned"
-        } else if human[owner as usize] {
-            "human 0..50"
+        found += 1;
+        let due = *(rec as *const u32);
+        let w4 = *((rec + 0x4) as *const u16);
+        let d8 = *((rec + 0x8) as *const u32);
+        let dc = *((rec + 0xc) as *const u32);
+        let d10 = *((rec + 0x10) as *const u32);
+        let d14 = *((rec + 0x14) as *const u32);
+        // What +0x8 looks like: a date serial sits within two quarters below "now";
+        // a wealth figure tracks the company value. Say which, per press.
+        let looks = if d8 <= now && now.wrapping_sub(d8) <= 2 * 0x5D00 {
+            "date-like"
         } else {
-            "AI +8"
-        }
-    };
-    let mut place: Vec<String> = vec![String::new(); traders as usize];
-    for town_index in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
-        let town = get_town_name(town_index).unwrap_or_else(|| format!("town {town_index}"));
-        let mut index = GAME_WORLD_PTR.get_town(town_index).get_auto_trader_chain_head();
-        // The chain ends on an out-of-range index; cap the walk against cycles.
-        for _ in 0..traders {
-            let Some(trader) = ships.get_auto_trader(index) else { break };
-            place[index as usize] = format!("tavern {town}");
-            index = trader.get_next_index();
-        }
-    }
-    for ship_index in 0..ship_count {
-        let Some(ship) = ships.get_ship(ship_index) else { continue };
-        let captain = ship.get_captain_index();
-        if captain >= traders {
-            continue;
-        }
-        let owner = ship.get_merchant_index();
-        place[captain as usize] = format!(
-            "ship {ship_index} {:?} owner {owner:#04x} {}{}",
-            ship.get_name(),
-            path_of(owner as u16),
-            // The one status the scan skips outright.
-            if ship.get_status() == 0x11 { " status 0x11 SKIPPED" } else { "" },
-        );
-    }
-    let mut admins: Vec<u16> = Vec::new();
-    for office_index in 0..GAME_WORLD_PTR.get_offices_count() {
-        let office = GAME_WORLD_PTR.get_office(office_index);
-        let admin = office.get_administrator_index();
-        if admin >= traders {
-            continue;
-        }
-        admins.push(admin);
-        let owner = office.get_merchant_index();
-        place[admin as usize] = format!(
-            "office {office_index} in {} owner {owner:#04x} {}",
-            get_town_name(office.get_town_index()).unwrap_or_else(|| format!("town {}", office.get_town_index())),
-            path_of(owner),
-        );
-    }
-
-    let mut over_cap = 0;
-    let mut gated_out = 0;
-    let mut lockstep: Vec<String> = Vec::new();
-    let mut due_next: Vec<String> = Vec::new();
-    for index in 0..traders {
-        let Some(trader) = ships.get_auto_trader(index) else { break };
-        let (nav, trade, combat) = (trader.get_navigation_skill(), trader.get_trade_skill(), trader.get_combat_skill());
-        // A free slot is memset to 0xFF and linked into the freelist through +0x0.
-        if trader.get_state_byte() == 0xff && nav == 0xff && trade == 0xff && combat == 0xff {
-            continue;
-        }
-        let (nav_cap, trade_cap, combat_cap) = skill_caps(index);
-        let over = |skill: u8, cap: u8| if skill > cap { "!" } else { " " };
-        if nav > nav_cap || trade > trade_cap || combat > combat_cap {
-            over_cap += 1;
-        }
-        // Every gain is gated against the NAVIGATION cap, whichever skill was rolled, so
-        // a record with all three at or above it never gains again.
-        let stuck = nav >= nav_cap && trade >= nav_cap && combat >= nav_cap;
-        if stuck {
-            gated_out += 1;
-        }
-        let placed = if place[index as usize].is_empty() {
-            "unplaced".to_string()
-        } else {
-            place[index as usize].clone()
+            "NOT date-like (wealth?)"
         };
         out.push(format!(
-            "trader {index:3} {} nav {nav:3}/{nav_cap}{} trade {trade:3}/{trade_cap}{} combat {combat:3}/{combat_cap}{} | wage {:3} mer {:#04x} state {:#04x} retire {} born {} age {:.1}y | {placed}{}",
-            if trader.is_captain() { "CAPT" } else { "PIRA" },
-            over(nav, nav_cap),
-            over(trade, trade_cap),
-            over(combat, combat_cap),
-            trader.get_daily_wage(),
-            trader.get_merchant_index(),
-            trader.get_state_byte(),
-            trader.get_retirement_flag(),
-            trader.get_timestamp(),
-            now.saturating_sub(trader.get_timestamp()) as f32 / TICKS_PER_YEAR as f32,
-            if stuck { " | GATED OUT" } else { "" },
+            "slot {i} at {rec:#010x}: due {due} (in {:.1} days) w+4 {w4} | +0x8 {d8} ({looks}) +0xC {dc} +0x10 {d10} +0x14 {d14}",
+            (due as i64 - now as i64) as f64 / 256.0,
         ));
-        lockstep.push(format!("{index}:{}", trade as i32 - combat as i32));
-        if group == Some(index as u32 & 7) && !place[index as usize].is_empty() {
-            due_next.push(index.to_string());
-        }
     }
-
-    // The administrator path adds exactly 43 at a time from a fresh 0, so anything else
-    // means either a different writer or the record is not really an administrator.
-    let stray: Vec<String> = admins
-        .iter()
-        .filter_map(|&i| ships.get_auto_trader(i).map(|t| (i, t.get_trade_skill())))
-        .filter(|(_, trade)| trade % 43 != 0)
-        .map(|(i, trade)| format!("{i}={trade}"))
-        .collect();
-    out.push(format!(
-        "administrators: {} | trade not a multiple of 43: {}",
-        admins.len(),
-        if stray.is_empty() { "none".to_string() } else { stray.join(" ") }
-    ));
-    out.push(format!("records with a skill above its cap: {over_cap} | gated out of all further gains: {gated_out}"));
-    out.push(format!("trade-combat per record (must not move between presses): {}", lockstep.join(" ")));
-    out.push(format!(
-        "group {} is processed next run, placed records in it: {}",
-        group.map(|g| g.to_string()).unwrap_or_else(|| "?".into()),
-        if due_next.is_empty() { "none".to_string() } else { due_next.join(" ") }
-    ));
-
+    out.push(format!("{found} record(s) of kind 0x2C among {count} tasks"));
     for line in &out {
-        debug!("probe1: {line}");
+        info!("{line}");
     }
-    // Always append, never truncate: the point is to compare presses days or years apart
-    // and across saves, so every block from every session stays in the one file.
-    let file = std::fs::OpenOptions::new().create(true).append(true).open("_probe1.log");
-    if let Ok(mut file) = file {
-        use std::io::Write;
-        for line in &out {
-            let _ = writeln!(file, "{line}");
+    append_probe_log("_probe_task2c.log", &out);
+    notify(&format!("task 0x2C: {found} record(s) dumped"));
+}
+
+/// Append lines to a probe log in the game folder, never truncating.
+fn append_probe_log(path: &str, lines: &[String]) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        for l in lines {
+            let _ = writeln!(f, "[unix {stamp}] {l}");
         }
     }
-    notify(&format!(
-        "probe1 #{press}: {over_cap} over cap, {gated_out} gated out, {} lines >> _probe1.log",
-        out.len()
-    ));
 }
 
 /// How often F9 has been pressed since the DLL was loaded: press 0 starts a fresh
 /// `_probe1.log`, later presses append their own block.
+#[allow(dead_code)]
 static PROBE1_PRESSES: AtomicU32 = AtomicU32::new(0);
 
 /// ALT+F9 (THROWAWAY): dump every office of the player with its administrator record, to
@@ -1724,6 +1622,10 @@ struct ListVerdict {
     nodes: u32,
     faults: Vec<String>,
     truncated: bool,
+    /// The first back-link fault, structurally: `(node, true_predecessor)`. This is the
+    /// shape the 29 Aug live capture had - a periodic decrement of `node+0x7C` - and it is
+    /// what the hardware write watch arms on: the writer demonstrably comes back.
+    back_link: Option<(u32, u32)>,
 }
 
 impl ListVerdict {
@@ -1739,10 +1641,29 @@ impl ListVerdict {
         !self.checked_nothing() && self.faults.is_empty() && !self.truncated
     }
 
-    /// Distinct states for the watch's change detection, so a slide into "nothing to
-    /// check" is reported rather than blending into a pass.
-    fn state(&self) -> u32 {
-        (self.faults.len() as u32) | (self.truncated as u32) << 16 | (self.checked_nothing() as u32) << 17
+    /// Nothing / clean / broken, for the watch's coarse transitions - a slide into
+    /// "nothing to check" is reported rather than blending into a pass.
+    fn kind(&self) -> u32 {
+        if self.checked_nothing() {
+            0
+        } else if self.clean() {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// Hash of the full fault text, so the watch logs when a fault *changes*, not only
+    /// when one appears. The 29 Aug capture lost the corrupted value's drift
+    /// (`...07 -> ...06`) between daily heartbeats because the old key was only the
+    /// fault count; the drift's timestamp was the cadence evidence, and it was gone.
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.truncated.hash(&mut h);
+        self.checked_nothing().hash(&mut h);
+        self.faults.hash(&mut h);
+        h.finish()
     }
 }
 
@@ -1751,7 +1672,7 @@ impl ListVerdict {
 /// and every `next` must be a plausible pointer. That is the whole of what
 /// `0x10062df8` relies on.
 unsafe fn walk_resource_list(g: &mut Guarded, device: u32) -> ListVerdict {
-    let mut v = ListVerdict { head: 0, nodes: 0, faults: Vec::new(), truncated: false };
+    let mut v = ListVerdict { head: 0, nodes: 0, faults: Vec::new(), truncated: false, back_link: None };
     let Some(head) = g.u32(device + D3D9_DEV_LIST_HEAD) else {
         v.faults.push(format!("device {device:#010x}: the list head at +0x3c is unreadable"));
         return v;
@@ -1781,6 +1702,9 @@ unsafe fn walk_resource_list(g: &mut Guarded, device: u32) -> ListVerdict {
             }
         };
         if prev != arrived_from {
+            if v.back_link.is_none() {
+                v.back_link = Some((node, arrived_from));
+            }
             v.faults.push(format!(
                 "node #{} at {node:#010x}: prev = {prev:#010x}, but the walk arrived from {arrived_from:#010x} - back link broken",
                 v.nodes
@@ -2158,6 +2082,9 @@ unsafe fn dump_dwords(g: &mut Guarded, addr: u32, count: u32) -> String {
 unsafe fn debug_probe_d3d9_list() {
     let mut g = Guarded::new();
     let mut out = Vec::new();
+    // The watch only drains on game ticks; the press drains too, so captured writes can
+    // be pulled while the game sits paused.
+    drain_write_watch_hits(&mut out);
     let (device, route) = match d3d9_device(&mut g) {
         Ok(found) => found,
         Err(reason) => {
@@ -2227,8 +2154,15 @@ unsafe fn toggle_probe_d3d9_watch() {
         }
     }
     D3D9_WATCH_ON.store(on, Ordering::SeqCst);
-    let line = format!("d3d9 watch: {}", if on { "on" } else { "off" });
-    write_d3d9_log(&[line.clone()]);
+    let mut out = vec![format!("d3d9 watch: {}", if on { "on" } else { "off" })];
+    let line = out[0].clone();
+    if !on {
+        // The write watch hangs off the walk, so it goes down with it - leaving Dr0 armed
+        // with nothing draining the hit buffer would be a watch nobody reads.
+        drain_write_watch_hits(&mut out);
+        disarm_write_watch("watch toggled off", &mut out);
+    }
+    write_d3d9_log(&out);
     notify(&format!("{line} -> {D3D9_LIST_LOG}"));
 }
 
@@ -2236,60 +2170,499 @@ unsafe fn toggle_probe_d3d9_watch() {
 /// builds strings when it finds a fault, and the heartbeat formats once a day.
 unsafe fn sample_d3d9_list(tick: u32) {
     static LAST_TICK: AtomicU32 = AtomicU32::new(0);
-    static LAST_STATE: AtomicU32 = AtomicU32::new(u32::MAX);
+    static LAST_KIND: AtomicU32 = AtomicU32::new(u32::MAX);
+    static LAST_FINGERPRINT: AtomicU64 = AtomicU64::new(0);
     if !d3d9_watch_due() {
         return;
     }
+    // Hits the Dr0 trap deferred (the VEH must not allocate or do file I/O) are formatted
+    // and written here, on the same thread, in a normal context.
+    let mut out = Vec::new();
+    drain_write_watch_hits(&mut out);
     let mut g = Guarded::new();
     let (device, _) = match d3d9_device(&mut g) {
         Ok(found) => found,
-        Err(_) => return,
+        Err(_) => {
+            if !out.is_empty() {
+                write_d3d9_log(&out);
+            }
+            return;
+        }
     };
     let verdict = walk_resource_list(&mut g, device);
-    let state = verdict.state();
-    let changed = state != LAST_STATE.swap(state, Ordering::Relaxed);
+    let kind = verdict.kind();
+    let fingerprint = verdict.fingerprint();
+    let kind_changed = LAST_KIND.swap(kind, Ordering::Relaxed) != kind;
+    let text_changed = LAST_FINGERPRINT.swap(fingerprint, Ordering::Relaxed) != fingerprint;
+    let changed = kind_changed || text_changed;
     let due = tick.wrapping_sub(LAST_TICK.load(Ordering::Relaxed)) >= D3D9_WATCH_HEARTBEAT;
-    if !changed && !due {
+    if !changed && !due && out.is_empty() {
         return;
     }
     LAST_TICK.store(tick, Ordering::Relaxed);
-    let mut out = Vec::new();
     let prefix = format!("tick {tick} day {} time {:#04x}", tick >> 8, tick & 0xFF);
-    if verdict.checked_nothing() {
-        out.push(format!("{prefix} nothing to check - the device owns no resources"));
-    } else if verdict.clean() {
-        out.push(format!("{prefix} {}clean, {} resources", if changed { "RECOVERED " } else { "" }, verdict.nodes));
-    } else {
-        out.push(format!(
-            "{prefix} {}BROKEN: {} fault(s) over {} resources, device {device:#010x}",
-            if changed { "FIRST SEEN " } else { "" },
-            verdict.faults.len(),
-            verdict.nodes
-        ));
-        if verdict.truncated {
-            out.push(format!("  cycle: walk truncated at {LIST_WALK_CAP} nodes"));
+    match kind {
+        0 => {
+            out.push(format!("{prefix} nothing to check - the device owns no resources"));
+            disarm_write_watch("device owns no resources", &mut out);
         }
-        for fault in &verdict.faults {
-            out.push(format!("  FAULT {fault}"));
+        1 => {
+            out.push(format!("{prefix} {}clean, {} resources", if kind_changed { "RECOVERED " } else { "" }, verdict.nodes));
+            // A list healed by our own repair (or by a neighbour's release rewriting the
+            // link) keeps its watch: the decrementer comes back on a day cadence and must
+            // still trap. Disarm only once the watched node is no longer this device's.
+            let watched_node = WRITE_WATCH_NODE.load(Ordering::SeqCst);
+            if WRITE_WATCH_ADDRESS.load(Ordering::SeqCst) != 0 && g.u32(watched_node + D3D9_RES_DEVICE) != Some(device) {
+                disarm_write_watch("watched node is gone", &mut out);
+            }
+            // A clean list also retires the no-re-arm guard: it exists only to stop an
+            // instant re-arm loop right after an in-trap disarm, and heap determinism
+            // makes the same address a plausible future node - which must arm again.
+            WRITE_WATCH_EXHAUSTED_NODE.store(0, Ordering::SeqCst);
+        }
+        _ => {
+            // CHANGED marks a fault whose *text* moved while broken - for the periodic
+            // decrementer this line is a timestamp on each write, which is the cadence
+            // evidence the 29 Aug capture lost between heartbeats.
+            let tag = if kind_changed {
+                "FIRST SEEN "
+            } else if text_changed {
+                "CHANGED "
+            } else {
+                ""
+            };
+            out.push(format!(
+                "{prefix} {tag}BROKEN: {} fault(s) over {} resources, device {device:#010x}",
+                verdict.faults.len(),
+                verdict.nodes
+            ));
+            if verdict.truncated {
+                out.push(format!("  cycle: walk truncated at {LIST_WALK_CAP} nodes"));
+            }
+            for fault in &verdict.faults {
+                out.push(format!("  FAULT {fault}"));
+            }
+            if let Some((node, arrived_from)) = verdict.back_link {
+                if changed {
+                    dump_link_neighbourhood(&mut g, node, arrived_from, &mut out);
+                }
+                // A watch left on a node the device no longer owns (rebuild, save load)
+                // must not block arming on the node that is broken now.
+                let watched_node = WRITE_WATCH_NODE.load(Ordering::SeqCst);
+                if WRITE_WATCH_ADDRESS.load(Ordering::SeqCst) != 0
+                    && watched_node != node
+                    && g.u32(watched_node + D3D9_RES_DEVICE) != Some(device)
+                {
+                    disarm_write_watch("watched node is gone, another node is broken", &mut out);
+                }
+                repair_back_link(&mut g, device, node, arrived_from, &mut out);
+                let exhausted = WRITE_WATCH_EXHAUSTED_NODE.load(Ordering::SeqCst) == node;
+                if WRITE_WATCH_ADDRESS.load(Ordering::SeqCst) == 0 && !exhausted {
+                    arm_write_watch(node, &mut out);
+                }
+            }
         }
     }
     write_d3d9_log(&out);
-    if changed && !verdict.clean() {
+    if changed && kind == 2 {
         notify(&format!("d3d9 list BROKE at tick {tick} - see {D3D9_LIST_LOG}"));
     }
 }
 
 /// Appended, never truncated: two presses days apart, and a watch spanning a whole
-/// session, all compare in one file.
+/// session, all compare in one file. Each file line carries a `[unix N]` stamp in
+/// `_window_lifecycle.log`'s format, so the two logs cross-reference - the 29 Aug capture
+/// could not be placed against the window log for want of exactly this.
 fn write_d3d9_log(lines: &[String]) {
     for line in lines {
         debug!("{line}");
     }
+    let stamp = unix_now();
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(D3D9_LIST_LOG) {
         use std::io::Write;
         for line in lines {
-            let _ = writeln!(file, "{line}");
+            let _ = writeln!(file, "[unix {stamp}] {line}");
         }
         let _ = file.flush();
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Option 2c: the hardware write watch (device-lost-crash.md).
+//
+// The 29 Aug live capture showed a corrupted `prev` link being *decremented* on a
+// game-day cadence - a writer that comes back. A polling walk can prove the field
+// changed but never who changed it; a Dr0 data breakpoint on the field names the
+// writer's EIP on its next visit. The watch arms itself when the list walk first sees
+// a broken back link, and every write to that dword after that - the culprit, d3d9's
+// own legitimate unlink when a neighbour is released, the heap's free-list bookkeeping
+// when the block dies - is captured with registers, code bytes and stack, each one
+// labelled by the module its EIP falls in.
+//
+// Everything here runs on the game's main thread: the walk that arms (ships tick), the
+// writers being hunted (game logic and d3d9 releases), and therefore the trap. Debug
+// registers are per-thread, so arming the current thread is exactly right - and
+// SetThreadContext with only CONTEXT_DEBUG_REGISTERS on the current thread is the
+// standard self-debugging technique.
+//
+// The VEH is the delicate part: the trap can fire inside the heap's own bookkeeping
+// (the freed block's list links get written), so the handler must not allocate or take
+// the heap lock. It copies everything into a fixed buffer behind a try_lock and the
+// next walk formats and writes it from a normal context.
+// ---------------------------------------------------------------------------
+
+/// winnt.h: `CONTEXT_i386 (0x00010000) | CONTEXT_DEBUG_REGISTERS (0x00000010)` - the
+/// windows 0.48 crate does not export the x86 composite.
+const CONTEXT_DEBUG_REGISTERS_I386: u32 = 0x0001_0010;
+/// Dr7 slot 0: L0+G0 enable bits, plus RW0 and LEN0.
+const DR7_SLOT0_MASK: u32 = 0b11 | (0b1111 << 16);
+/// L0 set, RW0 = 01 (break on data writes), LEN0 = 11 (4-byte range). The watched
+/// address must be 4-aligned; `node+0x7C` is (heap blocks are 8-aligned).
+const DR7_SLOT0_WRITE_DWORD: u32 = 0b1 | (0b01 << 16) | (0b11 << 18);
+/// Dr6 B0: slot 0 fired.
+const DR6_HIT0: u32 = 1;
+const EXCEPTION_SINGLE_STEP_CODE: u32 = 0x8000_0004;
+const EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
+const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
+/// Distinct write sites (EIPs) the buffer holds per drain cycle. The 30 Aug capture
+/// burned a raw 8-hit budget in one second on a single instruction - ntdll's memset
+/// zeroing the freed node block eight times during a device rebuild - so hits now dedup
+/// by EIP: a repeated site costs nothing, only its count grows.
+const WRITE_WATCH_SLOTS: usize = 8;
+/// The runaway valve: raw traps (dedup'd or not) before the watch disarms itself. The
+/// real bound is the sampler disarming when the watched node dies; this only stops a
+/// pathological hot-reuse case from trapping forever while the game is not ticking.
+const WRITE_WATCH_MAX_RAW: u32 = 512;
+/// Code bytes captured before EIP. A data breakpoint traps *after* the write, so EIP is
+/// the **next** instruction and the writer is somewhere in these preceding bytes.
+const WATCH_CODE_BACK: u32 = 16;
+const WATCH_CODE_AHEAD: usize = 8;
+
+/// The watched dword's address; 0 = disarmed. Written by the armer (walk) and by the
+/// VEH when it disarms in-context after the last budgeted hit.
+static WRITE_WATCH_ADDRESS: AtomicU32 = AtomicU32::new(0);
+/// The node the watched dword belongs to, for the log and the re-arm guard.
+static WRITE_WATCH_NODE: AtomicU32 = AtomicU32::new(0);
+/// A node whose watch spent its whole hit budget: do not re-arm on it, or a hot writer
+/// would re-trap on every subsequent walk of the still-broken list. A *different* node
+/// faulting arms fresh.
+static WRITE_WATCH_EXHAUSTED_NODE: AtomicU32 = AtomicU32::new(0);
+static WRITE_WATCH_HITS: AtomicU32 = AtomicU32::new(0);
+/// Hits that could not be buffered (buffer full, or the try_lock lost). Counted rather
+/// than lost silently.
+static WRITE_WATCH_DROPPED: AtomicU32 = AtomicU32::new(0);
+static WRITE_WATCH_VEH_ON: AtomicBool = AtomicBool::new(false);
+
+/// Everything the trap can copy without allocating, formatted later by the drain.
+#[derive(Clone, Copy)]
+struct WatchHit {
+    unix: u64,
+    hit_no: u32,
+    eip: u32,
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+    esi: u32,
+    edi: u32,
+    ebp: u32,
+    esp: u32,
+    /// The watched dword's address and its value right after the write.
+    watched: u32,
+    value: u32,
+    /// `eip-16 .. eip+8`; the write instruction ends at offset 16.
+    code: [u8; (WATCH_CODE_BACK as usize) + WATCH_CODE_AHEAD],
+    code_ok: bool,
+    stack: [u32; 8],
+    stack_n: u8,
+    /// Further traps at this same EIP in the same batch - regs/stack kept from the first.
+    repeats: u32,
+    /// This hit spent the raw budget and the VEH disarmed Dr0 in-context.
+    disarmed: bool,
+}
+
+impl WatchHit {
+    const EMPTY: WatchHit = WatchHit {
+        unix: 0,
+        hit_no: 0,
+        eip: 0,
+        eax: 0,
+        ebx: 0,
+        ecx: 0,
+        edx: 0,
+        esi: 0,
+        edi: 0,
+        ebp: 0,
+        esp: 0,
+        watched: 0,
+        value: 0,
+        code: [0; (WATCH_CODE_BACK as usize) + WATCH_CODE_AHEAD],
+        code_ok: false,
+        stack: [0; 8],
+        stack_n: 0,
+        repeats: 0,
+        disarmed: false,
+    };
+}
+
+/// Fixed-size so the VEH never allocates pushing into it. Same capacity as the hit
+/// budget, so nothing is droppable by size alone.
+struct HitBuffer {
+    hits: [WatchHit; WRITE_WATCH_SLOTS],
+    n: usize,
+}
+
+static WATCH_HITS_PENDING: Mutex<HitBuffer> = Mutex::new(HitBuffer { hits: [WatchHit::EMPTY; WRITE_WATCH_SLOTS], n: 0 });
+
+/// Programs Dr0 on the current thread; `address` 0 clears the slot. Only ever called
+/// from the main thread (the ships tick), which is also the only thread that can trap.
+unsafe fn program_dr0(address: u32) -> Result<(), &'static str> {
+    let thread = GetCurrentThread();
+    let mut ctx: CONTEXT = mem::zeroed();
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS_I386;
+    if !GetThreadContext(thread, &mut ctx).as_bool() {
+        return Err("GetThreadContext failed");
+    }
+    ctx.Dr0 = address & !3;
+    ctx.Dr6 = 0;
+    ctx.Dr7 = (ctx.Dr7 & !DR7_SLOT0_MASK) | if address != 0 { DR7_SLOT0_WRITE_DWORD } else { 0 };
+    if !SetThreadContext(thread, &ctx).as_bool() {
+        return Err("SetThreadContext failed");
+    }
+    Ok(())
+}
+
+/// Arms Dr0 on the faulting node's `prev` dword. Registered VEH first (position 1, so it
+/// runs before the crash reporter's own handler - which ignores single-step anyway, its
+/// severity filter only passes fatal codes).
+unsafe fn arm_write_watch(node: u32, out: &mut Vec<String>) {
+    let address = node + D3D9_RES_PREV;
+    if !WRITE_WATCH_VEH_ON.swap(true, Ordering::SeqCst) {
+        AddVectoredExceptionHandler(1, Some(write_watch_veh));
+    }
+    WRITE_WATCH_HITS.store(0, Ordering::SeqCst);
+    WRITE_WATCH_NODE.store(node, Ordering::SeqCst);
+    match program_dr0(address) {
+        Ok(()) => {
+            WRITE_WATCH_ADDRESS.store(address, Ordering::SeqCst);
+            out.push(format!(
+                "  WRITE WATCH ARMED: Dr0 on the dword at {address:#010x} (node {node:#010x} +0x7c, the broken prev link) - writes are caught with EIP, dedup'd per site"
+            ));
+        }
+        Err(reason) => out.push(format!("  write watch NOT armed: {reason}")),
+    }
+}
+
+unsafe fn disarm_write_watch(reason: &str, out: &mut Vec<String>) {
+    if WRITE_WATCH_ADDRESS.swap(0, Ordering::SeqCst) == 0 {
+        return;
+    }
+    let hits = WRITE_WATCH_HITS.load(Ordering::SeqCst);
+    match program_dr0(0) {
+        Ok(()) => out.push(format!("  write watch disarmed ({reason}), {hits} hit(s) captured")),
+        Err(e) => out.push(format!("  write watch disarm FAILED ({reason}): {e}")),
+    }
+}
+
+/// The trap. Runs with the game stopped mid-instruction-stream, possibly inside the
+/// heap's own code, so: no allocation, no file I/O, no logging - copy, stash, continue.
+/// `VirtualQuery` (inside [Guarded]) is a plain syscall and safe here.
+unsafe extern "system" fn write_watch_veh(info: *mut EXCEPTION_POINTERS) -> i32 {
+    let Some(info) = info.as_mut() else {
+        return EXCEPTION_CONTINUE_SEARCH;
+    };
+    let Some(record) = info.ExceptionRecord.as_ref() else {
+        return EXCEPTION_CONTINUE_SEARCH;
+    };
+    if record.ExceptionCode.0 as u32 != EXCEPTION_SINGLE_STEP_CODE {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    let Some(ctx) = info.ContextRecord.as_mut() else {
+        return EXCEPTION_CONTINUE_SEARCH;
+    };
+    if ctx.Dr6 & DR6_HIT0 == 0 {
+        // A single-step that is not our slot (a debugger's, or TF) - not ours to eat.
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    ctx.Dr6 = 0;
+    let watched = WRITE_WATCH_ADDRESS.load(Ordering::SeqCst);
+    let hits = WRITE_WATCH_HITS.fetch_add(1, Ordering::SeqCst) + 1;
+    let disarm = watched == 0 || hits >= WRITE_WATCH_MAX_RAW;
+
+    let mut hit = WatchHit {
+        unix: unix_now(),
+        hit_no: hits,
+        eip: ctx.Eip,
+        eax: ctx.Eax,
+        ebx: ctx.Ebx,
+        ecx: ctx.Ecx,
+        edx: ctx.Edx,
+        esi: ctx.Esi,
+        edi: ctx.Edi,
+        ebp: ctx.Ebp,
+        esp: ctx.Esp,
+        watched,
+        value: 0,
+        disarmed: disarm,
+        ..WatchHit::EMPTY
+    };
+    let mut g = Guarded::new();
+    if let Some(value) = g.u32(watched) {
+        hit.value = value;
+    }
+    if ctx.Eip >= WATCH_CODE_BACK {
+        let mut code = hit.code;
+        hit.code_ok = g.bytes(ctx.Eip - WATCH_CODE_BACK, &mut code);
+        hit.code = code;
+    }
+    for i in 0..hit.stack.len() {
+        match g.u32(ctx.Esp.wrapping_add(4 * i as u32)) {
+            Some(v) => {
+                hit.stack[i] = v;
+                hit.stack_n = (i + 1) as u8;
+            }
+            None => break,
+        }
+    }
+
+    match WATCH_HITS_PENDING.try_lock() {
+        Ok(mut buffer) => {
+            // Dedup by write site: a burst from one instruction (a memset zeroing the
+            // freed block, a hot reuse) costs one slot however long it runs.
+            let n = buffer.n;
+            if let Some(slot) = buffer.hits[..n].iter_mut().find(|h| h.eip == hit.eip) {
+                slot.repeats += 1;
+                slot.disarmed |= hit.disarmed;
+            } else if n < buffer.hits.len() {
+                buffer.hits[n] = hit;
+                buffer.n = n + 1;
+            } else {
+                WRITE_WATCH_DROPPED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        _ => {
+            WRITE_WATCH_DROPPED.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    if disarm {
+        // In-context: the kernel restores this CONTEXT on continue, clearing the slot.
+        ctx.Dr7 &= !DR7_SLOT0_MASK;
+        ctx.Dr0 = 0;
+        WRITE_WATCH_ADDRESS.store(0, Ordering::SeqCst);
+        WRITE_WATCH_EXHAUSTED_NODE.store(WRITE_WATCH_NODE.load(Ordering::SeqCst), Ordering::SeqCst);
+    }
+    EXCEPTION_CONTINUE_EXECUTION
+}
+
+/// Formats and hands over whatever the trap stashed - called from the walk, in a normal
+/// context where allocation and file I/O are fine.
+unsafe fn drain_write_watch_hits(out: &mut Vec<String>) {
+    let mut drained = [WatchHit::EMPTY; WRITE_WATCH_SLOTS];
+    let mut n = 0;
+    if let Ok(mut buffer) = WATCH_HITS_PENDING.try_lock() {
+        n = buffer.n;
+        drained[..n].copy_from_slice(&buffer.hits[..n]);
+        buffer.n = 0;
+    }
+    for hit in &drained[..n] {
+        let module = crate::ffi::module_of(hit.eip)
+            .map(|(name, base)| format!(" ({name}+{:#x})", hit.eip - base))
+            .unwrap_or_else(|| " (no module)".to_string());
+        out.push(format!(
+            "[hit at unix {}] WRITE WATCH HIT #{}: eip {:#010x}{module} - the write is the instruction ENDING at eip; dword at {:#010x} now {:#010x}",
+            hit.unix, hit.hit_no, hit.eip, hit.watched, hit.value
+        ));
+        out.push(format!(
+            "  regs eax={:#010x} ebx={:#010x} ecx={:#010x} edx={:#010x} esi={:#010x} edi={:#010x} ebp={:#010x} esp={:#010x}",
+            hit.eax, hit.ebx, hit.ecx, hit.edx, hit.esi, hit.edi, hit.ebp, hit.esp
+        ));
+        if hit.code_ok {
+            let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+            out.push(format!(
+                "  code eip-{WATCH_CODE_BACK}..eip: {} | eip..+{WATCH_CODE_AHEAD}: {}",
+                hex(&hit.code[..WATCH_CODE_BACK as usize]),
+                hex(&hit.code[WATCH_CODE_BACK as usize..])
+            ));
+        }
+        if hit.stack_n > 0 {
+            let dwords: Vec<String> = hit.stack[..hit.stack_n as usize].iter().map(|d| format!("{d:#010x}")).collect();
+            out.push(format!("  stack at esp: {}", dwords.join(" ")));
+        }
+        if hit.repeats > 0 {
+            out.push(format!("  (+{} more trap(s) at this same eip in this batch - regs/stack above are the first)", hit.repeats));
+        }
+        if hit.disarmed {
+            out.push(format!("  write watch disarmed in the trap - raw budget ({WRITE_WATCH_MAX_RAW}) spent"));
+        }
+    }
+    let dropped = WRITE_WATCH_DROPPED.swap(0, Ordering::SeqCst);
+    if dropped > 0 {
+        out.push(format!("  write watch: {dropped} hit(s) DROPPED (buffer full or lock contended)"));
+    }
+    if n > 0 {
+        notify(&format!("d3d9 write watch: {n} hit(s) captured -> {D3D9_LIST_LOG}"));
+    }
+}
+
+/// Rewrites a poisoned `prev` with the walk's `arrived_from` - the invariant d3d9 itself
+/// maintains (the walk reached this node through the predecessor's `next`, so that is
+/// what `prev` must be).
+///
+/// This removes the crash's precondition rather than treating a symptom: the fourth
+/// occurrence (29 Aug 2026, 23:09) proved the fatal "pointer stored one byte low" is
+/// **d3d9's own unlink writing through a decremented `prev`** - `prev->next = next`
+/// lands at `(true_prev - 1) + 0x78 = true_prev + 0x77`, wrecking the predecessor's
+/// `next`, which the next teardown then dereferences wild. With `prev` repaired, every
+/// release writes where it should and the whole cascade never starts.
+///
+/// The hunt is unaffected: the decrementer writes through its own stale pointer
+/// regardless of the field's current value, so its next visit still fires the Dr0 trap.
+/// Our own repair write must not - Dr0 is lifted around it when it is armed on this
+/// very dword.
+unsafe fn repair_back_link(g: &mut Guarded, device: u32, node: u32, arrived_from: u32, out: &mut Vec<String>) {
+    if g.u32(node + D3D9_RES_DEVICE) != Some(device) {
+        out.push(format!("  NOT repaired: node {node:#010x} no longer belongs to the device"));
+        return;
+    }
+    let Some(old) = g.u32(node + D3D9_RES_PREV) else {
+        out.push(format!("  NOT repaired: node {node:#010x} +0x7c unreadable"));
+        return;
+    };
+    let armed_here = WRITE_WATCH_ADDRESS.load(Ordering::SeqCst) == node + D3D9_RES_PREV;
+    if armed_here {
+        let _ = program_dr0(0);
+    }
+    core::ptr::write_volatile((node + D3D9_RES_PREV) as *mut u32, arrived_from);
+    if armed_here {
+        let _ = program_dr0(node + D3D9_RES_PREV);
+    }
+    out.push(format!(
+        "  REPAIRED: node {node:#010x} prev {old:#010x} -> {arrived_from:#010x} (the true predecessor) - the teardown crash is defused while the watch waits"
+    ));
+}
+
+/// The 16 bytes at `+0x70..+0x7F` of the faulting node and both neighbours - the dump the
+/// 28 Aug crash analysis assembled by hand, automated. `+0x74` (pad), `+0x78` (next),
+/// `+0x7C` (prev) all sit in this window, so the one-byte-low store and the decrement
+/// shapes are both readable straight off the line.
+unsafe fn dump_link_neighbourhood(g: &mut Guarded, node: u32, arrived_from: u32, out: &mut Vec<String>) {
+    let next = g.u32(node + D3D9_RES_NEXT).unwrap_or(0);
+    for (label, base) in [("predecessor ", arrived_from), ("faulty node ", node), ("its next    ", next)] {
+        if base == 0 {
+            continue;
+        }
+        let mut bytes = [0u8; 16];
+        if g.bytes(base + 0x70, &mut bytes) {
+            let groups: Vec<String> =
+                bytes.chunks(4).map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")).collect();
+            out.push(format!("  {label}{base:#010x} +0x70: {}", groups.join(" | ")));
+        } else {
+            out.push(format!("  {label}{base:#010x} +0x70: unreadable"));
+        }
     }
 }
