@@ -426,7 +426,7 @@ pub(crate) enum RouteKind {
 /// them, and their order is the shortest closed tour rather than the order they were
 /// discovered in - so it needs an existing route and takes no SHIFT. Its ALT is the one
 /// in the table above that filters TOWNS rather than wares.
-pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
+pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool, scale_to_lap: bool) {
     let Some(selected) = selected_ship_index() else {
         crate::ffi::notify("Route: no ship selected");
         return;
@@ -538,6 +538,14 @@ pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
     }
 
 
+    // CTRL on the supply templates scales the load to the route's actual lap time
+    // instead of the fixed week. The loop below runs once with 7 days; if the computed
+    // lap differs, it runs a second time with the real figure - the stop TOWNS do not
+    // depend on the quantities, so the first pass's shape is already the final one and
+    // the duration computed from it is exact.
+    let scale_to_lap = scale_to_lap && matches!(kind, RouteKind::FiveStop | RouteKind::SixStop);
+    let mut days: i32 = 7;
+    let (total_load, middle, described) = loop {
     let mut total_load = [0i32; 24];
     let mut middle: Vec<TradeRouteStop> = Vec::new();
     let mut described: Vec<String> = Vec::new();
@@ -567,7 +575,7 @@ pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
             continue;
         }
 
-        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index, alt, 7);
+        let (load_amount, sell_prices, supplied) = town_supply_basket(town_index, alt, days);
         for i in 0..24 {
             total_load[i] = total_load[i].saturating_add(load_amount[i]);
         }
@@ -585,6 +593,34 @@ pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
             described.push(format!("{town_name} ({supplied} wares, no office)"));
         }
     }
+
+    if scale_to_lap && days == 7 {
+        // The final stop sequence: the previous route when appending, then the
+        // template's two-stop home bracket around the middle. Same-town legs are free,
+        // so listing every stop also counts each one's 6-hour dwell.
+        let mut towns: Vec<u8> = if append {
+            previous.iter().map(|stop| stop.town_index).collect()
+        } else {
+            Vec::new()
+        };
+        towns.push(load_town);
+        towns.extend(middle.iter().map(|stop| stop.town_index));
+        towns.push(load_town);
+        let ship_type = p3_api::ships::ShipsPtr::new().get_ship(ship_index).map(|ship| ship.get_type());
+        match ship_type.and_then(|t| route_duration_days(&towns, t)) {
+            Some(lap) if lap as i32 != days => {
+                days = lap as i32;
+                continue; // rebuild the baskets with the real lap
+            }
+            Some(_) => {}
+            None => {
+                warn!("route: lap duration unavailable (router failed a leg) - keeping the 7-day load");
+                crate::ffi::notify("Route: lap time unavailable, loading a week");
+            }
+        }
+    }
+    break (total_load, middle, described);
+    };
 
     // The two collection templates load nothing at home and only ever bring goods back,
     // so they use the one-stop home bracket: the leading home stop transfers the hold into
@@ -634,15 +670,16 @@ pub(crate) unsafe fn on_route_hotkey(kind: RouteKind, append: bool, alt: bool) {
                 fetch_buys.map(|buys| ware_names(&buys).join(", ")).unwrap_or_default(),
                 if every_town { " every town, producer or not," } else { "" }
             ),
-            (_, true) => "supply (skipping the low-value inputs)".to_string(),
-            (_, false) => "supply".to_string(),
+            (_, true) => format!("supply {days}-day loads (skipping the low-value inputs) to"),
+            (_, false) => format!("supply {days}-day loads to"),
         };
+        let lap_note = if scale_to_lap { format!(", {days}-day lap") } else { String::new() };
         info!(
-            "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops)",
+            "route {kind:?} {action} {name:?}: from {load_town_name}, {verb} [{}] (route now {stop_count} stops{lap_note})",
             described.join(", ")
         );
         crate::ffi::notify(&format!(
-            "{kind:?} route {action} {route_name}: {} targets from {load_town_name}, {stop_count} stops",
+            "{kind:?} route {action} {route_name}: {} targets from {load_town_name}, {stop_count} stops{lap_note}",
             described.len()
         ));
     }

@@ -94,20 +94,30 @@ const OWNER_DIALOG: &std::ffi::CStr = c"auto-supply goods dialog";
 /// dump. (The F9/F10 debug probes live in mod-crash-reporter now.) The handlers
 /// never swallow, exactly like the old all-seeing hook, which always fell through
 /// to CallNextHookEx.
-const GLOBAL_KEYS: [(u32, u32); 20] = [
+const GLOBAL_KEYS: [(u32, u32); 28] = [
     (TOWN_DUMP_KEY, 0),
     (ROUTE_TRADE_KEY, 0),
     (ROUTE_TRADE_KEY, MOD_SHIFT),
     (ROUTE_TRADE_KEY, MOD_ALT),
     (ROUTE_TRADE_KEY, MOD_ALT | MOD_SHIFT),
+    // The supply templates: CTRL scales the load to the route's computed lap time
+    // instead of the fixed week, and combines with SHIFT (append) and ALT (filter).
     (ROUTE_5STOP_KEY, 0),
     (ROUTE_5STOP_KEY, MOD_SHIFT),
     (ROUTE_5STOP_KEY, MOD_ALT),
     (ROUTE_5STOP_KEY, MOD_ALT | MOD_SHIFT),
+    (ROUTE_5STOP_KEY, MOD_CTRL),
+    (ROUTE_5STOP_KEY, MOD_CTRL | MOD_SHIFT),
+    (ROUTE_5STOP_KEY, MOD_CTRL | MOD_ALT),
+    (ROUTE_5STOP_KEY, MOD_CTRL | MOD_ALT | MOD_SHIFT),
     (ROUTE_6STOP_KEY, 0),
     (ROUTE_6STOP_KEY, MOD_SHIFT),
     (ROUTE_6STOP_KEY, MOD_ALT),
     (ROUTE_6STOP_KEY, MOD_ALT | MOD_SHIFT),
+    (ROUTE_6STOP_KEY, MOD_CTRL),
+    (ROUTE_6STOP_KEY, MOD_CTRL | MOD_SHIFT),
+    (ROUTE_6STOP_KEY, MOD_CTRL | MOD_ALT),
+    (ROUTE_6STOP_KEY, MOD_CTRL | MOD_ALT | MOD_SHIFT),
     (ROUTE_SUCK_KEY, 0),
     (ROUTE_SUCK_KEY, MOD_SHIFT),
     (ROUTE_SUCK_KEY, MOD_ALT),
@@ -120,7 +130,7 @@ const GLOBAL_KEYS: [(u32, u32); 20] = [
     (ROUTE_SUCK_KEY, MOD_CTRL | MOD_ALT),
     (CLEAR_ROUTE_KEY, 0),
 ];
-static GLOBAL_HANDLES: [AtomicU32; 20] = [const { AtomicU32::new(0) }; 20];
+static GLOBAL_HANDLES: [AtomicU32; 28] = [const { AtomicU32::new(0) }; 28];
 
 /// Office keys, registered while a trading office window is open (its vtable
 /// open/close hooks below): F1 and the price-level keys.
@@ -322,7 +332,7 @@ unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
     match (vk, mods) {
         (TOWN_DUMP_KEY, 0) => on_town_dump_hotkey(),
         (ROUTE_TRADE_KEY, m) => {
-            crate::routes::on_route_hotkey(crate::routes::RouteKind::Trade, m & MOD_SHIFT != 0, m & MOD_ALT != 0);
+            crate::routes::on_route_hotkey(crate::routes::RouteKind::Trade, m & MOD_SHIFT != 0, m & MOD_ALT != 0, false);
             if m & MOD_ALT != 0 {
                 // The only global key that swallows, and not for shadowing: ALT+F4 is
                 // the OS close-window chord, and letting it travel on to
@@ -334,18 +344,19 @@ unsafe extern "C" fn global_hotkeys(vk: u32, mods: u32) -> u32 {
         }
         // One key per template. SHIFT appends the generated route to the existing one
         // instead of replacing it; ALT narrows the supply basket to skip the
-        // [NO_SUPPLY_WARES]. F1 only reaches here when no office window or goods dialog
-        // is open - theirs shadows it and swallows the key.
+        // [NO_SUPPLY_WARES]; CTRL scales the load to the route's lap time instead of a
+        // week. F1 only reaches here when no office window or goods dialog is open -
+        // theirs shadows it and swallows the key.
         (ROUTE_5STOP_KEY, m) => {
-            crate::routes::on_route_hotkey(crate::routes::RouteKind::FiveStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0)
+            crate::routes::on_route_hotkey(crate::routes::RouteKind::FiveStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0, m & MOD_CTRL != 0)
         }
         (ROUTE_6STOP_KEY, m) => {
-            crate::routes::on_route_hotkey(crate::routes::RouteKind::SixStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0)
+            crate::routes::on_route_hotkey(crate::routes::RouteKind::SixStop, m & MOD_SHIFT != 0, m & MOD_ALT != 0, m & MOD_CTRL != 0)
         }
         // CTRL turns F3 into the fetch template, which reads its wares off the ship - so
         // it never appends, and ALT widens its target list to every town.
-        (ROUTE_SUCK_KEY, m) if m & MOD_CTRL != 0 => crate::routes::on_route_hotkey(crate::routes::RouteKind::Fetch, false, m & MOD_ALT != 0),
-        (ROUTE_SUCK_KEY, m) => crate::routes::on_route_hotkey(crate::routes::RouteKind::Suck, m & MOD_SHIFT != 0, m & MOD_ALT != 0),
+        (ROUTE_SUCK_KEY, m) if m & MOD_CTRL != 0 => crate::routes::on_route_hotkey(crate::routes::RouteKind::Fetch, false, m & MOD_ALT != 0, false),
+        (ROUTE_SUCK_KEY, m) => crate::routes::on_route_hotkey(crate::routes::RouteKind::Suck, m & MOD_SHIFT != 0, m & MOD_ALT != 0, false),
         // Internally guarded on the goods dialog being closed, as before.
         (CLEAR_ROUTE_KEY, 0) => crate::routes::on_clear_route_hotkey(),
         _ => {}
