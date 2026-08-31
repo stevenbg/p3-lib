@@ -1,8 +1,13 @@
 use map::TownMapPtr;
+use num_traits::FromPrimitive;
 use shipyard::ShipyardPtr;
 
 use crate::{
-    data::{enums::TownId, p3_ptr::P3Pointer, storage::StoragePtr},
+    data::{
+        enums::{TownId, WareId},
+        p3_ptr::P3Pointer,
+        storage::StoragePtr,
+    },
     facility::{FacilityPtr, FACILITY_SIZE},
     latin1_ptr_to_string,
 };
@@ -25,14 +30,27 @@ pub const TOWN_SLOTS: u8 = 40;
 /// Bits of the town flag word at `+0x2C8` ([TownPtr::get_flags]). The four crisis
 /// bits are the mask `0x04000A10` that `update_town_price_thresholds` tests at
 /// `0x005280B7`.
-/// Blocks beggar growth entirely (`0x0051C1xx`), and with it the feed-the-poor influx:
-/// the influx tests `flags & 0x800008 == 0x800000`, so a town carrying this gets nothing
-/// and does not even consume the trigger bit.
-pub const TOWN_FLAG_NO_BEGGAR_GROWTH: u32 = 0x8;
+/// The town has an active **plague** (identified 30 Aug 2026): scheduled task `0x1C`'s
+/// handler (`0x004E9094`) sets it at `0x004E9453` while posting the "Outbreak of the
+/// plague in %s" event (type `0x12`) and letters to every merchant, and clears it at
+/// `0x004E9486` when the outbreak ends. Blocks beggar growth entirely (`0x0051C16D`),
+/// and with it the feed-the-poor influx: the influx tests
+/// `flags & 0x800008 == 0x800000`, so a plagued town gets nothing and does not even
+/// consume the trigger bit.
+pub const TOWN_FLAG_PLAGUE: u32 = 0x8;
+/// The old name for [TOWN_FLAG_PLAGUE], from before the flag was identified - kept so
+/// the effect-based name stays greppable.
+pub const TOWN_FLAG_NO_BEGGAR_GROWTH: u32 = TOWN_FLAG_PLAGUE;
 pub const TOWN_FLAG_WINTER: u32 = 0x2;
 pub const TOWN_FLAG_SIEGE: u32 = 0x10;
 pub const TOWN_FLAG_BLOCKADE: u32 = 0x200;
 pub const TOWN_FLAG_PIRATE_ATTACK: u32 = 0x800;
+/// The town is in **famine** (identified 31 Aug 2026). Set at `0x00527F2F` once the
+/// food-shortage tally `town+0x2C3` passes `0x50`, cleared at `0x0052803A`; setting it
+/// posts the "Famine in %s" event and letter. It **doubles the doubling** of a
+/// celebration's ware consumption - `0x005004C0` tests bit 12 of the flags and scales
+/// the per-guest amounts by 4 instead of 2.
+pub const TOWN_FLAG_FAMINE: u32 = 0x1000;
 /// The port is iced in. Set by the daily ice pass (`0x004E48CA`, which posts "The
 /// port of %s is frozen.") and cleared by scheduled task `0x35` (`0x004E94A4`,
 /// "The port of %s is open again."). See `.claude/notes/done/port-freezing.md`.
@@ -75,6 +93,16 @@ pub const TOWN_BUILDING_SHIPYARD: u32 = 0x1_0000;
 
 pub const WARE_BASE_PRICES: *const f32 = 0x00673A18 as _;
 
+/// A celebration's **per-guest base consumption**, one byte per ware, indexed by
+/// [crate::data::enums::WareId] `0..8` (Grain..Wine): 3, 2, 2, 2, 0, 1, 0, 2. Salt and
+/// Spices read `0` and are skipped by both readers, which is why a celebration can only
+/// ever satisfy six wares - the hardcoded `/6` in its attendance math. Read by the
+/// celebration task's attendance loop (`0x004E2491`) and by its consumption routine
+/// (`0x005004C0`). See [TownPtr::get_celebration_consumption].
+pub const CELEBRATION_BASE_CONSUMPTION_TABLE_ADDRESS: u32 = 0x006734E8;
+/// How many wares the celebration tables cover: Grain..Wine.
+pub const CELEBRATION_WARE_COUNT: usize = 8;
+
 #[derive(Debug)]
 pub struct TownPtr {
     pub address: u32,
@@ -107,6 +135,51 @@ impl TownPtr {
     /// [town+0x64+i*4] + [town+0x310+i*4] + 1.
     pub fn get_daily_consumptions_businesses(&self) -> [i32; 24] {
         unsafe { self.get(0x64) }
+    }
+
+    /// What a celebration attended by `guests` guests eats out of the host's office, in
+    /// raw units per ware - the game's own formula (`0x005004C0`, called by the
+    /// celebration task at `0x004E2506` with the guest count): the per-guest base from
+    /// [CELEBRATION_BASE_CONSUMPTION_TABLE_ADDRESS] times the guests, **doubled** - or
+    /// quadrupled while the town is in [TOWN_FLAG_FAMINE] - then rounded up to whole
+    /// in-game units. Zero for everything but Grain, Meat, Fish, Beer, Honey and Wine.
+    ///
+    /// This is twice what a ware needs for the celebration's **level** - see
+    /// [TownPtr::get_celebration_level_requirement]. A ware that cannot cover its share is
+    /// emptied to `0` (`0x005005A3`) and costs nothing beyond the stock, the level having
+    /// been decided before any of it is removed.
+    /// The office stock each ware must reach for a celebration to count it toward its
+    /// **level**, in raw units: the attendance test at `0x004E2491`, `base * attendees`
+    /// with neither the doubling of
+    /// [TownPtr::get_celebration_consumption] nor any rounding - the raw product is
+    /// compared straight against the stock. Six wares can qualify and every two of them
+    /// are one level, so this is the whole cost of a top celebration; stocking more only
+    /// feeds the doubled consumption, which buys nothing.
+    ///
+    /// `attendees` is the game's `citizens * attendance_ratio / 100` (the ratio is
+    /// `39 + reputation`, capped at 99), so the full citizen count is the safe upper bound.
+    pub fn get_celebration_level_requirement(&self, attendees: i32) -> [i32; 24] {
+        let mut required = [0i32; 24];
+        for (ware_index, amount) in required.iter_mut().enumerate().take(CELEBRATION_WARE_COUNT) {
+            let base = unsafe { *((CELEBRATION_BASE_CONSUMPTION_TABLE_ADDRESS + ware_index as u32) as *const u8) } as i32;
+            *amount = base.saturating_mul(attendees);
+        }
+        required
+    }
+
+    pub fn get_celebration_consumption(&self, guests: i32) -> [i32; 24] {
+        let multiplier = if self.get_flags() & TOWN_FLAG_FAMINE != 0 { 4 } else { 2 };
+        let mut consumption = [0i32; 24];
+        for (ware_index, amount) in consumption.iter_mut().enumerate().take(CELEBRATION_WARE_COUNT) {
+            let base = unsafe { *((CELEBRATION_BASE_CONSUMPTION_TABLE_ADDRESS + ware_index as u32) as *const u8) } as i32;
+            let raw = base.saturating_mul(guests).saturating_mul(multiplier);
+            if raw <= 0 {
+                continue;
+            }
+            let scaling = WareId::from_u16(ware_index as u16).map_or(1, |ware_id| ware_id.get_scaling());
+            *amount = (raw + scaling - 1) / scaling * scaling;
+        }
+        consumption
     }
 
     /// The town's NOMINAL daily production in raw units: capacity at full

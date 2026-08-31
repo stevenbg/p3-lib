@@ -32,7 +32,7 @@ because it opened last.
 | Key | Action |
 |-----|--------|
 | F1 (office window) | Setup: every ware without an order becomes BUY if the town produces it, SELL otherwise, at the Q price levels (buy par, sell supply price). Existing orders are untouched; a buy's amount is set to 20 loads / 200 barrels (the same quantity either way) only if it is currently 0. |
-| Ctrl + F1 | Provision the celebration goods (beer, wine, fish, meat, grain, honey - a celebration needs them in stock): raise their amounts to a week of the town's citizen consumption - never lowering - and lock their quantities ("Lock min. store quantity for auto trade ships"), so route ships cannot take the stock. Directions and prices untouched. |
+| Ctrl + F1 | Provision the celebration goods (beer, wine, fish, meat, grain, honey - the six wares a celebration counts): raise their amounts to what a **top-level celebration for the town's whole population requires in stock** - never lowering - and lock their quantities ("Lock min. store quantity for auto trade ships"), so route ships cannot take the stock. Directions and prices untouched. The amount is the game's own attendance test, a flat per-guest figure per ware (grain 3, meat 2, fish 2, beer 2, honey 1, wine 2) times the guests, rounded up to whole units; both the ware list and the per-guest figures are read from the game's table rather than written out here. Two deliberate choices: guests are the full citizen count, an upper bound since real attendance caps at 99%, and the target is the level requirement rather than the doubled amount a feast actually eats - the second half disappears without improving the celebration |
 | Alt + F1 | Provision the building materials, enough for any building or ship (cloth 10, hemp 8, pitch 50, bricks 80, timber 50, iron goods 50): raise the amounts to those - never lowering - and lock the quantities, like Ctrl+F1. |
 | Ctrl + Q W E R T Y | Set the BUY prices to that price level (see below): in the route window's goods dialog ("Automatic maritime trading"), every buy order of the stop being edited; otherwise every buy order of the administrator view |
 | Alt + Q W E R T Y | The same for SELL prices |
@@ -47,22 +47,21 @@ because it opened last.
 | Alt + F3 / F4 | Buys the no-buy wares (pitch, timber, salt, bricks, grain, hemp) as well |
 | Alt + Ctrl + F3 | Calls at **every** town rather than only the ones that produce a wanted ware |
 | Shift + F1 / F2 / F3 / F4 | Any of the above, but targeting just the currently open town and APPENDING the generated stops to the existing route instead of replacing it (combines with Alt) |
+| F1 (goods dialog) | With the route window's goods dialog open: fill the displayed stop's empty ware slots - buy what the stop's town produces at the Ctrl+R price (Ctrl+F1 includes the no-buy wares), sell everything else at the Alt+R price, Max amounts. Existing instructions, office transfers included, stay untouched |
+| Alt + F1 (goods dialog) | Set the displayed stop's QUANTITIES to what the route's supplied towns require right now - a week of each one's current citizen and business consumption, all goods, summed over the unique route towns minus the first stop's. Quantities only: prices, directions and the instruction order stay untouched. Meant for refreshing a supply route's home load stop as the towns grow |
+| Ctrl + Alt + F1 (goods dialog) | The same, but for the route's **actual lap time** instead of a fixed week: the summed leg travel times (the game's own formula, full load and full hull) plus the 6-hour dwell per stop, rounded up to whole days. A short route loads less than a week, a long one more |
+| DEL (office window) | Reset: every ware back to no order, amount 0, and "lock amount" unticked. The inverse of the office F1 - setup only fills in wares that have no order, so this is what makes it repeatable |
+| DEL | Clear the selected ship's route entirely (own ships only; refused while the goods dialog is open, since it displays a stop of that route). The route is saved to `_backup.rou` first, and the ship is given a fresh name from the game's own ship-name pool - the route keys name a ship after its towns, so a cleared ship should not keep advertising a route it no longer has |
 
 Alt is a filter everywhere, and on Ctrl+F3 the filter it relaxes is the one over **towns**
 rather than wares - the ware list there is written out by hand, so there is nothing left to
 widen. Ctrl+F3 takes no Shift: its targets are derived, so Shift's single open town has
 nothing to say.
 
-
 Alt is always a ware filter, never a quantity: it widens what a buying template takes and
 narrows what a supplying template carries. On F1 and F2 it does not touch the buy half of
 an office-less target's stop - those keep leaving the no-buy wares alone, so one press
 cannot free hold space and refill it at the same time.
-| F1 (goods dialog) | With the route window's goods dialog open: fill the displayed stop's empty ware slots - buy what the stop's town produces at the Ctrl+R price (Ctrl+F1 includes the no-buy wares), sell everything else at the Alt+R price, Max amounts. Existing instructions, office transfers included, stay untouched |
-| Alt + F1 (goods dialog) | Set the displayed stop's QUANTITIES to what the route's supplied towns require right now - a week of each one's current citizen and business consumption, all goods, summed over the unique route towns minus the first stop's. Quantities only: prices, directions and the instruction order stay untouched. Meant for refreshing a supply route's home load stop as the towns grow |
-| Ctrl + Alt + F1 (goods dialog) | The same, but for the route's **actual lap time** instead of a fixed week: the summed leg travel times (the game's own formula, full load and full hull) plus the 6-hour dwell per stop, rounded up to whole days. A short route loads less than a week, a long one more |
-| DEL (office window) | Reset: every ware back to no order, amount 0, and "lock amount" unticked. The inverse of the office F1 - setup only fills in wares that have no order, so this is what makes it repeatable |
-| DEL | Clear the selected ship's route entirely (own ships only; refused while the goods dialog is open, since it displays a stop of that route). The route is saved to `_backup.rou` first, and the ship is given a fresh name from the game's own ship-name pool - the route keys name a ship after its towns, so a cleared ship should not keep advertising a route it no longer has |
 
 In the goods dialog the price keys refresh the display the way the dialog's own stop
 arrows do, which starts a new Undo session: Undo covers changes made since - the same

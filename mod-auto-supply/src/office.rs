@@ -17,9 +17,6 @@ use p3_api::{
 
 use crate::prices::{buy_price, sell_price, PriceLevel};
 
-/// The wares Ctrl+F1 provisions and locks in the office: what a celebration needs in
-/// stock.
-const LOCKED_STAPLES: [WareId; 6] = [WareId::Beer, WareId::Wine, WareId::Fish, WareId::Meat, WareId::Grain, WareId::Honey];
 /// What Alt+F1 provisions and locks: building materials (in-game units) covering any
 /// building or ship.
 const LOCKED_BUILDING_MATERIALS: [(WareId, i32); 6] = [
@@ -209,17 +206,29 @@ pub(crate) unsafe fn on_reset_office_hotkey() {
     refresh_administrator_view();
 }
 
-/// Ctrl+F1: provision and lock the [LOCKED_STAPLES] at a week of the town's citizen
-/// consumption.
+/// Ctrl+F1: provision and lock the celebration goods, at the stock a top-level
+/// celebration requires - [p3_api::town::TownPtr::get_celebration_level_requirement],
+/// rounded up to whole in-game units.
+///
+/// The requirement, not the doubled
+/// [consumption](p3_api::town::TownPtr::get_celebration_consumption): the second half is
+/// eaten without improving the celebration. Attendees are the whole citizen count on
+/// purpose - the real figure is `citizens * ratio / 100` with the ratio capped at 99 - so
+/// the amounts cover the best celebration the town could throw.
 pub(crate) unsafe fn on_lock_staples_hotkey() {
     let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
-    let citizens = GAME_WORLD_PTR.get_town(town_index).get_daily_consumptions_citizens();
-    let targets = LOCKED_STAPLES.map(|ware_id| {
-        let scaling = ware_id.get_scaling();
-        let weekly = citizens[ware_id as usize].saturating_mul(7);
-        (ware_id, (weekly + scaling - 1) / scaling * scaling)
-    });
-    provision_and_lock("celebration goods", &targets);
+    let town = GAME_WORLD_PTR.get_town(town_index);
+    let attendees = town.get_citizens();
+    let required = town.get_celebration_level_requirement(attendees);
+    let targets: Vec<(WareId, i32)> = crate::ffi::TRADE_WARES
+        .filter(|&ware_index| required[ware_index as usize] > 0)
+        .map(|ware_index| {
+            let ware_id = WareId::from_u16(ware_index).unwrap();
+            let scaling = ware_id.get_scaling();
+            (ware_id, (required[ware_index as usize] + scaling - 1) / scaling * scaling)
+        })
+        .collect();
+    provision_and_lock(&format!("celebration goods for {attendees} guests"), &targets);
 }
 
 /// Alt+F1: provision and lock the [LOCKED_BUILDING_MATERIALS].
