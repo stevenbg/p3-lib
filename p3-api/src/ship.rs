@@ -134,6 +134,23 @@ impl ShipPtr {
         unsafe { self.get(0x114) }
     }
 
+    /// The ship's 24 artillery slots, one byte each: `0..5` a
+    /// [crate::data::enums::ShipWeaponId], `6` the second slot of a large weapon
+    /// (whose type byte sits in the even slot before it), `7` a slot this hull does not
+    /// have, `0xFF` empty. The weapons operation `0x09` (`0x00538210`) walks exactly
+    /// this array to move guns between ship and office.
+    pub fn get_artillery_slots(&self) -> [u8; 24] {
+        unsafe { self.get(0x13c) }
+    }
+
+    /// The cutlasses aboard - the crew's boarding weapons, which are **not** wares and
+    /// not artillery: one word right behind the artillery slots, moved by operation
+    /// `0x09` with a weapon type of `6` or above, against the office's own count at
+    /// `office+0x2BC`.
+    pub fn get_cutlasses(&self) -> u16 {
+        unsafe { self.get(0x154) }
+    }
+
     /// The ship's captain as an auto-trader index, out-of-range = none. The AI hire
     /// path (0x51a1b9) fills it from the town's tavern captain (resolver 0x5269a0)
     /// and unlinks the record from the town's chain.

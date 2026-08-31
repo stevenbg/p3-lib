@@ -1,5 +1,9 @@
 use crate::data::enums::WareId;
 
+/// The weapon type that means "cutlasses" to [Operation::ShipMoveWeapons]: the handler
+/// treats anything from 6 up as cutlasses, artillery being 0..5.
+pub const CUTLASS_WEAPON_TYPE: u32 = 6;
+
 #[derive(Debug)]
 pub enum Operation {
     MoveShipToTown {
@@ -52,6 +56,26 @@ pub enum Operation {
         ship_index: u16,
         ware_id: WareId,
         merchant_index: u16,
+        to_ship: bool,
+    },
+    /// Move artillery or cutlasses between a ship and the owner's office in the town it
+    /// lies in (opcode 0x09, handler 0x00538210).
+    ///
+    /// `weapon_type` is a [crate::data::enums::ShipWeaponId] for artillery, or
+    /// [CUTLASS_WEAPON_TYPE] and above for the crew's cutlasses. `amount` counts guns
+    /// (not slots: a large weapon holds two slots but is one gun) or cutlasses.
+    ///
+    /// Guards: the town must be the ship's own (`ship+0x39`), the ship must be in port
+    /// (`ship+0x134 < 4`), and the owner must have an office there. A ship that is its
+    /// **convoy's lead is refused** unless the convoy carries flag `0x2`. Unloading
+    /// credits `office+0x124 + type*4` for artillery and `office+0x2BC` for cutlasses;
+    /// loading is clamped to the office's stock and, for cutlasses, to a tenth of the
+    /// ship's free capacity.
+    ShipMoveWeapons {
+        weapon_type: u32,
+        town_index: u32,
+        ship_index: u32,
+        amount: i32,
         to_ship: bool,
     },
     MoveWaresConvoy {
@@ -226,6 +250,23 @@ impl Operation {
                 op[0x0a..0x0c].copy_from_slice(&ware_id.to_le_bytes());
                 op[0x0c..0x0e].copy_from_slice(&merchant_index.to_le_bytes());
                 op[0x0e] = *to_ship as u8;
+            }
+            Operation::ShipMoveWeapons {
+                weapon_type,
+                town_index,
+                ship_index,
+                amount,
+                to_ship,
+            } => {
+                let opcode: u32 = 0x09;
+                // The direction rides in the sign bit of the town field: set means
+                // ship -> office (0x005382A1 tests for exactly 0x80000000).
+                let town = if *to_ship { *town_index } else { town_index | 0x8000_0000 };
+                op[0x00..0x04].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&weapon_type.to_le_bytes());
+                op[0x08..0x0c].copy_from_slice(&town.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&ship_index.to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&amount.to_le_bytes());
             }
             Operation::MoveWaresConvoy {
                 raw_amount: amount,

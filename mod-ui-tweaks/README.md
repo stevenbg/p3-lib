@@ -77,6 +77,32 @@ ran short). The hires go through the real hire operation (opcode `0x04`, handler
 (`0x004F6CA0`) and the town's beggars. The keys are consumed only when a player ship is
 selected; otherwise the game still sees them.
 
+## CTRL+X strips a ship bare
+
+Everything a captured prize needs, in one press. With a player ship selected and docked
+in a town where the player has a trading office:
+
+1. **all cargo into the office**, ware by ware (opcode `0x08`, handler `0x00538100`,
+   which credits the office at the price the ship carried the goods at);
+2. **all artillery and cutlasses into the office** (opcode `0x09`, handler
+   `0x00538210`): one operation per gun type present, counted off the ship's 24 slot
+   bytes at `ship+0x13C`, plus the cutlasses from `ship+0x154`;
+3. **the whole crew dismissed** into the town (opcode `0x05`), as CTRL+ALT+S does;
+4. **a repair ordered** at the town's shipyard (opcode `0x03`, handler `0x0052ACD0`).
+
+The repair goes last because it puts the ship into status `4`, and every transfer above
+requires a status below `4`. **It also charges the full repair price immediately**, with
+no confirmation - that is the point of the key, but it does spend money.
+
+Refused for a **convoy's lead ship**: the weapons operation rejects one anyway unless the
+convoy carries flag `0x2`, so the key declines the whole sequence rather than half-doing
+it. Also refused when the ship is not docked, or when there is no office in the town to
+put anything into. A ticker message reports what moved (`Hansa stripped in Lübeck:
+9 wares, 4 guns, 30 cutlasses, 18 sailors - repair ordered`).
+
+The operations are executed rather than queued: a fully loaded ship is more than thirty
+of them, which is most of the pending queue's 52 slots.
+
 ## Pirate attacks no longer interrupt fast forward
 
 When a notorious pirate robs someone else's ship the game announces
