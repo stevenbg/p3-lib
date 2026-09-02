@@ -12,6 +12,7 @@ pub mod navigation_vector;
 pub mod navpoint_matrix;
 pub mod office;
 pub mod p3_ptr;
+pub mod route_stop;
 pub mod screen_game_ini_anim;
 pub mod screen_rectangle;
 pub mod statics;
@@ -29,8 +30,15 @@ pub fn get_resolution_height() -> u32 {
     unsafe { *RESOLUTION_HEIGHT_PTR }
 }
 
+/// `0xAARRGGBB`, and the alpha byte is honoured - a [ddraw_fill_solid_rect] at `0x80......`
+/// draws a translucent plate. Everything the game itself draws passes `0xFF`.
+///
+/// This is the exe's thunk to `sgl_SetConstantColor`, not the library's own entry
+/// (`ddraw_dll.dll + 0xF790`): the DLL's `0x05000000` is only a *preferred* base, so an
+/// address inside it is valid only while nothing else has claimed that range, whereas the
+/// exe has an empty relocation table and the loader fills the thunk's slot.
 pub fn ddraw_set_constant_color(color: u32) {
-    let function: extern "cdecl" fn(color: u32) = unsafe { mem::transmute(0x0500F790) };
+    let function: extern "cdecl" fn(color: u32) = unsafe { mem::transmute(0x004BB870u32) };
     function(color)
 }
 

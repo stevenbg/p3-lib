@@ -61,14 +61,64 @@ pub fn ddraw_set_font(font: DdrawFontPtr) {
     function(font.address as _)
 }
 
+/// The game's global fonts, an array of containers of stride `0xA8` based at
+/// [FONT_CONTAINER_BASE]. There are **six**, and they are `scripts/fonts.ini`'s `Font0`
+/// through `Font5` in order:
+///
+/// |Index|Address|`fonts.ini`|Face|Params (w h spacing)|
+/// |-|-|-|-|-|
+/// |0|`0x006DCD28`|`Font0`|`tiepolo_black16.aim`|15 16 0|
+/// |1|`0x006DCDD0`|`Font1`|`tiepolo_bold16.aim`|15 16 0|
+/// |2|`0x006DCE78`|`Font2`|`tiepolo_black20.aim`|19 20 0|
+/// |3|`0x006DCF20`|`Font3`|`elgreco24.aim` (kerning)|26 24 0|
+/// |4|`0x006DCFC8`|`Font4`|`tiepolo_bold24.aim`|25 24 0|
+/// |5|`0x006DD070`|`Font5`|`elgreco72.aim`|80 75 0|
+///
+/// All six are referenced from code (458, 290, 90, 60, 30 and 13 times respectively);
+/// index 6 is not a font container. The pairing of container index to `fonts.ini` index
+/// follows from the counts and the ordering rather than from a decoded loader.
+///
+/// Note **0 and 1 are the same size** - Tiepolo Black against Tiepolo Bold - so index 0
+/// is *heavier* than index 1, not larger.
+pub const FONT_CONTAINER_BASE: u32 = 0x006D_CD28;
+pub const FONT_CONTAINER_STRIDE: u32 = 0xA8;
+pub const FONT_COUNT: u32 = 6;
+
+/// One of the six global fonts by index; falls back to index 1 when out of range.
+pub fn get_font(index: u32) -> DdrawFontPtr {
+    let index = if index < FONT_COUNT { index } else { 1 };
+    DdrawFontContainerPtr::new(FONT_CONTAINER_BASE + index * FONT_CONTAINER_STRIDE).get_font()
+}
+
+/// `Font1`, `tiepolo_bold16` - the body text of the parchment pages and panels.
 pub fn get_normal_font() -> DdrawFontPtr {
-    DdrawFontContainerPtr::new(0x006DCDD0).get_font()
+    get_font(1)
 }
 
+/// `Font0`, `tiepolo_black16` - the same size as [get_normal_font] in the heavier Black
+/// weight, which is what the game uses for headings.
 pub fn get_header_font() -> DdrawFontPtr {
-    DdrawFontContainerPtr::new(0x006DCD28).get_font()
+    get_font(0)
 }
 
+/// `Font2`, `tiepolo_black20` - Black weight at 20px, the heaviest face that is still
+/// close to body size.
+pub fn get_black20_font() -> DdrawFontPtr {
+    get_font(2)
+}
+
+/// `Font3`, `elgreco24` - a different typeface entirely, kerned, used for the town names
+/// drawn over the scrollmap.
 pub fn get_scrollmap_town_name_font() -> DdrawFontPtr {
-    DdrawFontContainerPtr::new(0x006DCF20).get_font()
+    get_font(3)
+}
+
+/// `Font4`, `tiepolo_bold24`.
+pub fn get_bold24_font() -> DdrawFontPtr {
+    get_font(4)
+}
+
+/// `Font5`, `elgreco72` - the title face, 75px tall.
+pub fn get_title_font() -> DdrawFontPtr {
+    get_font(5)
 }
