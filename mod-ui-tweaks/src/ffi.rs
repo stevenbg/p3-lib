@@ -184,8 +184,13 @@ pub unsafe extern "C" fn start() -> u32 {
         return 6;
     }
 
+    if let Err(what) = crate::route_load::install() {
+        error!("failed to hook {what}");
+        return 7;
+    }
+
     info!(
-        "loaded: numpad * / numpad / scale time x1/x2/x4/x8; pirate attacks are suppressed while in fast forward; auction announced at {:#04x}/256 of the day",
+        "loaded: numpad * / numpad / scale time x1/x2/x4/x8; pirate attacks are suppressed while in fast forward; auction announced at {:#04x}/256 of the day; the first stop's load requirement is drawn on the panel's Auto trade view",
         AUCTION_ANNOUNCE_TIME_OF_DAY
     );
     0
