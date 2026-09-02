@@ -49,7 +49,9 @@ const DEBUG_PROBE2_KEY: u32 = VK_F10.0 as u32;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 14] = [
+const PROBE_KEYS: [(u32, u32); 16] = [
+    // The sea-battle hull write watch: arm Dr0 on the selected ship's hull.
+    (DEBUG_PROBE1_KEY, MOD_CTRL | MOD_SHIFT | MOD_ALT),
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
@@ -70,6 +72,8 @@ const PROBE_KEYS: [(u32, u32); 14] = [
     // The convoy-leader probe, for teaching mod-auto-supply's route keys to work on a
     // convoy selection.
     (DEBUG_PROBE2_KEY, MOD_CTRL | MOD_SHIFT),
+    // The beggar-target dump, moved off plain F9 when the spouse probe took it.
+    (DEBUG_PROBE2_KEY, MOD_CTRL | MOD_SHIFT | MOD_ALT),
 ];
 
 /// Bind the registry and register the probe keys; called from start(). A missing
@@ -85,6 +89,7 @@ pub unsafe fn install() {
         }
         Err(reason) => log::warn!("hotkeys registry unavailable ({reason}) - debug probes inert"),
     }
+    install_battle_probe();
 }
 
 /// Session-global; the registrations live for the whole process, so the handles are
@@ -98,13 +103,15 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_SHIFT | MOD_ALT => toggle_probe_d3d9_watch(),
-        (DEBUG_PROBE1_KEY, 0) => debug_probe_route_travel_time(),
+        (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT | MOD_ALT => watch_selected_ship_hull(),
+        (DEBUG_PROBE1_KEY, 0) => debug_probe_panel_view(),
         (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
         (DEBUG_PROBE2_KEY, MOD_ALT) => retire_probe_inspect(),
         (DEBUG_PROBE2_KEY, m) if m == MOD_ALT | MOD_CTRL => retire_probe_benign(),
         (DEBUG_PROBE2_KEY, m) if m == MOD_ALT | MOD_SHIFT => retire_probe_hang(),
         (DEBUG_PROBE2_KEY, m) if m == MOD_CTRL | MOD_SHIFT => debug_probe_convoy(),
+        (DEBUG_PROBE2_KEY, m) if m == MOD_CTRL | MOD_SHIFT | MOD_ALT => debug_probe_beggar_target(),
         (DEBUG_PROBE2_KEY, 0) => debug_probe_town_levy(),
         _ => {}
     }
@@ -359,6 +366,101 @@ unsafe fn dump_ship_routes() {
 /// 0x18), the record count word at `0x006DD748` (valid slots are `< count`, the same test
 /// the auction reader uses). Record: `+0x0` due time dword, `+0x4` word, `+0x6` kind
 /// word, `+0x8`..`+0x17` four data dwords.
+/// F9 (rewritten per investigation, 31 Aug 2026): why does every town sit at 8 beggars?
+///
+/// The target the pool drifts toward (`0x0051C0E0`) reads the **fourth** satisfaction
+/// slot, `town+0x306` - the beggars' own - and short-circuits to a flat 8 when it is
+/// `<= 0`. `update_citizen_satisfaction` (`0x0051C830`) computes only the three class
+/// slots, and the exe's single writer of the beggar slot is the siege-repel bonus
+/// (`0x00629A50`, +20 to all four, the known bug), so an unbesieged town should read
+/// exactly 0 here no matter how content its citizens are.
+///
+/// Dumps per town: the four satisfactions, the class counts, the live pool, the target
+/// this model predicts, the daily approach rates, and the two things that would override
+/// the floor - the school (x1.3 growth) and the militia, whose employee count is
+/// `facility[0]` and which, at 0, floors an increase at 24 (`0x0051C1CB`).
+///
+/// Reading the pool at exactly the target confirms the model; a beggar satisfaction above
+/// 0 in a town that never fought a siege would refute the "one writer" claim.
+/// Which ship-panel view is showing, so a mod can scope its drawing to one of them.
+///
+/// `panel+0xCC` is the view, with its ids in the fields `+0xD0`..`+0xE8`: measured as
+/// Goods 0, Crew 1, Deck 2, **Auto trade 5**. The neighbouring `+0xB4` is a different
+/// state variable and stayed `1` throughout, which is why both are printed here.
+unsafe fn debug_probe_panel_view() {
+    let panel = UIShipPanelPtr::new();
+    if panel.address == 0 {
+        notify("panel view: the panel does not exist yet");
+        return;
+    }
+    let ids: Vec<String> = [0xd0u32, 0xd4, 0xd8, 0xdc, 0xe0, 0xe4, 0xe8]
+        .iter()
+        .map(|off| format!("+{off:#04x}={}", *((panel.address + off) as *const u32)))
+        .collect();
+    let view = panel.get_view();
+    let selected = panel.get_selected_ship_index();
+    let line = format!(
+        "panel {:#010x} | VIEW +0xCC = {}{} | +0xB4 = {} | ids {} | selected ship {:?}",
+        panel.address,
+        view.map(|v| v.to_string()).unwrap_or_else(|| "<unreadable>".into()),
+        if panel.is_auto_trade_view() { " (AUTO TRADE)" } else { "" },
+        *((panel.address + 0xb4) as *const u32),
+        ids.join(" "),
+        selected,
+    );
+    append_probe_log("_probe_panel_view.log", &[line.clone()]);
+    info!("{line}");
+    notify(&format!(
+        "panel view {}",
+        view.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
+    ));
+}
+
+unsafe fn debug_probe_beggar_target() {
+    let now = GAME_WORLD_PTR.get_game_time_raw();
+    let mut out: Vec<String> = vec![format!("=== beggar target dump | tick {now} ===")];
+    for i in 0..GAME_WORLD_PTR.get_towns_count() as u8 {
+        let town = GAME_WORLD_PTR.get_town(i);
+        if town.address == 0 {
+            continue;
+        }
+        let citizens = town.get_citizens();
+        let classes: [i32; 3] = [
+            *((town.address + 0x2d8) as *const i32),
+            *((town.address + 0x2dc) as *const i32),
+            *((town.address + 0x2e0) as *const i32),
+        ];
+        let beggars = *((town.address + 0x2e4) as *const i32);
+        let sat = town.get_satisfactions();
+        let beggar_sat = *((town.address + 0x306) as *const i16);
+        let target = p3_api::town::beggars::beggar_target(citizens, beggar_sat);
+        let root = (citizens.max(0) as f64).sqrt() as i32;
+        let growth = (root + 4) / 5;
+        let school = town.has_building(p3_api::town::TOWN_BUILDING_SCHOOL);
+        let militia = town.get_facility(0).get_employees();
+        out.push(format!(
+            "{:12} citizens {citizens:5} (r/w/p {}/{}/{}) beggars {beggars:4} | sat r/w/p {}/{}/{} BEGGAR {beggar_sat:4} | target {target:4} {} | +{growth}/day{} -{}/day | militia {militia:4}{} | flags {:#010x}",
+            get_town_name(i).unwrap_or_else(|| format!("<{i}>")),
+            classes[0],
+            classes[1],
+            classes[2],
+            sat[0],
+            sat[1],
+            sat[2],
+            if beggar_sat <= 0 { "(floor)" } else { "(formula)" },
+            if school { " x1.3 school" } else { "" },
+            p3_api::town::beggars::beggar_decay_per_day(citizens),
+            if militia == 0 { " -> increases floored at 24" } else { "" },
+            town.get_flags(),
+        ));
+    }
+    for l in &out {
+        info!("{l}");
+    }
+    append_probe_log("_probe_beggars.log", &out);
+    notify("beggar targets dumped");
+}
+
 /// F9: travel-time breakdown of the SELECTED ship's trade route.
 ///
 /// Per leg (consecutive route towns, closing back to the first): the router's distance
@@ -372,6 +474,7 @@ unsafe fn dump_ship_routes() {
 /// 1/256-day candidate) are printed - compare against an in-game ETA to calibrate.
 /// The idle line assumes the 6-hour dwell per stop (the in-port counter `ship+0x138`
 /// is acted on at 0x40 = 64 ticks = 6 h), so a measured lap can confirm both at once.
+#[allow(dead_code)]
 unsafe fn debug_probe_route_travel_time() {
     const FULL_LOAD_CAPACITY_FACTOR: u32 = 4096 - 614;
     const FULL_HEALTH_FACTOR: u32 = 256;
@@ -2804,6 +2907,623 @@ unsafe fn dump_link_neighbourhood(g: &mut Guarded, node: u32, arrived_from: u32,
             out.push(format!("  {label}{base:#010x} +0x70: {}", groups.join(" | ")));
         } else {
             out.push(format!("  {label}{base:#010x} +0x70: unreadable"));
+        }
+    }
+}
+
+// ===================== sea-battle lifecycle probe (1 Sep 2026) =====================
+
+/// The battle constructor `0x005FBFE0`, thiscall with two stack arguments, called from
+/// three sites: the world's encounter step twice and a task/mission path once.
+const BATTLE_CTOR_CALL_OFFSETS: [u32; 3] = [0x000E_BC52, 0x0010_6FEB, 0x0010_7C75];
+/// The battle destructor's body `0x005FB9F0`, thiscall, reached only from the deleting
+/// destructor `0x00602990` (vtable slot 1). All the aftermath - the piracy charge roll and
+/// the eight convoy disposals - runs inside it, so this is the moment the outcome is final.
+const BATTLE_DTOR_CALL_OFFSET: u32 = 0x0020_2993;
+
+static BATTLE_CTOR_HOOKS: [AtomicPtr<CallRel32Hook>; 3] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 3];
+static BATTLE_DTOR_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Battles are pooled (the pointer array at `0x006E55D0`), so a handful of slots is enough
+/// to pair a destruction with its own creation.
+static BATTLE_PTRS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+static BATTLE_BORN_MS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+static BATTLE_BORN_TICK: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+
+/// Battle object fields, all established in `.claude/notes/todo/auto-resolved-sea-battles.md`
+/// and `done/criminal-charges.md`.
+const BATTLE_SIDE_A: u32 = 0x35a;
+const BATTLE_SIDE_B: u32 = 0x35c;
+const BATTLE_CONVOY_A: u32 = 0x65e;
+const BATTLE_CONVOY_B: u32 = 0x660;
+const BATTLE_TYPE: u32 = 0xad2;
+const BATTLE_CRIME_WORD: u32 = 0x1e94;
+const BATTLE_WITNESS_TOWN: u32 = 0x1e98;
+const BATTLE_EXTRA_LIST: u32 = 0x2f1c;
+const BATTLE_EXTRA_COUNT: u32 = 0x2f20;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Always-on: hooks the battle constructor and destructor so every sea battle logs itself
+/// to `_probe_battles.log`, whether it was fought on the map or left to auto-resolve.
+///
+/// The question it answers first: **is the auto resolve stepped or computed?** A battle that
+/// is created and destroyed in the same millisecond and the same game tick was never
+/// simulated; one that lives for hundreds of ticks was.
+unsafe fn install_battle_probe() {
+    let mut installed = 0;
+    for (i, offset) in BATTLE_CTOR_CALL_OFFSETS.iter().enumerate() {
+        match hook_call_rel32(*offset, battle_ctor_hook as usize as u32) {
+            Ok(hook) => {
+                BATTLE_CTOR_HOOKS[i].store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+                installed += 1;
+            }
+            Err(_) => log::warn!("battle probe: could not hook constructor call {offset:#010x}"),
+        }
+    }
+    let dtor = match hook_call_rel32(BATTLE_DTOR_CALL_OFFSET, battle_dtor_hook as usize as u32) {
+        Ok(hook) => {
+            BATTLE_DTOR_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+            installed += 1;
+            true
+        }
+        Err(_) => {
+            log::warn!("battle probe: could not hook the destructor call");
+            false
+        }
+    };
+    // Write the file at install time: its presence is how the player can tell the probe is
+    // live before any battle has happened.
+    append_probe_log(
+        "_probe_battles.log",
+        &[format!(
+            "battle probe installed: {installed}/4 hooks ({} of 3 constructor sites, destructor {})",
+            installed - dtor as u32,
+            if dtor { "yes" } else { "NO" }
+        )],
+    );
+    log::info!("battle probe installed: {installed}/4 hooks");
+    install_battle_record_probe();
+    install_plunder_probe();
+    match hook_call_rel32(TICK_CALL_OFFSET, tick_sample_hook as usize as u32) {
+        Ok(hook) => TICK_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => log::warn!("battle probe: could not hook the world tick"),
+    }
+}
+
+/// One line describing a battle object's own state.
+unsafe fn battle_state(battle: u32) -> String {
+    let byte = |o: u32| *((battle + o) as *const u8);
+    let word = |o: u32| *((battle + o) as *const u16);
+    let crime = word(BATTLE_CRIME_WORD);
+    format!(
+        "sides {}/{} type {} convoys {}/{} extra {} | crime {} chance {}permille | witness town {}",
+        byte(BATTLE_SIDE_A),
+        byte(BATTLE_SIDE_B),
+        byte(BATTLE_TYPE),
+        word(BATTLE_CONVOY_A),
+        word(BATTLE_CONVOY_B),
+        word(BATTLE_EXTRA_COUNT),
+        crime >> 10,
+        crime & 0x3ff,
+        byte(BATTLE_WITNESS_TOWN),
+    )
+}
+
+/// Every ship the battle names, through its convoys: the pirate-AI note established that a
+/// convoy's members are found by scanning the ships array for `ship+0x8 == convoy index`,
+/// not by walking `ship+0x6`.
+unsafe fn battle_ships(battle: u32) -> Vec<String> {
+    let word = |o: u32| *((battle + o) as *const u16);
+    let mut convoys = vec![word(BATTLE_CONVOY_A), word(BATTLE_CONVOY_B)];
+    let extra_count = word(BATTLE_EXTRA_COUNT);
+    let extra_list = *((battle + BATTLE_EXTRA_LIST) as *const u32);
+    if extra_list != 0 {
+        for i in 0..extra_count.min(32) {
+            convoys.push(*((extra_list + i as u32 * 2) as *const u16));
+        }
+    }
+
+    let ships = p3_api::ships::ShipsPtr::new();
+    let mut out = Vec::new();
+    for index in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(index) else { continue };
+        let convoy = ship.get_convoy_id();
+        if !convoys.contains(&convoy) {
+            continue;
+        }
+        let health: i32 = *((ship.address + 0x18) as *const i32);
+        let max: i32 = *((ship.address + 0x14) as *const i32);
+        let condition = if max > 0 { health * 100 / max } else { 0 };
+        out.push(format!(
+            "    ship {index} {:?} owner {} convoy {convoy} | {condition}% ({health}/{max}) crew {} status {:#x}",
+            ship.get_name().trim_end_matches('\0'),
+            *(ship.address as *const u8),
+            ship.get_crew(),
+            ship.get_status(),
+        ));
+    }
+    out
+}
+
+/// `0x005FBFE0(battle, a, b)` - observation only, calls through unchanged.
+unsafe extern "thiscall" fn battle_ctor_hook(battle: u32, a: u32, b: u32) -> u32 {
+    // All three sites call the same function, so any installed hook's old_absolute is the
+    // same address; the constant is the fallback if hook 0 failed to install.
+    let hook = BATTLE_CTOR_HOOKS[0].load(Ordering::SeqCst);
+    let entry = if hook.is_null() { 0x005f_bfe0 } else { (*hook).old_absolute };
+    let original: extern "thiscall" fn(u32, u32, u32) -> u32 = mem::transmute(entry);
+    let result = original(battle, a, b);
+
+    let tick = GAME_WORLD_PTR.get_game_time_raw();
+    let ms = now_ms();
+    for i in 0..BATTLE_PTRS.len() {
+        if BATTLE_PTRS[i].compare_exchange(0, battle, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            BATTLE_BORN_MS[i].store(ms, Ordering::SeqCst);
+            BATTLE_BORN_TICK[i].store(tick, Ordering::SeqCst);
+            break;
+        }
+    }
+    let mut out = vec![format!(
+        "BORN battle {battle:#010x} args {a:#x}/{b:#x} tick {tick} | {}",
+        battle_state(battle)
+    )];
+    out.extend(battle_ships(battle));
+    append_probe_log("_probe_battles.log", &out);
+    notify(&format!("battle probe: battle {battle:#x} started, tick {tick}"));
+    result
+}
+
+/// `0x005FB9F0(battle)` - the destructor body, observation only. Logged **before** calling
+/// through, because the aftermath inside it frees ships and hands out prizes.
+unsafe extern "thiscall" fn battle_dtor_hook(battle: u32) {
+    let tick = GAME_WORLD_PTR.get_game_time_raw();
+    let ms = now_ms();
+    let mut lived = String::from("(unpaired)");
+    for i in 0..BATTLE_PTRS.len() {
+        if BATTLE_PTRS[i].load(Ordering::SeqCst) == battle {
+            let born_ms = BATTLE_BORN_MS[i].load(Ordering::SeqCst);
+            let born_tick = BATTLE_BORN_TICK[i].load(Ordering::SeqCst);
+            lived = format!(
+                "lived {}ms / {} ticks",
+                ms.saturating_sub(born_ms),
+                tick.wrapping_sub(born_tick)
+            );
+            BATTLE_PTRS[i].store(0, Ordering::SeqCst);
+            break;
+        }
+    }
+    let mut out = vec![format!(
+        "DIES battle {battle:#010x} tick {tick} {lived} | {}",
+        battle_state(battle)
+    )];
+    out.extend(battle_ships(battle));
+    append_probe_log("_probe_battles.log", &out);
+
+    let hook = BATTLE_DTOR_HOOK.load(Ordering::SeqCst);
+    let entry = if hook.is_null() { 0x005f_b9f0 } else { (*hook).old_absolute };
+    let original: extern "thiscall" fn(u32) = mem::transmute(entry);
+    original(battle);
+}
+
+// The battle *record* class (vtable 0x0067AD44) - the lightweight object whose slot 7
+// (`0x0060D299`) writes the "Naval battle" letter the player only sees for auto-resolved
+// fights. Two constructors share that vtable: `0x00603A70` (plain) and `0x00603BC0`, whose
+// chain `0x00603E17` -> `0x00603E61` -> `0x00603EB2` contains the piracy charge roll at
+// `0x00603ECA` **and its own LCG** - i.e. the suspected resolver.
+//
+// `0x00611CD0(pool)` is the pool's find-or-make for these records, called from the
+// scrollmap engagement code (`0x0050B250`), which is the path a pirate attack takes.
+const BATTLE_RESOLVE_CALL_OFFSETS: [u32; 2] = [0x001F_BE70, 0x0021_1743];
+const BATTLE_RECORD_CALL_OFFSETS: [u32; 4] = [0x0010_B25B, 0x0010_BB64, 0x0010_BF71, 0x0020_3D1F];
+
+static BATTLE_RESOLVE_HOOKS: [AtomicPtr<CallRel32Hook>; 2] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 2];
+static BATTLE_RECORD_HOOKS: [AtomicPtr<CallRel32Hook>; 4] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 4];
+
+/// Every ship's hull condition, for diffing across one call: `(index, health, crew)`.
+unsafe fn ship_healths() -> Vec<(u16, i32, u16, i32)> {
+    let ships = p3_api::ships::ShipsPtr::new();
+    let mut out = Vec::new();
+    for index in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(index) else { continue };
+        let cargo: i32 = ship.get_wares().iter().sum();
+        out.push((index, *((ship.address + 0x18) as *const i32), ship.get_crew(), cargo));
+    }
+    out
+}
+
+/// `0x00603BC0(record)` - thiscall, no stack arguments. **The decisive experiment**: the
+/// whole fleet's hull condition and crew are snapshotted before and after this single call.
+/// Damage appearing across it means the outcome is computed here, in one pass, with no
+/// simulation - the private LCG in its chain then says "rolled" rather than "scripted".
+unsafe extern "thiscall" fn battle_resolve_hook(record: u32) {
+    let before = ship_healths();
+    let tick_before = GAME_WORLD_PTR.get_game_time_raw();
+    let ms_before = now_ms();
+    // The packed crime word the engine's deed escalators write: (crime << 10) | chance in
+    // 1/1000. Still crime 2 chance 0 = the battle's initial value = no deed ever happened.
+    let crime_before = *((record + BATTLE_CRIME_WORD) as *const u16);
+
+    let hook = BATTLE_RESOLVE_HOOKS[0].load(Ordering::SeqCst);
+    let entry = if hook.is_null() { 0x0060_3bc0 } else { (*hook).old_absolute };
+    let original: extern "thiscall" fn(u32) = mem::transmute(entry);
+    original(record);
+
+    let after = ship_healths();
+    let tick_after = GAME_WORLD_PTR.get_game_time_raw();
+    BATTLE_WINDOW_OPEN.store(false, Ordering::SeqCst);
+    let crime_after = *((record + BATTLE_CRIME_WORD) as *const u16);
+    let mut out = vec![format!(
+        "RESOLVE record {record:#010x} | ticks {tick_before}->{tick_after} | {}ms | crime {}->{} chance {}->{}permille | plunder routine ran {}x since the last resolve",
+        now_ms().saturating_sub(ms_before),
+        crime_before >> 10,
+        crime_after >> 10,
+        crime_before & 0x3ff,
+        crime_after & 0x3ff,
+        PLUNDER_CALLS.swap(0, Ordering::SeqCst),
+    )];
+    let ticks: Vec<String> = {
+        let mut v = Vec::new();
+        for slot in PLUNDER_TICKS.iter() {
+            let t = slot.swap(0, Ordering::SeqCst);
+            if t != 0 {
+                v.push(t.to_string());
+            }
+        }
+        v
+    };
+    if !ticks.is_empty() {
+        out.push(format!("    plunder/takeover calls at ticks: {}", ticks.join(", ")));
+    }
+    let ships = p3_api::ships::ShipsPtr::new();
+    for (i, (index, health, crew, cargo)) in before.iter().enumerate() {
+        let Some((_, health_after, crew_after, cargo_after)) = after.get(i) else { break };
+        if health_after == health && crew_after == crew && cargo_after == cargo {
+            continue;
+        }
+        let name = ships
+            .get_ship(*index)
+            .map(|s| s.get_name().trim_end_matches('\0').to_string())
+            .unwrap_or_default();
+        out.push(format!(
+            "    ship {index} {name:?}: hull {health}->{health_after} crew {crew}->{crew_after} cargo {cargo}->{cargo_after}"
+        ));
+    }
+    if out.len() == 1 {
+        out.push("    (no ship state changed across the call)".into());
+    }
+    // And the whole window: everything that moved between the engagement and now.
+    if let Ok(pre) = PRE_BATTLE.try_lock() {
+        let mut window = Vec::new();
+        for (i, (index, health, crew, cargo)) in pre.iter().enumerate() {
+            let Some((_, health_now, crew_now, cargo_now)) = after.get(i) else { break };
+            // Sailing wear costs a couple of dozen hull per window on every ship afloat;
+            // only a battle moves crew, cargo, or hundreds of hull.
+            if (health - health_now).abs() < 100 && crew_now == crew && cargo_now == cargo {
+                continue;
+            }
+            let name = ships
+                .get_ship(*index)
+                .map(|s| s.get_name().trim_end_matches('\0').to_string())
+                .unwrap_or_default();
+            window.push(format!(
+                "    SINCE RECORD ship {index} {name:?}: hull {health}->{health_now} crew {crew}->{crew_now} cargo {cargo}->{cargo_now}"
+            ));
+        }
+        if window.is_empty() {
+            out.push("    (nothing changed on any ship since the engagement was registered)".into());
+        } else {
+            out.extend(window);
+        }
+    }
+    append_probe_log("_probe_battles.log", &out);
+}
+
+/// `0x00611CD0(pool)` - the record pool's find-or-make, thiscall, no stack arguments,
+/// returning a slot index in `al`. Logged to catch every engagement, whichever way it is
+/// then resolved.
+unsafe extern "thiscall" fn battle_record_hook(pool: u32) -> u32 {
+    let hook = BATTLE_RECORD_HOOKS[0].load(Ordering::SeqCst);
+    let entry = if hook.is_null() { 0x0061_1cd0 } else { (*hook).old_absolute };
+    let original: extern "thiscall" fn(u32) -> u32 = mem::transmute(entry);
+    let index = original(pool);
+    let tick = GAME_WORLD_PTR.get_game_time_raw();
+    BATTLE_WINDOW_OPEN.store(true, Ordering::SeqCst);
+    BATTLE_SLOT.store(index & 0xff, Ordering::SeqCst);
+    if let Ok(mut last) = LAST_RECORD.try_lock() {
+        last.clear();
+    }
+    let snapshot = ship_healths();
+    if let Ok(mut last) = LAST_FLEET.try_lock() {
+        *last = snapshot.clone();
+    }
+    let n = snapshot.len();
+    if let Ok(mut pre) = PRE_BATTLE.try_lock() {
+        *pre = snapshot;
+    }
+    append_probe_log(
+        "_probe_battles.log",
+        &[format!(
+            "RECORD pool {pool:#010x} slot {:#x} tick {tick} | snapshot of {n} ships taken",
+            index & 0xff
+        )],
+    );
+    index
+}
+
+unsafe fn install_battle_record_probe() {
+    for (i, offset) in BATTLE_RESOLVE_CALL_OFFSETS.iter().enumerate() {
+        match hook_call_rel32(*offset, battle_resolve_hook as usize as u32) {
+            Ok(hook) => BATTLE_RESOLVE_HOOKS[i].store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+            Err(_) => log::warn!("battle probe: could not hook resolver call {offset:#010x}"),
+        }
+    }
+    for (i, offset) in BATTLE_RECORD_CALL_OFFSETS.iter().enumerate() {
+        match hook_call_rel32(*offset, battle_record_hook as usize as u32) {
+            Ok(hook) => BATTLE_RECORD_HOOKS[i].store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+            Err(_) => log::warn!("battle probe: could not hook record call {offset:#010x}"),
+        }
+    }
+}
+
+/// CTRL+SHIFT+ALT+F9: arm the hardware write watch on the **selected ship's fullest cargo
+/// slot** - or its crew word if the hold is empty - and dump whatever it has caught. Press
+/// once with the ship selected to arm, let a battle auto-resolve, press again to read the
+/// writers off `_probe_battles.log`.
+///
+/// Cargo rather than the hull, because that is what a pirate attack actually takes: ships
+/// wear down from ordinary sailing, so `ship+0x18` is full of unrelated writes, while a
+/// ware slot only moves when someone loads, sells or plunders it. Dr0 names the instruction
+/// with registers, surrounding code bytes and the stack.
+unsafe fn watch_selected_ship_hull() {
+    let mut out = Vec::new();
+    drain_write_watch_hits(&mut out);
+
+    let Some(index) = selected_ship_index() else {
+        out.push("cargo watch: no ship selected - press with the target ship selected".into());
+        append_probe_log("_probe_battles.log", &out);
+        notify("cargo watch: no ship selected");
+        for l in &out {
+            log::info!("{l}");
+        }
+        return;
+    };
+    let Some(ship) = p3_api::ships::ShipsPtr::new().get_ship(index) else {
+        return;
+    };
+    // The fullest ware slot is the one a plunderer is most likely to take; an empty hold
+    // leaves the crew word, the other thing the user has seen a raid consume.
+    let wares = ship.get_wares();
+    let fullest = wares
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, amount)| **amount)
+        .filter(|(_, amount)| **amount > 0)
+        .map(|(i, _)| i);
+    let (address, what) = match fullest {
+        Some(i) => (ship.address + 0x54 + i as u32 * 4, format!("ware {i} ({} raw)", wares[i])),
+        None => (ship.address + 0x40, format!("crew ({})", ship.get_crew())),
+    };
+    if !WRITE_WATCH_VEH_ON.swap(true, Ordering::SeqCst) {
+        AddVectoredExceptionHandler(1, Some(write_watch_veh));
+    }
+    WRITE_WATCH_HITS.store(0, Ordering::SeqCst);
+    WRITE_WATCH_NODE.store(0, Ordering::SeqCst);
+    match program_dr0(address) {
+        Ok(()) => {
+            WRITE_WATCH_ADDRESS.store(address, Ordering::SeqCst);
+            FOCUS_SHIP.store(index as u32, Ordering::SeqCst);
+            out.push(format!(
+                "cargo watch ARMED on ship {index} {:?}: Dr0 on {address:#010x} = {what}",
+                ship.get_name().trim_end_matches('\0')
+            ));
+            notify(&format!("cargo watch armed on ship {index}: {what}"));
+        }
+        Err(reason) => {
+            out.push(format!("cargo watch NOT armed: {reason}"));
+            notify("cargo watch: could not arm Dr0");
+        }
+    }
+    for l in &out {
+        log::info!("{l}");
+    }
+    append_probe_log("_probe_battles.log", &out);
+}
+
+/// The ship takeover/plunder routine `0x0060C1C9` - the one the Dr0 watch caught removing
+/// cargo (`0x0060CEF4`), shared by the auto and the interactive path. Its four call sites
+/// all sit in `0x0061F1BF`.
+///
+/// Counting its calls and the tick of each answers the question the timing alone could not:
+/// **many calls across many ticks = the fight is being simulated**; one call = a single
+/// deferred pass that jumps straight to the outcome.
+const PLUNDER_CALL_OFFSETS: [u32; 4] = [0x0021_F317, 0x0021_F33A, 0x0021_F76D, 0x0021_F847];
+static PLUNDER_HOOKS: [AtomicPtr<CallRel32Hook>; 4] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 4];
+static PLUNDER_CALLS: AtomicU32 = AtomicU32::new(0);
+/// Every ship's (hull, crew, cargo) as of the engagement being registered, so the resolve
+/// can report what the **whole battle** did rather than only what one call did. This is the
+/// window that matters for an armed defender: damage to the attacker anywhere in here means
+/// shots were computed.
+static PRE_BATTLE: Mutex<Vec<(u16, i32, u16, i32)>> = Mutex::new(Vec::new());
+
+/// The ship whose state is sampled every tick while a battle is open. Defaults to 123 (the
+/// ship in the measured fight) and follows whatever ship the cargo-watch key was pressed on.
+static FOCUS_SHIP: AtomicU32 = AtomicU32::new(123);
+/// Set when an engagement is registered, cleared when it resolves: the window in which the
+/// per-tick sampler runs.
+static BATTLE_WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
+static LAST_SAMPLE: AtomicU64 = AtomicU64::new(0);
+/// The previous tick's fleet state, for the per-tick delta while a battle is open.
+static LAST_FLEET: Mutex<Vec<(u16, i32, u16, i32)>> = Mutex::new(Vec::new());
+
+/// The battle pool and the slot the open engagement took, so the record itself can be
+/// diffed tick by tick.
+const BATTLE_POOL: u32 = 0x006e_55d0;
+static BATTLE_SLOT: AtomicU32 = AtomicU32::new(0xff);
+/// How much of the record to diff. Its known fields run past `+0x2F20`. This is an upper
+/// bound, not the record's size: the two battle classes differ and the lightweight one is
+/// smaller, so the read has to stop where the allocation does ([Guarded]).
+const RECORD_DIFF_BYTES: usize = 0x3000;
+static LAST_RECORD: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Which dwords of the battle record changed since the previous tick.
+///
+/// This is the measurement that separates a simulated fight from one computed exchange, and
+/// damage timing cannot: **a simulation has to carry state that moves every tick** - headings,
+/// speeds, battle-map coordinates, a step counter. If a long stretch of the window shows the
+/// record perfectly static, nothing is being stepped; if dozens of dwords churn every tick,
+/// it is being run. Calibrate on a battle steered by hand, where ships demonstrably move,
+/// then compare an auto resolve against it.
+unsafe fn record_delta(tick: u32, out: &mut Vec<String>) {
+    let slot = BATTLE_SLOT.load(Ordering::SeqCst);
+    if slot > 0xfe {
+        return;
+    }
+    let record = *((BATTLE_POOL + slot * 4) as *const u32);
+    if record < 0x10000 {
+        return;
+    }
+    // Guarded, because the record is the game's allocation and its size is unknown: a blind
+    // read of [RECORD_DIFF_BYTES] runs into the uncommitted tail of the heap block.
+    let words = RECORD_DIFF_BYTES / 4;
+    let mut guard = Guarded::new();
+    let mut now = Vec::with_capacity(words);
+    for i in 0..words {
+        let Some(word) = guard.u32(record + (i * 4) as u32) else { break };
+        now.push(word);
+    }
+    if now.is_empty() {
+        return;
+    }
+    let Ok(mut last) = LAST_RECORD.try_lock() else { return };
+    if last.len() == now.len() {
+        let mut changed: Vec<String> = Vec::new();
+        for (i, (a, b)) in last.iter().zip(now.iter()).enumerate() {
+            if a != b {
+                if changed.len() < 12 {
+                    changed.push(format!("+{:#05x} {a:#010x}->{b:#010x}", i * 4));
+                } else {
+                    changed.push("...".into());
+                    break;
+                }
+            }
+        }
+        let total = last.iter().zip(now.iter()).filter(|(a, b)| a != b).count();
+        if total > 0 {
+            // The readable length is the record's real extent, which the class layouts do not
+            // give us - worth having in the log rather than inferring it.
+            let readable = if now.len() * 4 < RECORD_DIFF_BYTES { format!(" [readable {:#x}]", now.len() * 4) } else { String::new() };
+            out.push(format!(
+                "  TICK {tick} RECORD {record:#010x}{readable}: {total} dwords changed | {}",
+                changed.join(" ")
+            ));
+        }
+    }
+    *last = now;
+}
+/// Tick of the last line the sampler wrote, so an unchanged ship still reports every
+/// [SAMPLE_HEARTBEAT_TICKS] ticks - that is how the sampling rate itself becomes visible.
+static LAST_SAMPLE_TICK: AtomicU32 = AtomicU32::new(0);
+const SAMPLE_HEARTBEAT_TICKS: u32 = 8;
+/// `ship+0x134` while the ship is in a sea battle - measured 1 Sep 2026, both in an auto
+/// resolve and in a battle steered by hand (`0xF` is ordinary at-sea).
+const SHIP_STATUS_IN_BATTLE: u16 = 0x14;
+
+/// The world's per-tick step `0x00506720`, called once from `0x00531011` inside the
+/// tick handler that `execute_operations` drives. Hooked purely to sample the focus ship
+/// while a battle is open: whether damage arrives in one tick or spreads over the window,
+/// and whether the ship keeps moving (a chase) is exactly what separates a simulated fight
+/// from one late pass.
+const TICK_CALL_OFFSET: u32 = 0x0013_1011;
+static TICK_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+unsafe extern "thiscall" fn tick_sample_hook(world: u32, arg: u32) {
+    let hook = TICK_HOOK.load(Ordering::SeqCst);
+    let entry = if hook.is_null() { 0x0050_6720 } else { (*hook).old_absolute };
+    let original: extern "thiscall" fn(u32, u32) = mem::transmute(entry);
+    original(world, arg);
+
+    if !BATTLE_WINDOW_OPEN.load(Ordering::SeqCst) {
+        return;
+    }
+    // Sample the WHOLE fleet each tick and report only what moved. The status filter missed
+    // the attacker (a pirate is not marked 0x14), so its damage had no timestamp; a full
+    // delta catches both sides and dates every change exactly.
+    let tick = GAME_WORLD_PTR.get_game_time_raw();
+    let ships = p3_api::ships::ShipsPtr::new();
+    let now = ship_healths();
+    let mut lines = Vec::new();
+    if let Ok(mut last) = LAST_FLEET.try_lock() {
+        for (i, (index, hull, crew, cargo)) in now.iter().enumerate() {
+            let Some((_, hull_was, crew_was, cargo_was)) = last.get(i) else { continue };
+            if hull == hull_was && crew == crew_was && cargo == cargo_was {
+                continue;
+            }
+            // Ordinary sailing wear is a couple of hull per tick; a battle is thousands.
+            if (hull_was - hull).abs() < 100 && crew == crew_was && cargo == cargo_was {
+                continue;
+            }
+            let name = ships
+                .get_ship(*index)
+                .map(|s| s.get_name().trim_end_matches('\0').to_string())
+                .unwrap_or_default();
+            lines.push(format!(
+                "  TICK {tick} ship {index} {name:?}: hull {hull_was}->{hull} crew {crew_was}->{crew} cargo {cargo_was}->{cargo}"
+            ));
+        }
+        *last = now;
+    }
+    record_delta(tick, &mut lines);
+    let due = tick.wrapping_sub(LAST_SAMPLE_TICK.load(Ordering::SeqCst)) >= SAMPLE_HEARTBEAT_TICKS;
+    if lines.is_empty() && !due {
+        return;
+    }
+    LAST_SAMPLE_TICK.store(tick, Ordering::SeqCst);
+    if lines.is_empty() {
+        lines.push(format!("  TICK {tick}: no ship changed"));
+    }
+    append_probe_log("_probe_battles.log", &lines);
+}
+/// The ticks of the first 16 calls since the last resolve, so a burst inside one tick is
+/// distinguishable from a run spread over hours of game time.
+static PLUNDER_TICKS: [AtomicU32; 16] = [const { AtomicU32::new(0) }; 16];
+
+/// `0x0060C1C9(record, a, b)` - thiscall; the two stack arguments are the attacker and
+/// victim ship indices (`0x0060C1F3`/`0x0060C1FD` read them as `[esp+0x190]`/`[esp+0x194]`
+/// after the prologue). Observation only.
+unsafe extern "thiscall" fn plunder_hook(record: u32, a: u32, b: u32) -> u32 {
+    let n = PLUNDER_CALLS.fetch_add(1, Ordering::SeqCst);
+    let tick = GAME_WORLD_PTR.get_game_time_raw();
+    if let Some(slot) = PLUNDER_TICKS.get(n as usize) {
+        slot.store(tick, Ordering::SeqCst);
+    }
+    let crime = *((record + BATTLE_CRIME_WORD) as *const u16);
+    append_probe_log(
+        "_probe_battles.log",
+        &[format!(
+            "  PLUNDER call #{} record {record:#010x} ships {a}/{b} tick {tick} | crime {} chance {}permille",
+            n + 1,
+            crime >> 10,
+            crime & 0x3ff
+        )],
+    );
+
+    let hook = PLUNDER_HOOKS[0].load(Ordering::SeqCst);
+    let entry = if hook.is_null() { 0x0060_c1c9 } else { (*hook).old_absolute };
+    let original: extern "thiscall" fn(u32, u32, u32) -> u32 = mem::transmute(entry);
+    original(record, a, b)
+}
+
+unsafe fn install_plunder_probe() {
+    for (i, offset) in PLUNDER_CALL_OFFSETS.iter().enumerate() {
+        match hook_call_rel32(*offset, plunder_hook as usize as u32) {
+            Ok(hook) => PLUNDER_HOOKS[i].store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+            Err(_) => log::warn!("battle probe: could not hook plunder call {offset:#010x}"),
         }
     }
 }
