@@ -162,6 +162,18 @@ impl ShipPtr {
         unsafe { self.get(0x134) }
     }
 
+    /// The pool index of the ship's **current** route stop, which advances as the route
+    /// runs ([crate::data::route_stop]). Out of range when the ship has no route; the
+    /// panel's Auto trade view walks the chain from here.
+    pub fn get_route_stop_index(&self) -> u16 {
+        unsafe { self.get(0x132) }
+    }
+
+    /// The logical first stop of this ship's route, or `None` without one.
+    pub unsafe fn get_first_route_stop(&self) -> Option<crate::data::route_stop::RouteStopPtr> {
+        crate::data::route_stop::find_first_stop(self.get_route_stop_index())
+    }
+
     /// Is the ship at the town named by `get_last_town_index`, rather than out at sea?
     ///
     /// The game classifies its own status field with exactly two tests, next to each
