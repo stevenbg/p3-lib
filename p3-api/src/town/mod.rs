@@ -59,18 +59,46 @@ pub const TOWN_FLAG_FROZEN: u32 = 0x0400_0000;
 /// Bits of the **built-structures mask** at `+0x76C` ([TownPtr::get_buildings]) - one
 /// bit per unique town structure, set when the building is added to the town by
 /// `0x00521900` (its 48-entry dispatch on the building id, index table `0x00522690`,
-/// jump table `0x0052262C`). Each case also refuses when its own bit is already set,
-/// which is what makes these buildings one-per-town.
+/// jump table `0x0052262C`). Each case refuses when its own bit is already set, which is
+/// what makes these buildings one-per-town, and most also require other bits first - the
+/// `(mask & X) == Y` form quoted on each constant, where `Y` is the prerequisite and
+/// `X - Y` the building's own bit.
 ///
-/// Named against the building-name block at `0x006A5688`..`0x006A5750`, which is in
-/// building-id order and aligns on five independently known ids (Warehouse `0x1E`,
-/// Hospital `0x29`, Mint `0x2A`, School `0x2B`, Chapel `0x2C`). [TOWN_BUILDING_MINT] is
-/// corroborated a second way: the population-levels routine tests exactly this bit at
-/// `0x0051C671` for the rich divisor the gitbook derived as `has_mint`.
+/// Named by decoding each case's own `or` and reading the id off the **name pointer table
+/// at `0x006A57C8`** - 57 entries indexed by building id, which is the space this setter
+/// bounds with its `cmp al,0x30`. That table is what names the low ids; the packed string
+/// block it points into (`0x006A5688`) only covers `0x1E`..`0x2F`, which is why
+/// [TOWN_BUILDING_REPAIR_DOCK] (id `0x01`) and [TOWN_BUILDING_WEAPONSMITH] (id `0x03`)
+/// went unnamed before.
+///
+/// [TOWN_BUILDING_MINT] is corroborated a second way: the population-levels routine tests
+/// exactly this bit at `0x0051C671` for the rich divisor the gitbook derived as
+/// `has_mint`.
+///
+/// Bit `0x10` is a prerequisite of the Repair Dock, Tavern, Lender's House, Guild Hall and
+/// Public Bath, and part of the Church's `0x7F` - but **nothing in the executable sets
+/// it**: it arrives with the town, through the savegame/scenario read at `0x0051ECE0`.
+/// Bits `0x100` (set at `0x004EA3E4`/`0x004EA440`) and `0x8000` (set at
+/// `0x0041BDD8`/`0x0041BE3F`) are likewise unidentified. See
+/// `.claude/notes/done/town-building-mask.md`.
+/// No prerequisite; the only test is its own bit (`0x00521EB1`).
 pub const TOWN_BUILDING_MARKET_HALL: u32 = 0x1;
+/// `(mask & 0x3) == 0x1` - needs [TOWN_BUILDING_MARKET_HALL].
 pub const TOWN_BUILDING_TOWN_HALL: u32 = 0x2;
+/// Building id `0x03`. `(mask & 0x6) == 0x2` - needs [TOWN_BUILDING_TOWN_HALL], and is
+/// itself what [TOWN_BUILDING_ARMOURY] needs.
+pub const TOWN_BUILDING_WEAPONSMITH: u32 = 0x4;
+/// `(mask & 0xC) == 0x4` - needs [TOWN_BUILDING_WEAPONSMITH] (`0x00521DBE`).
 pub const TOWN_BUILDING_ARMOURY: u32 = 0x8;
+/// `(mask & 0x30) == 0x10`.
 pub const TOWN_BUILDING_TAVERN: u32 = 0x20;
+/// Building id `0x01`, `(mask & 0x50) == 0x10` (`0x00521ABF`) - **the bit a town needs
+/// before any ship can be repaired in it.** Both route-stop executors test it before
+/// ordering the repair and *clear the stop's R flag* when it is missing: `0x00518993` for
+/// a lone ship, `0x005032EA` for a convoy. A Shipyard does not replace it - the yard is
+/// built on top of a finished dock ([TOWN_BUILDING_REPAIR_DOCK_COMPLETE]), so a town with
+/// a Shipyard still carries this bit.
+pub const TOWN_BUILDING_REPAIR_DOCK: u32 = 0x40;
 /// Prerequisite of both [TOWN_BUILDING_MINT] and [TOWN_BUILDING_SCHOOL], and itself
 /// gated on all seven of `0x7F` (`(mask & 0x27F) == 0x7F` at `0x00521D39`).
 pub const TOWN_BUILDING_CHURCH: u32 = 0x200;
@@ -87,9 +115,24 @@ pub const TOWN_BUILDING_LENDERS_HOUSE: u32 = 0x800;
 /// setter and the AI's "town already has one" test at `0x0051F893`. Requires
 /// [TOWN_BUILDING_CHURCH]. See `.claude/notes/done/town-school.md`.
 pub const TOWN_BUILDING_SCHOOL: u32 = 0x1000;
+/// `(mask & 0x2010) == 0x10`.
 pub const TOWN_BUILDING_GUILD_HALL: u32 = 0x2000;
+/// `(mask & 0x4010) == 0x10`.
 pub const TOWN_BUILDING_PUBLIC_BATH: u32 = 0x4000;
+/// Building id `0x2E`, `(mask & 0x10080) == 0x80` - needs a **completed** repair dock,
+/// [TOWN_BUILDING_REPAIR_DOCK_COMPLETE], not merely a placed one.
 pub const TOWN_BUILDING_SHIPYARD: u32 = 0x1_0000;
+/// A Repair Dock or Shipyard site has **finished building**, as opposed to the two bits
+/// above, which the setter writes when the site is placed. Set by the construction pass
+/// `0x0051FF30` when a site of id `0x01` or `0x2E` completes (`0x00520127` for a site with
+/// an owner, `0x0052072F` in its town-owned switch), and read at `0x00510210` to keep the
+/// shipyard facility producing.
+pub const TOWN_BUILDING_REPAIR_DOCK_COMPLETE: u32 = 0x80;
+/// A **town-owned** Shipyard site has finished building (`0x0052036F`, `0x00520765`, the
+/// town-owned halves of the same construction pass). This - not
+/// [TOWN_BUILDING_SHIPYARD] - is what gates the yard's ship-build list at `0x0052B30A`,
+/// and the weekly shipyard task `0x004E2144` reads it too.
+pub const TOWN_BUILDING_SHIPYARD_COMPLETE: u32 = 0x2_0000;
 
 pub const WARE_BASE_PRICES: *const f32 = 0x00673A18 as _;
 
@@ -216,6 +259,12 @@ impl TownPtr {
     /// `town.has_building(TOWN_BUILDING_SCHOOL)`.
     pub fn has_building(&self, building: u32) -> bool {
         self.get_buildings() & building != 0
+    }
+
+    /// Whether ships can be repaired here - the [TOWN_BUILDING_REPAIR_DOCK] test the
+    /// game's own route-stop executors make before ordering a repair.
+    pub fn can_repair_ships(&self) -> bool {
+        self.has_building(TOWN_BUILDING_REPAIR_DOCK)
     }
 
     /// Accumulated cold, the input to the ice model. The daily ice pass
