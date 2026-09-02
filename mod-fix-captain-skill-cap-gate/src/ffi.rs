@@ -182,7 +182,8 @@ unsafe extern "thiscall" fn initializer_hook(record: u32, index: u32, captain_fl
 
     let count = CREATIONS_CLAMPED.fetch_add(1, Ordering::Relaxed) + 1;
     let line = format!(
-        "clamped {kind} #{count}: trader {index} {} | caps {navigation_cap}/{trade_cap}/{combat_cap} | wage {}",
+        "clamped {kind} #{count}: trader {index} {} {} | caps {navigation_cap}/{trade_cap}/{combat_cap} | wage {}",
+        trader.get_name().unwrap_or_else(|| "<unnamed>".into()),
         clamped.join(" "),
         trader.get_daily_wage(),
     );
@@ -263,7 +264,8 @@ unsafe extern "thiscall" fn skill_gain_observer(operation: u32) {
             }
         }
         let line = format!(
-            "gain #{seen}: trader {captain_index} ship {ship_index} | {} | caps {navigation_cap}/{trade_cap}/{combat_cap} | rolled nav {navigation_gain} trade&combat {trade_combat_gain} | pending {pending}/{PENDING_OPERATIONS_CEILING}",
+            "gain #{seen}: trader {captain_index} {} ship {ship_index} | {} | caps {navigation_cap}/{trade_cap}/{combat_cap} | rolled nav {navigation_gain} trade&combat {trade_combat_gain} | pending {pending}/{PENDING_OPERATIONS_CEILING}",
+            trader.get_name().unwrap_or_else(|| "<unnamed>".into()),
             moves.join(" "),
         );
         warn!("{line}");
