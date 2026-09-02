@@ -51,13 +51,14 @@ const OWNER: &std::ffi::CStr = c"tavern-details page";
 /// The details page's keys: 1 crew (alt: every town), 2 missions (alt: every town).
 /// Registered while the tavern window shows its -1 page, unregistered the moment a
 /// tab is clicked or the window closes.
-const PAGE_KEYS: [(u32, u32); 4] = [
+const PAGE_KEYS: [(u32, u32); 5] = [
     (crate::details::PAGE_KEY_CREW, 0),
     (crate::details::PAGE_KEY_CREW, MOD_ALT),
     (crate::details::PAGE_KEY_MISSIONS, 0),
     (crate::details::PAGE_KEY_MISSIONS, MOD_ALT),
+    (crate::details::PAGE_KEY_CAPTAINS, 0),
 ];
-static PAGE_HANDLES: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
+static PAGE_HANDLES: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
 
 unsafe fn register_page_keys() {
     let Some(api) = HOTKEYS.load(Ordering::SeqCst).as_ref() else { return };

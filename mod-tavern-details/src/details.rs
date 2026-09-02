@@ -20,7 +20,7 @@ use p3_api::{
         ui_tavern_window::UITavernWindowPtr,
     },
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_2};
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_2, VK_3};
 
 pub static CREW: &CStr = c"Crew";
 /// The filtered views only cover the towns the player may enter, so their headings say
@@ -31,8 +31,10 @@ pub static MISSIONS: &CStr = c"Missions";
 pub static KNOWN_MISSIONS: &CStr = c"Known missions";
 pub static OFFER: &CStr = c"Offer";
 pub static TERMS: &CStr = c"Terms";
+pub static MY_CAPTAINS: &CStr = c"My captains";
 pub static CREW_HINT: &CStr = c"1: crew";
 pub static MISSIONS_HINT: &CStr = c"2: missions";
+pub static CAPTAINS_HINT: &CStr = c"3: my captains";
 
 /// Text mode 2 draws right-aligned: every column x below is the right edge of that
 /// column, so a long town name reaches further left than a short one. `TRADE_X` and
@@ -60,6 +62,21 @@ const CREW_X: i32 = TOWN_X + 220;
 /// has to hold a town name, and no town name is as wide as the "Known missions" heading
 /// over it, so the space it gives up is free. It goes to the terms cell, which is the one
 /// that runs out of room.
+/// The my-captains table's own columns. The crew table leaves 70px between the name and
+/// its first number because a kind icon sits in that gap ([KIND_X]); this table has no
+/// icon there, so every column is one even step from the last.
+const CAPTAIN_COLUMN_GAP: i32 = 30;
+/// Four even columns are narrower than the crew page's five, so the table is shifted right
+/// until its last column lands on [CREW_X] and both pages fill the same band. The shift also
+/// buys the name column the room it needs: a ship name can run to 31 characters, which is
+/// wider than [TOWN_X] alone, and these names are right-aligned.
+const CAPTAIN_SHIFT: i32 = CREW_X - (TOWN_X + 4 * CAPTAIN_COLUMN_GAP);
+const CAPTAIN_NAME_X: i32 = TOWN_X + CAPTAIN_SHIFT;
+const CAPTAIN_SKILL_1_X: i32 = CAPTAIN_NAME_X + CAPTAIN_COLUMN_GAP;
+const CAPTAIN_SKILL_2_X: i32 = CAPTAIN_SKILL_1_X + CAPTAIN_COLUMN_GAP;
+const CAPTAIN_SKILL_3_X: i32 = CAPTAIN_SKILL_2_X + CAPTAIN_COLUMN_GAP;
+const CAPTAIN_PAY_X: i32 = CAPTAIN_SKILL_3_X + CAPTAIN_COLUMN_GAP;
+
 const MISSION_SHIFT: i32 = 30;
 const MISSION_TOWN_X: i32 = TOWN_X - MISSION_SHIFT;
 /// The offer column is the one **left**-aligned column on the page, so this x is its LEFT
@@ -91,16 +108,22 @@ static SHOW_ALL_TOWNS: AtomicBool = AtomicBool::new(false);
 
 const VIEW_CREW: u8 = 0;
 const VIEW_MISSIONS: u8 = 1;
+const VIEW_CAPTAINS: u8 = 2;
 
 pub(crate) const PAGE_KEY_CREW: u32 = VK_1.0 as u32;
 pub(crate) const PAGE_KEY_MISSIONS: u32 = VK_2.0 as u32;
+pub(crate) const PAGE_KEY_CAPTAINS: u32 = VK_3.0 as u32;
 
 /// The page's key handler: registered while the details page is on screen, so no
 /// screen check is needed here. Declines (returns 0), as the polling before it
 /// effectively did - the game sees the keys too.
 #[no_mangle]
 pub(crate) unsafe extern "C" fn page_hotkeys(vk: u32, mods: u32) -> u32 {
-    let view = if vk == PAGE_KEY_MISSIONS { VIEW_MISSIONS } else { VIEW_CREW };
+    let view = match vk {
+        PAGE_KEY_MISSIONS => VIEW_MISSIONS,
+        PAGE_KEY_CAPTAINS => VIEW_CAPTAINS,
+        _ => VIEW_CREW,
+    };
     VIEW.store(view, Ordering::Relaxed);
     SHOW_ALL_TOWNS.store(mods & p3_api::hotkeys::MOD_ALT != 0, Ordering::Relaxed);
     0
@@ -149,6 +172,9 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
             let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
             y = draw_missions(window, y, last_y, heading, &towns, all_towns);
         }
+        VIEW_CAPTAINS => {
+            y = draw_my_captains(x, y, last_y, MY_CAPTAINS);
+        }
         _ => {
             let heading = if all_towns { CREW } else { KNOWN_CREW };
             y = draw_crew(x, y, last_y, heading, &towns, all_towns);
@@ -157,8 +183,15 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
 
     if y <= last_y {
         font::ddraw_set_font(font::get_normal_font());
-        let other = if view == VIEW_MISSIONS { CREW_HINT } else { MISSIONS_HINT };
+        let other = match view {
+            VIEW_MISSIONS => CREW_HINT,
+            VIEW_CAPTAINS => CREW_HINT,
+            _ => MISSIONS_HINT,
+        };
         draw_text(x + VALUE_X, y + ROW_HEIGHT, other.to_bytes());
+        if view != VIEW_CAPTAINS {
+            draw_text(x + VALUE_X, y + 2 * ROW_HEIGHT, CAPTAINS_HINT.to_bytes());
+        }
     }
 }
 
@@ -327,8 +360,10 @@ unsafe fn draw_crew(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8], a
             draw_graphic(kind, x + KIND_X + (KIND_WIDTH - icon_width(kind)) / 2, y);
             ddraw_set_constant_color(BLACK);
             if all_towns || !is_pirate {
-                draw_number(x + SKILL_1_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
-                draw_number(x + SKILL_2_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
+                // The icon order is the game's own captain panel's: trade under the first
+                // (0x005CFA55 reads +0xA), navigation under the second (0x005CFB16).
+                draw_number(x + SKILL_1_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
+                draw_number(x + SKILL_2_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
                 draw_number(x + SKILL_3_X, y, AutoTraderPtr::skill_level(trader.get_combat_skill()) as i32, "");
             }
             if is_pirate {
@@ -338,6 +373,53 @@ unsafe fn draw_crew(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8], a
             }
             y += ROW_HEIGHT;
         }
+    }
+    y
+}
+
+/// Key 3: the player's own captains, one row per ship that has one - the ship's name and
+/// the captain's three skills in the same columns, and under the same icons, the crew table
+/// uses. A ship without a captain is left out; so is a captain-less fleet, which simply
+/// draws the heading and nothing under it.
+///
+/// The fleet is the merchant's own ship chain (`merchant+0xE` head, `ship+0x4` next), so
+/// convoy members and ships at sea are included - a captain trains wherever his ship is.
+/// The walk is bounded by the ship count, since a corrupt link would otherwise spin.
+unsafe fn draw_my_captains(x: i32, y: i32, last_y: i32, heading: &CStr) -> i32 {
+    let mut y = y;
+    font::ddraw_set_font(font::get_header_font());
+    draw_text(x + CAPTAIN_NAME_X, y, heading.to_bytes());
+    for (frame, column) in [(0, CAPTAIN_SKILL_1_X), (1, CAPTAIN_SKILL_2_X), (2, CAPTAIN_SKILL_3_X)] {
+        draw_graphic_frame(GRAPHIC_ID_BONUS, frame, x + column - icon_width(GRAPHIC_ID_BONUS), y);
+    }
+    draw_graphic(GRAPHIC_ID_MONEY, x + CAPTAIN_PAY_X - icon_width(GRAPHIC_ID_MONEY), y);
+    ddraw_set_constant_color(BLACK);
+    y += ROW_HEIGHT;
+
+    font::ddraw_set_font(font::get_normal_font());
+    let ships = ShipsPtr::new();
+    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
+
+    let mut ship_index = merchant.get_first_ship_index();
+    for _ in 0..ships.get_ships_size() {
+        let Some(ship) = ships.get_ship(ship_index) else {
+            break;
+        };
+        if y > last_y {
+            break;
+        }
+        if let Some(trader) = ships.get_auto_trader(ship.get_captain_index()) {
+            // The name comes out of a fixed 32-byte buffer, so it carries its padding.
+            let name = ship.get_name();
+            draw_text(x + CAPTAIN_NAME_X, y, name.trim_end_matches('\0').as_bytes());
+            // Same order as the game's captain panel: trade, navigation, combat.
+            draw_number(x + CAPTAIN_SKILL_1_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
+            draw_number(x + CAPTAIN_SKILL_2_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
+            draw_number(x + CAPTAIN_SKILL_3_X, y, AutoTraderPtr::skill_level(trader.get_combat_skill()) as i32, "");
+            draw_number(x + CAPTAIN_PAY_X, y, trader.get_daily_wage() as i32, "");
+            y += ROW_HEIGHT;
+        }
+        ship_index = ship.get_next_ship_index_of_merchant();
     }
     y
 }
