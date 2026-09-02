@@ -50,6 +50,64 @@ pub fn get_ship_name(index: u16) -> Option<Vec<u8>> {
     }
 }
 
+/// `thiscall(manager, id) -> const char*` - a **person** name, first name or family name
+/// depending on **bit 7** of the id: set picks the first-name pool (count `+0xD2`, offsets
+/// `+0xC0`, blob `+0xAC`), clear the family-name pool (`+0xD0`, `+0xBC`, `+0xA8`). Both are
+/// bounded by `count + 20` and fall back to the blob's own base out of range, so the result
+/// is always readable. 213 call sites - it is the game's one person-name lookup.
+const GET_PERSON_NAME_ADDRESS: u32 = 0x00512A60;
+
+/// A person name out of either pool, as latin1 bytes: the id's bit 7 chooses which, exactly
+/// as the game's own callers pass it. An [crate::auto_trader::AutoTraderPtr]'s `+0x2` is a
+/// first-name id (bit 7 set) and its `+0x3` a family-name id.
+///
+/// `None` for an empty result, which is what the out-of-range fallback yields.
+pub fn get_person_name(id: u8) -> Option<Vec<u8>> {
+    unsafe {
+        let get: extern "thiscall" fn(this: u32, id: u32) -> *const u8 = mem::transmute(GET_PERSON_NAME_ADDRESS);
+        let name = get(NAME_MANAGER_ADDRESS, id as u32);
+        if name.is_null() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        for i in 0..MAX_PERSON_NAME_LEN {
+            let c = *name.add(i);
+            if c == 0 {
+                break;
+            }
+            bytes.push(c);
+        }
+        if bytes.is_empty() {
+            None
+        } else {
+            Some(bytes)
+        }
+    }
+}
+
+/// `"First Family"` for a pair of name ids, or `None` when neither pool answers.
+pub fn get_full_person_name(first_name_id: u8, last_name_id: u8) -> Option<String> {
+    let first = get_person_name(first_name_id);
+    let last = get_person_name(last_name_id);
+    match (first, last) {
+        (None, None) => None,
+        (first, last) => {
+            let mut parts = Vec::new();
+            if let Some(f) = first {
+                parts.push(crate::latin1_to_string(&f));
+            }
+            if let Some(l) = last {
+                parts.push(crate::latin1_to_string(&l));
+            }
+            Some(parts.join(" "))
+        }
+    }
+}
+
+/// The pools hold short names; 32 bytes is the same ceiling the ship names use and no
+/// person name in the shipped files comes close.
+pub const MAX_PERSON_NAME_LEN: usize = 32;
+
 /// The ship's inline name buffer is 32 bytes (`ship+0x160`), and the game's own naming
 /// routine stops copying at that many characters (`cmp edx,0x20` at `0x0050E1F5`), so no
 /// pool name is ever longer in practice.

@@ -1,8 +1,15 @@
 use crate::data::p3_ptr::P3Pointer;
 
 pub const AUTO_TRADER_SIZE: u32 = 0x10;
-/// Raw skill points per displayed skill level: level 5 is skill byte 215.
-pub const SKILL_PER_LEVEL: u8 = 43;
+/// Raw skill points per **displayed** skill level, so level 5 starts at skill byte 250 -
+/// exactly the navigation and combat [SKILL_CAPS]. The captain-offer panel divides all
+/// three skills by this (`0x005CFA50`, `0x005CFB11`, `0x005CFBD5`, the magic
+/// `0x51EB851F` with `sar edx,4`).
+pub const SKILL_PER_LEVEL: u8 = 50;
+/// The buy-price formula's step is **not** the display's: `0x004D5347` (captains) and
+/// `0x004FF7C0` (administrators) divide the trade skill by 43 (magic `0x2FA0BE83` with
+/// `sar edx,3`) before the `2 * (50 - step)` percentage. See [AutoTraderPtr::get_buy_percent_paid].
+pub const SKILL_PER_BUY_STEP: u8 = 43;
 
 /// The per-skill ceiling table at `0x00673B34` (a second copy sits at `0x00672824`):
 /// 250, 200, 250, 150 raw points, i.e. displayed levels 5, 4, 5, 3.
@@ -72,6 +79,12 @@ impl AutoTraderPtr {
 
     pub fn get_last_name_id(&self) -> u8 {
         unsafe { self.get(0x3) }
+    }
+
+    /// The name the game shows for this captain, pirate or administrator - his two name ids
+    /// resolved through the person-name pools ([crate::names::get_full_person_name]).
+    pub fn get_name(&self) -> Option<String> {
+        crate::names::get_full_person_name(self.get_first_name_id(), self.get_last_name_id())
     }
 
     /// A birth stamp in game ticks: the initializer `0x004FDF50` writes
@@ -172,10 +185,11 @@ impl AutoTraderPtr {
     }
 
     /// The percentage of a transaction price this auto trader pays when buying:
-    /// `2 * (50 - trade_skill / 43)`, so 100% at trade level 0 down to 90% at level
-    /// 5 (captains 0x004D5347, administrators 0x004FF7C0 - both buying only).
+    /// `2 * (50 - trade_skill / 43)`, so 100% at trade skill 0 down to 90% at 215
+    /// (captains 0x004D5347, administrators 0x004FF7C0 - both buying only). The step is
+    /// [SKILL_PER_BUY_STEP], not the display's [SKILL_PER_LEVEL].
     pub fn get_buy_percent_paid(&self) -> u32 {
-        2 * (50 - Self::skill_level(self.get_trade_skill()) as u32)
+        2 * (50 - (self.get_trade_skill() / SKILL_PER_BUY_STEP) as u32)
     }
 
     /// The daily wage; caps at 110 in-game.
