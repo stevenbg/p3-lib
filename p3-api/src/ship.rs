@@ -189,15 +189,40 @@ impl ShipPtr {
         self.get_status() <= 3
     }
 
-    /// Is the ship actually lying at the quay, rather than still entering the port?
+    /// **Docked**: lying at the quay, status `0` exactly - the state the dock function
+    /// `0x00519C90` writes, and what the game's own windows require before they will
+    /// crew or repair a ship (observed in play). The operations behind them are looser -
+    /// the repair thunk tests `status < 4` and the hire-sailors handler `0x00537C20`
+    /// tests no status at all - so a mod that drives them wants this test, not theirs.
     ///
-    /// The stricter form of [Self::is_in_port]: it excludes the documented entering
-    /// state `3`. `0` is lying in the port (the dock function `0x00519C90` writes it);
-    /// `1` was measured on a visibly docked route ship (30 Aug 2026 probes); `2` is
-    /// written together with the moored flag (`or [ship+0x3C],0x20` at `0x0050209B`),
-    /// so all three are on the docked side.
-    pub fn is_docked(&self) -> bool {
-        self.get_status() < 3
+    /// The in-port family is four distinct states, each with its own handler in the
+    /// ships tick's jump table (`0x00507CB0`, index bytes `0x00507CDC`), and only `0` is
+    /// at the quay:
+    ///
+    /// |Status|Handler|State|
+    /// |-|-|-|
+    /// |`0`|`0x005067D0`|**lying in port.** The dock function `0x00519C90` writes it, together with the moored flag `0x20` at `+0x3C`, the arrival clock at `+0x44` and `town+0x996 += 1`. Its handler counts idle time at `+0x3E` toward a week (`0x700`)|
+    /// |`1`|`0x005068CE`|in the port with a **departure pending** - a countdown at `+0x138`, the current town copied into `+0x37` and the destination into `+0x38` (`0x0050729C`, `0x00509C90`). Its own handler counts idle time like `0`, and the state is also re-entered when the port is closed (`0x0050699D`, after testing the town's frozen/blockade bits `0x04000200`)|
+    /// |`2`|`0x00506945`|written at the end of a route stop's ware transfer (`0x00502089`), moored flag re-set at `0x0050209B`; its handler runs a `+0x138` timer and hands over to `1`|
+    /// |`3`|`0x00506A86`|**entering the port** (`0x004E13FA`). Its handler counts `+0x138` to `0x40` and then calls the dock function, so `3` becomes `0`|
+    ///
+    /// A ship the player sees in a town but not at the quay therefore reads `1`, `2` or
+    /// `3`; [Self::is_in_port] admits all three, which is why the moored flag `+0x3C` is
+    /// no help either - states `0`, `1` and `2` all carry it.
+    pub fn is_lying_in_port(&self) -> bool {
+        self.get_status() == 0
+    }
+
+    /// A short label for the ship's in-port state, `None` at sea - the table on
+    /// [Self::is_lying_in_port] in a form a mod can put in front of the player.
+    pub fn get_in_port_state_name(&self) -> Option<&'static str> {
+        match self.get_status() {
+            0 => Some("lying in port"),
+            1 => Some("departure pending"),
+            2 => Some("finishing a route stop"),
+            3 => Some("entering the port"),
+            _ => None,
+        }
     }
 
     /// The crew on board, the word at `+0x40` (summed into the merchant's fleet crew

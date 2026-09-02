@@ -42,10 +42,12 @@ pub(crate) unsafe extern "C" fn hire_sailors_hotkey(_vk: u32, mods: u32) -> u32 
         return 0;
     }
     let name = ship.get_name();
-    // Docked, not merely in town: a ship still entering the port (status 3) can already
-    // reach the tavern by the game's own loose rule, but these keys wait for the quay.
-    let (Some(town_index), true) = (ship.get_last_town_index(), ship.is_docked()) else {
-        crate::ffi::notify(&format!("{name}: not docked in a harbour"));
+    // Docked means status `0`, lying at the quay - what the tavern itself crews and
+    // nothing looser. The hire operation `0x00537C20` tests only the index bounds, so
+    // this is the whole gate.
+    let (Some(town_index), true) = (ship.get_last_town_index(), ship.is_lying_in_port()) else {
+        let state = ship.get_in_port_state_name().unwrap_or("at sea");
+        crate::ffi::notify(&format!("{name}: not docked - {state}"));
         return 1;
     };
     let crew = ship.get_crew() as i32;

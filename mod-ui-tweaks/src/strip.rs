@@ -44,8 +44,12 @@ pub(crate) unsafe extern "C" fn strip_ship_hotkey(_vk: u32, _mods: u32) -> u32 {
         return 0;
     }
     let name = ship.get_name();
-    let (Some(town_index), true) = (ship.get_last_town_index(), ship.is_docked()) else {
-        crate::ffi::notify(&format!("{name}: not docked in a harbour"));
+    // Docked means status `0`, lying in port - the rule the shipyard window itself goes
+    // by. The transfers below only need `status < 4`, but a ship that is casting off or
+    // still entering the port is not one to strip.
+    let (Some(town_index), true) = (ship.get_last_town_index(), ship.is_lying_in_port()) else {
+        let state = ship.get_in_port_state_name().unwrap_or("at sea");
+        crate::ffi::notify(&format!("{name}: not docked - {state}"));
         return 1;
     };
     let town = get_town_name(town_index).unwrap_or_else(|| "<unknown>".into());
