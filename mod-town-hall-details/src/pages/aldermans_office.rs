@@ -56,7 +56,7 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
     ui_render_text_at(x + COL_OFFSETS[0], y, TASK_RESCHEDULING_IN.to_bytes());
     font::ddraw_set_text_mode(font::TextMode::AlignRight);
     let rescheduling_in = task.get_due_timestamp() - GAME_WORLD_PTR.get_game_time_raw();
-    let task_due_in_cstring = CString::new(format!("{rescheduling_in:#05x}")).unwrap();
+    let task_due_in_cstring = CString::new(format!("{rescheduling_in}")).unwrap();
     ui_render_text_at(x + COL_OFFSETS[1], y, task_due_in_cstring.to_bytes());
     y += 20;
 
