@@ -42,12 +42,16 @@ pub(crate) unsafe extern "C" fn hire_sailors_hotkey(_vk: u32, mods: u32) -> u32 
         return 0;
     }
     let name = ship.get_name();
-    // Docked means status `0`, lying at the quay - what the tavern itself crews and
-    // nothing looser. The hire operation `0x00537C20` tests only the index bounds, so
-    // this is the whole gate.
-    let (Some(town_index), true) = (ship.get_last_town_index(), ship.is_lying_in_port()) else {
-        let state = ship.get_in_port_state_name().unwrap_or("at sea");
-        crate::ffi::notify(&format!("{name}: not docked - {state}"));
+    // The tavern's own rule: status 0 or 1 - lying in port, or holding with a pending
+    // departure - and the trade route switched off. The hire operation `0x00537C20`
+    // tests only the index bounds, so this is the whole gate.
+    let (Some(town_index), true) = (ship.get_last_town_index(), ship.is_crewable_in_port()) else {
+        let reason = if ship.get_status() > 1 {
+            ship.get_in_port_state_name().unwrap_or("at sea")
+        } else {
+            "the trade route is running"
+        };
+        crate::ffi::notify(&format!("{name}: the tavern will not crew it - {reason}"));
         return 1;
     };
     let crew = ship.get_crew() as i32;
