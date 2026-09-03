@@ -213,6 +213,73 @@ impl ShipPtr {
         self.get_status() == 0
     }
 
+    /// The crew a convoy's **lead ship** must have: the `cmp [ship+0x40],0x14` at
+    /// `0x00519C40`, which is the executable's only test of the crew word against 20.
+    pub const CONVOY_LEADER_MIN_CREW: u16 = 20;
+
+    /// May this ship lead a convoy? The game's own predicate `0x00519C40`, a
+    /// `thiscall(ship) -> bool` that reads the record and nothing else:
+    ///
+    /// |Clause|Meaning|
+    /// |-|-|
+    /// |`+0x40 >= 0x14`|at least [Self::CONVOY_LEADER_MIN_CREW] sailors|
+    /// |`+0x8` past the convoy count -> `+0x18 >= +0x14 / 2`|a ship not already in a convoy needs half its hull|
+    /// |`+0x120 >= 0x43`|the weapon strength the battle AI reads as "armed" (`ship_rec+0x120`)|
+    /// |`+0x42` inside the auto-trader array|a captain aboard|
+    /// |`+0x15C == 0`|meaning not identified|
+    ///
+    /// The ships tick calls it on a convoy's lead ship before running the convoy's route
+    /// stop (`0x00507236`); a `false` files the "trade route is interrupted" note.
+    pub unsafe fn can_lead_convoy(&self) -> bool {
+        let predicate: extern "thiscall" fn(u32) -> bool = std::mem::transmute(0x0051_9C40u32);
+        predicate(self.address)
+    }
+
+    /// May this ship sail at all? The game's own predicate `0x00519BA0`, also a
+    /// `thiscall(ship) -> bool` over the record alone:
+    ///
+    /// |Clause|Meaning|
+    /// |-|-|
+    /// |`+0x40 >= MIN_SAILORS[+0xE & 3]`|the type's minimum crew ([MIN_SAILORS_TABLE_ADDRESS])|
+    /// |`+0x3F > 0`|signed byte, meaning not identified|
+    /// |`+0x118 <= +0x10`|load within the ship's capacity|
+    /// |no captain -> `+0x14 <= 5 * +0x18`|a captainless ship needs a fifth of its hull|
+    /// |status not `7`, `9`, `0xC`..`0xE`, or `>= 0x11`|not in a state that forbids sailing|
+    /// |the town's flags lack `0x04000200`|the port is neither frozen nor blockaded|
+    ///
+    /// Called on the lead ship right after [Self::can_lead_convoy] (`0x00507243`), with
+    /// the same note as the consequence.
+    pub unsafe fn can_sail(&self) -> bool {
+        let predicate: extern "thiscall" fn(u32) -> bool = std::mem::transmute(0x0051_9BA0u32);
+        predicate(self.address)
+    }
+
+    /// Would the game let this ship sail with `crew` sailors aboard - as a convoy's lead
+    /// ship when `as_convoy_leader`?
+    ///
+    /// Both predicates only read the ship record, so this evaluates them against a
+    /// **copy** of it with the crew word overwritten: the answer to "is the crew the only
+    /// thing stopping it?" without writing a sailor into the live game first.
+    pub unsafe fn would_sail_with_crew(&self, crew: u16, as_convoy_leader: bool) -> bool {
+        #[repr(align(4))]
+        struct Record([u8; SHIP_SIZE as usize]);
+        let mut copy = Record([0u8; SHIP_SIZE as usize]);
+        std::ptr::copy_nonoverlapping(self.address as *const u8, copy.0.as_mut_ptr(), SHIP_SIZE as usize);
+        *(copy.0.as_mut_ptr().add(0x40) as *mut u16) = crew;
+        let hypothetical = Self::new(copy.0.as_ptr() as u32);
+        (!as_convoy_leader || hypothetical.can_lead_convoy()) && hypothetical.can_sail()
+    }
+
+    /// Would the tavern's Sailors page offer to crew this ship? Its list is built by
+    /// the ship collector `0x00504AC0` (mode 0, the Sailors page's call at
+    /// `0x005D4CA6`), which keeps a ship whose status is `0` or `1` - lying in port, or
+    /// holding with a pending departure - and whose trade route is switched off
+    /// (`0x00504B59`..`0x00504B6F`). The town match is the caller's business. One state
+    /// looser than [Self::is_lying_in_port], the shipyard's rule.
+    pub fn is_crewable_in_port(&self) -> bool {
+        self.get_status() <= 1 && !self.is_trade_route_active()
+    }
+
     /// A short label for the ship's in-port state, `None` at sea - the table on
     /// [Self::is_lying_in_port] in a form a mod can put in front of the player.
     pub fn get_in_port_state_name(&self) -> Option<&'static str> {

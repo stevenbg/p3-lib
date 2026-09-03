@@ -21,7 +21,12 @@ pub const TASK_OPCODE_TAVERN_MISSION: u16 = 0x1b;
 /// subtype (0..0x2A) through the case map at `0x00548834` and the jump table at
 /// `0x005487E8`; the trade-route texts ("%s's trade route: ...") live in the pointer
 /// table at `0x006B04F4` (indexed 6..11). Subtype 5 is the "has docked in %s" note;
-/// subtypes 0x24..0x28 are the route-stopped notes, 0x28 being "crew number too low".
+/// subtypes `0x22`..`0x28` are the route-stopped notes: `0x22` "is interrupted", `0x23`
+/// "ship condition too poor", `0x24` and `0x25` "no destination specified", `0x28` "crew
+/// number too low". The renderer picks the text by entering a shared add-chain at a
+/// different instruction per subtype - `0x005486D9` with `edx` zero reaches index 6,
+/// `0x005486CF` with `edx` 1 reaches index 11 - so the mapping lives in the entry
+/// points, not in a table.
 ///
 /// Subtype 0x28 has exactly one creation site, `0x00518AB2`, guarded by the game's
 /// actual departure check at `0x00518A96`: `cmp [ship+0x40], MIN_SAILORS[type]` - crew
@@ -30,6 +35,21 @@ pub const TASK_OPCODE_TAVERN_MISSION: u16 = 0x1b;
 pub const ROUTE_NOTE_KIND_CREW_TOO_LOW: u32 = 0x28;
 /// `0x00518AB2`, module-relative for `hook_call_rel32`.
 pub const ROUTE_NOTE_CREW_TOO_LOW_CALL_SITE_OFFSET: u32 = 0x00118AB2;
+
+/// Subtype `0x22`, rendered "%s's trade route is interrupted" - what a **convoy** files
+/// when its lead ship may no longer sail. A convoy is guarded by its own pair of
+/// predicates rather than the inline crew compare above, so the crew-too-low note never
+/// covers it: the ships tick calls [crate::ship::ShipPtr::can_lead_convoy] and then
+/// [crate::ship::ShipPtr::can_sail] on the lead ship (`0x00507236`, `0x00507243`) and
+/// files this note when either says no. The lead ship's crew minimum is 20 there, not
+/// the type's minimum.
+pub const ROUTE_NOTE_KIND_ROUTE_INTERRUPTED: u32 = 0x22;
+/// `0x005038BB`, module-relative: the site inside the convoy route-stop executor
+/// (`0x00503230`), shared by two of its failure blocks.
+pub const ROUTE_NOTE_INTERRUPTED_CONVOY_STOP_CALL_SITE_OFFSET: u32 = 0x001038BB;
+/// `0x00507283`, module-relative: the site in the ships tick's convoy branch. Both sites
+/// pass the **lead** ship index (`convoy+0x10`) as the creator's ship argument.
+pub const ROUTE_NOTE_INTERRUPTED_TICK_CALL_SITE_OFFSET: u32 = 0x00107283;
 
 /// The global message pool - every letter a merchant receives, chained per merchant.
 #[derive(Clone, Debug, Copy)]
