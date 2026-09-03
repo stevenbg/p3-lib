@@ -55,6 +55,9 @@ impl UIShipPanelPtr {
     /// the view changed under it. Its meaning is not established. The view switcher
     /// `0x00488150` writes the two together.
     pub const VIEW_OFFSET: u32 = 0xCC;
+    /// The value [Self::VIEW_OFFSET] takes while the Goods view is showing - the default
+    /// view, which draws the same barrel-and-capacity artwork as the Auto trade view.
+    pub const VIEW_GOODS: u32 = 0;
     /// The value [Self::VIEW_OFFSET] takes while the Auto trade view is showing.
     pub const VIEW_AUTO_TRADE: u32 = 5;
 
@@ -97,6 +100,13 @@ impl UIShipPanelPtr {
     /// Is the panel showing its Auto trade view? What a mod needs before drawing into it.
     pub unsafe fn is_auto_trade_view(&self) -> bool {
         self.get_view() == Some(Self::VIEW_AUTO_TRADE)
+    }
+
+    /// Is the panel on a view that draws the barrel-and-capacity artwork - the Goods
+    /// view or the Auto trade view, which share that layout? What a mod needs before
+    /// drawing over the barrel.
+    pub unsafe fn is_barrel_view(&self) -> bool {
+        matches!(self.get_view(), Some(Self::VIEW_GOODS | Self::VIEW_AUTO_TRADE))
     }
 
     /// The current selection object, whose first `u16` is the selected ship index.

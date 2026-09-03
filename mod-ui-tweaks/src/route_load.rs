@@ -1,11 +1,11 @@
-//! The first stop's load requirement, drawn on the ship panel's Auto trade view.
+//! The first stop's load requirement, drawn on the ship panel's barrel views.
 //!
 //! A route's first stop is where the ship fills up, so the sum of its inbound orders is
 //! the number worth comparing against the ship's capacity - the figure the panel already
-//! prints beside the barrel. This draws that sum next to it, and only while the Auto
-//! trade view is showing.
+//! prints beside the barrel. This draws that sum next to it, on the two views that show
+//! the barrel: Goods and Auto trade (they share the layout).
 //!
-//! Nothing is drawn for the other three views, so nothing has to be erased when the view
+//! Nothing is drawn for the other views, so nothing has to be erased when the view
 //! changes: the panel repaints itself every frame as part of the scrollmap, and this hook
 //! simply adds nothing on the frames where the test fails.
 
@@ -75,7 +75,7 @@ unsafe extern "thiscall" fn draw_hook(panel_address: u32, a0: u32, a1: u32, a2: 
 }
 
 unsafe fn draw_load_requirement(panel: UIShipPanelPtr, origin_x: i32, origin_y: i32) {
-    if panel.address == 0 || !panel.is_auto_trade_view() {
+    if panel.address == 0 || !panel.is_barrel_view() {
         return;
     }
     let Some(ship_index) = panel.get_selected_ship_index() else { return };
