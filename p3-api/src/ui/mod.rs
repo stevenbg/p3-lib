@@ -6,10 +6,12 @@ use crate::data::{screen_rectangle::Rect, ui_render_text_at};
 
 pub mod class37;
 pub mod class73;
+pub mod custom_window;
 pub mod ddraw;
 pub mod font;
 pub mod graphics;
 pub mod rich_text;
+pub mod scroll_list;
 pub mod ui_church_window;
 pub mod ui_event_window;
 pub mod ui_notifications;

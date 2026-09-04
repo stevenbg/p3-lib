@@ -100,7 +100,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_SHIFT | MOD_ALT => toggle_probe_d3d9_watch(),
-        (DEBUG_PROBE1_KEY, 0) => debug_probe_panel_view(),
+        (DEBUG_PROBE1_KEY, 0) => crate::scroll_window::toggle(),
         (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
         (DEBUG_PROBE2_KEY, MOD_ALT) => retire_probe_inspect(),
@@ -117,7 +117,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
 /// Post an in-game popup on the event ticker, mirrored to the debug log (a copy of
 /// mod-auto-supply's helper - the probes' only shared dependencies were this and
 /// [selected_ship_index]).
-unsafe fn notify(text: &str) {
+pub(crate) unsafe fn notify(text: &str) {
     info!("{text}");
     let latin1: Vec<u8> = text.chars().map(|c| if (c as u32) <= 0xff { c as u32 as u8 } else { b'?' }).collect();
     p3_api::ui::ui_notifications::UINotificationsPtr::new().post_event(&latin1);

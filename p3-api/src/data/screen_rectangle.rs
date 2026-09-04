@@ -9,7 +9,7 @@ pub struct ScreenRectangle {
     pub height: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct Rect {
     pub left: i32,

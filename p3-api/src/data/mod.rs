@@ -110,6 +110,9 @@ pub fn ddraw_copy_clipper_voodoo() {
     }
 }
 
+/// Draws a window's title with the title font. `text` is a game `CString` (the pointer to
+/// its characters) passed **by value: the callee destroys it** (`~CString` at `0x00420DBF`),
+/// so build a fresh one with `fill_p3_string` for every call - never pass the same one twice.
 pub fn render_window_title(text: *const c_void, window: *const c_void) {
     let function: extern "stdcall" fn(text: *const c_void, window: *const c_void) = unsafe { mem::transmute(0x00420C70) };
     function(text, window)

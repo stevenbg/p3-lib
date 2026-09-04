@@ -4,3 +4,5 @@ pub(crate) mod ffi;
 // probe code at all.
 #[cfg(debug_assertions)]
 pub(crate) mod probes;
+#[cfg(debug_assertions)]
+pub(crate) mod scroll_window;
