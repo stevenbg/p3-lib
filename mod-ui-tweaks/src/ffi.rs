@@ -191,8 +191,13 @@ pub unsafe extern "C" fn start() -> u32 {
         return 7;
     }
 
+    if let Err(what) = crate::letter_popups::install() {
+        error!("failed to hook {what}");
+        return 8;
+    }
+
     info!(
-        "loaded: numpad * / numpad / scale time x1/x2/x4/x8; pirate attacks are suppressed while in fast forward; auction announced at {:#04x}/256 of the day; the first stop's load requirement is drawn on the panel's Auto trade view",
+        "loaded: numpad * / numpad / scale time x1/x2/x4/x8; pirate attacks are suppressed while in fast forward; auction announced at {:#04x}/256 of the day; the first stop's load requirement is drawn on the panel's Auto trade view; letter popups name their town",
         AUCTION_ANNOUNCE_TIME_OF_DAY
     );
     0

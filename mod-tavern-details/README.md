@@ -80,25 +80,6 @@ are registered only while page `-1` is the one on screen - armed when the window
 window's own page switcher, `0x005CED00`) and on close. They do nothing anywhere else,
 and without the registry they are inert while the rest of the mod keeps working.
 
-## Letter popups name their town
-
-The incoming-letter notifications on the top right read "Personal letter: Patrol -
-Stockholm" instead of "Personal letter: Patrol", so the town a mission wants the ship in
-is known without opening the letter.
-
-Simple letters carry a usable town byte. Scripted letters do not: their town byte is
-the low byte of whatever script variable the letter was created with, which need not be
-the town the letter is about - and for a patrol letter it is garbage unless the
-corrected `patrouille.p2m` from `mod-fix-patrol-letter-crash` is installed. For those
-the town is recovered from the formatted text instead: the last town name occurring in
-it, which is the one the letter tells the player to sail to.
-
-Two call hooks do it (`src/letter_popups.rs`): the mailbox insert's announcer call
-(`0x004D66E0`) stashes the message being announced, and the announcer's right-ticker
-enqueue call (`0x004D7D12`) rebuilds the popup string with the town appended. The
-enqueue takes its string by value and releases it, so the hook releases the incoming
-one and hands the original a fresh one.
-
 ## How it works
 
 The tavern window works like the other building windows: constructed once at startup

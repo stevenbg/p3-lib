@@ -127,11 +127,6 @@ pub unsafe extern "C" fn start() -> u32 {
         return 3;
     }
 
-    if let Err(what) = crate::letter_popups::install() {
-        error!("failed to hook {what}");
-        return 4;
-    }
-
     match hook_function_pointer(WINDOW_CLOSE_POINTER_OFFSET, window_close_hook as usize as u32) {
         Ok(hook) => WINDOW_CLOSE_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {

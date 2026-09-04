@@ -2,9 +2,7 @@
 //!
 //! The notifications on the top right ("Personal letter: Patrol") get the letter's
 //! town appended ("Personal letter: Patrol - Stockholm"), so a mission letter says at
-//! a glance where to send the ship. This started life as `mod-ui-tweaks`; it lives
-//! here because what it is for is the same thing the details page is for - knowing
-//! where a tavern mission wants the ship without opening every letter.
+//! a glance where to send the ship.
 
 use std::mem;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
