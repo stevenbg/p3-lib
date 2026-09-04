@@ -4,7 +4,7 @@ Hotkeys for configuring a trading office administrator, and for editing a ship's
 route, from live game data. All prices are computed from the game's price curves - no
 configuration files.
 
-Install: put `trading_qol.dll` into the `mods` folder (requires the modloader). Editing
+Install: put `trading_qol.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the hotkeys). Editing
 routes also needs `fix_uncompressed_trade_route_loading.dll`, because generated route
 files are uncompressed. Keys are dispatched through the shared registry
 (`hotkey_registry.dll`, see `mod-hotkey-registry`); without it the mod still loads, with all keys

@@ -5,9 +5,7 @@ game raises a fatal exception. Patrician 3 normally dies to desktop silently - n
 minidump, no error dialog, nothing in DebugView - which makes crashes nearly
 impossible to diagnose; with this mod loaded, every crash leaves a report behind.
 
-Install: put `crash_reporter.dll` into the `mods` folder (requires the
-modloader). On load it logs "installed" (visible in DebugView when the gated
-mod logging is unlocked, see mod-tavern-details).
+Install: put `crash_reporter.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the debug keys). On load it logs "installed" (visible in DebugView; `p3-modloader` unlocks the gated mod logging).
 
 ## How it works
 
@@ -78,18 +76,9 @@ catches.
 
 ## Debug keys
 
-The mod doubles as the debugging toolbox: F9 (with modifiers) and F10 are the
+The mod doubles as the debugging toolbox: F9 and F10 (with modifiers) are the
 throwaway in-game probe keys, rewritten per investigation (`src/probes.rs`).
 **Debug builds only** - a `--release` build compiles none of this in, so a
 handed-over crash reporter is reporting-only.
 Dispatched through the shared hotkey registry (`hotkey_registry.dll`); without it the
 probes are inert, the crash reporting is unaffected. Currently:
-
-| Key | Probe |
-|-|-|
-| F9 | Captain-experience census to `_probe1.log` |
-| Ctrl+F9 | Pirate-convoy sampling timeline toggle |
-| Shift+F9 | Selected-ship struct dump to `_probe1_ship.log` |
-| Alt+F9 | Player offices + administrator records to `_probe_admin.log` |
-| F10 | Every ship's applied route chain, to DebugView |
-| Ctrl+F10 | Goods-dialog per-ware order modes |

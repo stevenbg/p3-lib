@@ -4,7 +4,7 @@ Fills the tavern window's empty starting page (selected page `-1`, the one the w
 opens on) with the auto traders waiting to be hired, the way `mod-shipyard-details`,
 `mod-town-hall-details` and `mod-trading-office-details` fill theirs.
 
-Install: put `tavern_details.dll` into the `mods` folder (requires the modloader).
+Install: put `tavern_details.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the page keys).
 
 ## Page contents
 

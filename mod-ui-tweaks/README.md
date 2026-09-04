@@ -3,7 +3,7 @@
 Assorted quality-of-life tweaks - the collection point for small features that do
 not warrant a mod of their own.
 
-Install: put `ui_tweaks.dll` into the `mods` folder (requires the modloader).
+Install: put `ui_tweaks.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the hotkeys).
 
 ## Extra speed
 
