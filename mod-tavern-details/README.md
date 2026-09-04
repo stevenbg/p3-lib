@@ -26,9 +26,13 @@ three skill bonuses out of one sheet, the coin, the crew figure:
   the tavern's own page caps what it offers at 50 unless `mod-tavern-show-all-sailors` is
   installed; this table shows the uncapped number
 
+![Crew view: a row per town with its hireable captains, pirates and sailors](crew.jpg)
+
 2 - the **missions** a side room offers, by town: the offer's title, the town a
 transport order delivers to, the cargo it needs a ship for in loads, and what it pays -
 or, for a treasure map, what it costs, with a minus in front of it.
+
+![Missions view: the offers by town with their destinations, cargo and pay](missions.jpg)
 
 Each of those comes out of the mission's own script, which is a file rather than code:
 `missions_addon/*.p2m` inside `p2arch0_eng.cpr`, in the bytecode the letter-script
@@ -54,6 +58,8 @@ same `CP2Scrollbar` the ship overview uses, driven by the game (see below). **Al
 the same table with every skill written as `level/cap`, the cap being the ceiling of the
 captain record's slot (`p3-api`'s `auto_trader::skill_caps` - it belongs to the slot, not
 the man, so two captains at the same level can have different room to grow).
+
+![My captains view: the fleet's captains sorted by name, with the scrollbar](employed.jpg)
 
 Views 1 and 2 cover the towns the player may legally enter, which is where he can hire:
 the ones he has a trading office in, plus the ones one of his ships is in - including a
