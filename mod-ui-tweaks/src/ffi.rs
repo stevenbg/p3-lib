@@ -151,6 +151,7 @@ pub unsafe extern "C" fn start() -> u32 {
             api.register(OWNER, b'S' as u32, MOD_CTRL | MOD_ALT, crate::sailors::hire_sailors_hotkey);
             api.register(OWNER, b'X' as u32, MOD_CTRL, crate::strip::strip_ship_hotkey);
             api.register(OWNER, b'R' as u32, MOD_CTRL, crate::repair::repair_ship_hotkey);
+            api.register(OWNER, b'N' as u32, MOD_CTRL, crate::route_skip::skip_route_stop_hotkey);
         }
         Err(reason) => warn!("hotkeys registry unavailable ({reason}) - the speed keys are inert"),
     }

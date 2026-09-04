@@ -174,6 +174,14 @@ impl ShipPtr {
         crate::data::route_stop::find_first_stop(self.get_route_stop_index())
     }
 
+    /// Set the ship's **current** route stop (`+0x132`) - the stop the route logic
+    /// services next. Written as a bare setter in the crate's convention; the game
+    /// itself advances this field the same way (`0x00503449` and its siblings) as a
+    /// ship finishes each stop.
+    pub unsafe fn set_route_stop_index(&self, index: u16) {
+        self.set(0x132, &index)
+    }
+
     /// Is the ship at the town named by `get_last_town_index`, rather than out at sea?
     ///
     /// The game classifies its own status field with exactly two tests, next to each
