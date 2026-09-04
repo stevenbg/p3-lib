@@ -134,6 +134,12 @@ pub unsafe extern "C" fn start() -> u32 {
     let resolution_pcstr_ptr: *mut *const i8 = 0x0069AE40 as _;
     *resolution_pcstr_ptr = RESOLUTION_STRING.as_ptr();
 
+    // 900 is not a multiple of 8: the town view's light layers need a padding row block.
+    if let Err(what) = crate::light_layers::install() {
+        log::error!("failed to patch {what}");
+        return 9;
+    }
+
     debug!("Mod loaded successfully");
     0
 }
