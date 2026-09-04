@@ -38,6 +38,7 @@ members = [
     "mod-trading-office-details",
     "mod-trading-office-prices-synchronization",
     "navpointmatrixcli",
+    "p2mcli",
     #"p3-agent",
     "p3-agent-loader",
     "p3-aim",
