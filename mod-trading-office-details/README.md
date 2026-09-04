@@ -9,12 +9,33 @@ modloader).
 
 ## Page contents
 
-The office administrator's **buying discount**: his trade skill makes him pay
-`2 * (50 - level)` percent of every purchase price, i.e. 2% off per skill level up to
-10% at level 5 - a real effect the game never shows anywhere.
+Right-aligned lines, top to bottom:
 
-The captains and pirate captains for hire used to be listed here too; they live on the
-tavern window's starting page now, see `mod-tavern-details`.
+- The office administrator's **buying discount**: his trade skill makes him pay
+  `2 * (50 - level)` percent of every purchase price, i.e. 2% off per skill level up to
+  10% at level 5 - a real effect the game never shows anywhere. "No administrator
+  employed" when the office has none.
+- **Pirates**: how many bands roam (`2 * activity + 1`, fixed at world generation) and the
+  home-town rank from which a free pirate robs a merchant (`rank + activity >= 2`), with the
+  player's own rank and whether he qualifies.
+- **Crop winter**: the months carrying the crop penalty (December to February), whether it
+  is in force, and each crop ware's winter output as a percentage, computed from this
+  town's own flag word.
+- **Dwellings**: the town's houses per class - half-timbered (poor), gabled (wealthy),
+  merchants' (rich) - as a count and how full they are, `occupants * 100 / capacity`, the
+  figures of the house info panel's "All dwellings in this town" block: the town's per-class
+  capacity (`town+0x2FC/+0x2FA/+0x2F8`), the residents of its own houses (`+0x77C/+0x77A/
+  +0x778`) plus those of every office's houses (`office+0x2E2/+0x2E0/+0x2DE`), and the house
+  count as capacity over the class's per-house capacity (280/140/80). Houses near full are
+  the cue to build more.
+- **Under construction**: every site still being built in this town, grouped into yours,
+  other merchants' and the town's, each group in the order the town's building workforce
+  pays for them - the building's name, the game's own remaining building time (the number
+  the building's info panel prints: `0x0051D6F0`, the sites ahead in the chain each take up
+  to 5 of today's builders, then `ceil(work left / min(builders, 5))`, one day less if this
+  town's daily pass has already run) and how many builders are on it. A site the day's
+  budget never reaches is "waiting": "starts soon" for the first one, "position n" after
+  that, the panel's own wording. "Nothing under construction" when the chain is empty.
 
 ## How it works
 

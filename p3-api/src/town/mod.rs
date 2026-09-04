@@ -12,6 +12,8 @@ use crate::{
     latin1_ptr_to_string,
 };
 
+pub mod construction;
+pub mod dwellings;
 pub mod beggars;
 pub mod church;
 pub mod map;
