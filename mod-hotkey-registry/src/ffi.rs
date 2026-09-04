@@ -16,8 +16,8 @@
 //! ## Binding, from a consumer mod
 //!
 //! C ABI only - no Rust types cross the DLL boundary. Bind dynamically so a missing
-//! or stale hotkeys.dll degrades to a warning and inert keys instead of a load
-//! failure, and bind with `LoadLibraryW(w"mods\\hotkeys.dll")` rather than
+//! or stale hotkey_registry.dll degrades to a warning and inert keys instead of a load
+//! failure, and bind with `LoadLibraryW(w"mods\\hotkey_registry.dll")` rather than
 //! `GetModuleHandleW`: the modloader's start() order is alphabetical, so a consumer
 //! that sorts earlier would otherwise bind before this DLL is loaded. LoadLibrary
 //! loads it on demand (registrations into the table work before this DLL's own

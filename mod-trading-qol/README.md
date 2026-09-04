@@ -1,13 +1,13 @@
-# mod-auto-supply
+# mod-trading-qol
 
 Hotkeys for configuring a trading office administrator, and for editing a ship's trade
 route, from live game data. All prices are computed from the game's price curves - no
 configuration files.
 
-Install: put `auto_supply.dll` into the `mods` folder (requires the modloader). Editing
+Install: put `trading_qol.dll` into the `mods` folder (requires the modloader). Editing
 routes also needs `fix_uncompressed_trade_route_loading.dll`, because generated route
 files are uncompressed. Keys are dispatched through the shared registry
-(`hotkeys.dll`, see `mod-hotkeys`); without it the mod still loads, with all keys
+(`hotkey_registry.dll`, see `mod-hotkey-registry`); without it the mod still loads, with all keys
 inert. The office and goods-dialog keys are registered only while their window is on
 screen. The global keys pass the keystroke on to the game; the office and goods-dialog
 keys consume it, which is what lets F1 mean three different things without ever meaning

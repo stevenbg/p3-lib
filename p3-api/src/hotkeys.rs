@@ -1,9 +1,9 @@
-//! Client-side binding for the shared hotkey registry (`hotkeys.dll`, crate
-//! `mod-hotkeys`).
+//! Client-side binding for the shared hotkey registry (`hotkey_registry.dll`, crate
+//! `mod-hotkey-registry`).
 //!
 //! This is compiled into each consumer mod - correct on purpose: the binding holds
 //! no shared state, only function pointers into the one registry, whose table lives
-//! in hotkeys.dll itself. Bind once at `start()`, keep the [HotkeysApi] in a static,
+//! in hotkey_registry.dll itself. Bind once at `start()`, keep the [HotkeysApi] in a static,
 //! and treat a failed bind as "keys inert": warn once and skip registration, never
 //! fail the mod.
 use std::{ffi::CStr, mem};
@@ -37,7 +37,7 @@ pub struct HotkeysApi {
 }
 
 impl HotkeysApi {
-    /// Binds to `mods\hotkeys.dll`, loading it on demand: the modloader starts DLLs
+    /// Binds to `mods\hotkey_registry.dll`, loading it on demand: the modloader starts DLLs
     /// alphabetically, so a consumer that sorts earlier would find nothing with
     /// `GetModuleHandleW`. Registering works even before the registry's own
     /// `start()` has installed its keyboard hook. The library reference is never
@@ -46,11 +46,11 @@ impl HotkeysApi {
     /// # Safety
     /// Must run on the game main thread (mod `start()` and game callbacks are).
     pub unsafe fn bind() -> Result<Self, &'static str> {
-        let module = LoadLibraryW(w!("mods\\hotkeys.dll")).map_err(|_| "hotkeys.dll not found in mods\\")?;
+        let module = LoadLibraryW(w!("mods\\hotkey_registry.dll")).map_err(|_| "hotkey_registry.dll not found in mods\\")?;
         let version: VersionFn =
             mem::transmute(GetProcAddress(module, s!("hotkeys_api_version")).ok_or("hotkeys_api_version export missing")?);
         if version() != API_VERSION {
-            return Err("hotkeys.dll speaks a different ABI version");
+            return Err("hotkey_registry.dll speaks a different ABI version");
         }
         let register: RegisterFn =
             mem::transmute(GetProcAddress(module, s!("hotkeys_register")).ok_or("hotkeys_register export missing")?);

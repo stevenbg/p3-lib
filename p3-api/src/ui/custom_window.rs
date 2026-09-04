@@ -6,8 +6,9 @@
 //! to trampolines, which call back into a Rust [`WindowContent`]. Once opened the game
 //! drives it exactly like the ship overview:
 //!
-//! - The scene's **root widget container** (first entry of the container stack at
-//!   `0x006DA5F0`) calls every child's update `+0xF4` and draw `+0x9C` each frame. A window
+//! - The **scene on top of the window stack** (`0x006DA5F0`; `0x004B9730` returns it) is
+//!   the widget container that calls every child's update `+0xF4` and draw `+0x9C` each
+//!   frame - the scrollmap or the town view, whichever is showing. A window
 //!   and its sub-widgets are all *direct* children of that one flat container; later
 //!   children are drawn later and are the topmost hit under the cursor, so the window is
 //!   added first and its [`Widget`]s after it, in order.
@@ -52,9 +53,9 @@ const LIST_SHOW: u32 = 0x0046_2390;
 const LIST_REMOVE: u32 = 0x0046_2320;
 /// `cdecl(force)`: close every open window, honouring their `+0x11C` veto unless forced.
 const CLOSE_ALL_OPEN_WINDOWS: u32 = 0x0046_2280;
-/// The widget container stack; its first entry's object is the scene root.
+/// The window stack; the scene on top of it is the widget container everything else lives in.
 pub const CONTAINER_STACK: u32 = 0x006D_A5F0;
-/// `thiscall(stack) -> container*`: the root container, or 0.
+/// `thiscall(stack) -> container*`: the scene on top of the stack, or 0 when it is empty.
 const CONTAINER_ROOT: u32 = 0x004B_9730;
 /// `thiscall(child)`, `ret 4`: append a child (offset from its `+0x84` rect).
 const CONTAINER_ADD: u32 = 0x004B_4E30;
@@ -270,7 +271,7 @@ impl GameWindow {
     }
 }
 
-/// The scene's root widget container, or 0 when no scene is up.
+/// The scene on top of the window stack - the container windows live in - or 0 when none is up.
 pub unsafe fn root_container() -> u32 {
     let root_of: extern "thiscall" fn(u32) -> u32 = std::mem::transmute(CONTAINER_ROOT);
     root_of(CONTAINER_STACK)

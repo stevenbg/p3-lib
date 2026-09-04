@@ -82,7 +82,7 @@ The mod doubles as the debugging toolbox: F9 (with modifiers) and F10 are the
 throwaway in-game probe keys, rewritten per investigation (`src/probes.rs`).
 **Debug builds only** - a `--release` build compiles none of this in, so a
 handed-over crash reporter is reporting-only.
-Dispatched through the shared hotkey registry (`hotkeys.dll`); without it the
+Dispatched through the shared hotkey registry (`hotkey_registry.dll`); without it the
 probes are inert, the crash reporting is unaffected. Currently:
 
 | Key | Probe |

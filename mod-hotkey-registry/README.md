@@ -1,15 +1,15 @@
-# mod-hotkeys
+# mod-hotkey-registry
 
 The shared hotkey registry: one keyboard hook for every mod, so keys stop colliding
 and window-scoped pages can claim keys that global features also use.
 
 ## Why
 
-Before this, each mod brought its own key mechanism - `mod-auto-supply` a global
+Before this, each mod brought its own key mechanism - `mod-trading-qol` a global
 `WH_KEYBOARD` hook that sees every key everywhere, `mod-tavern-details` per-frame
 polling inside its window - and cross-DLL the only arbitration was hook-chain order,
 i.e. modloader load order. That is why the tavern page's keys had to retreat to
-1/2/3 when its F1/F3 collided with auto-supply's hook.
+1/2/3 when its F1/F3 collided with mod-trading-qol's hook.
 
 ## What it is
 
@@ -52,7 +52,7 @@ ALT = 4 - plain F1 does not fire while CTRL is held.
 
 ## Binding, from a consumer
 
-Bind dynamically, and with `LoadLibraryW(L"mods\\hotkeys.dll")` rather than
+Bind dynamically, and with `LoadLibraryW(L"mods\\hotkey_registry.dll")` rather than
 `GetModuleHandleW`: the modloader starts DLLs in alphabetical order, so a consumer
 that sorts earlier would otherwise look for this DLL before it is loaded.
 LoadLibrary loads it on demand - registering works even before this DLL's own
@@ -60,5 +60,5 @@ LoadLibrary loads it on demand - registering works even before this DLL's own
 `GetProcAddress` the three exports and check `hotkeys_api_version()` against the
 version the consumer was compiled for: a mismatch is one error line and inert keys,
 where an unchecked signature change across the boundary would be stack corruption.
-A missing hotkeys.dll degrades the same way - `warn!` once, keys inert, mod loads
+A missing hotkey_registry.dll degrades the same way - `warn!` once, keys inert, mod loads
 fine.

@@ -21,8 +21,8 @@
 //! so everything paced by either global - local-map simulation and the world's tick
 //! pacer alike - sees dilated time.
 //!
-//! The keys are dispatched through the shared hotkey registry (`hotkeys.dll`, see
-//! mod-hotkeys), registered session-globally; without the registry they are inert.
+//! The keys are dispatched through the shared hotkey registry (`hotkey_registry.dll`, see
+//! mod-hotkey-registry), registered session-globally; without the registry they are inert.
 //!
 //! **Pirate ship attacks do not interrupt fast forward** - a notorious pirate robbing
 //! someone else's ship raises "<name> has struck again", which plays its video (or posts a
@@ -72,7 +72,7 @@ const MAX_SCALE: u32 = 8;
 
 /// The time multiplier the detour applies. Read by the assembly stub every frame.
 static SCALE: AtomicU32 = AtomicU32::new(1);
-/// The shared hotkey registry (hotkeys.dll); null = unavailable, the speed keys are
+/// The shared hotkey registry (hotkey_registry.dll); null = unavailable, the speed keys are
 /// inert. Dispatch used to be a per-frame GetKeyState poll off the clock updater's
 /// two call sites; the registry's keyboard hook replaces all of it.
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());

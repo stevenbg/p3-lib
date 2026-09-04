@@ -113,7 +113,7 @@ be deleted without touching them.
 
 ## Verification
 
-F9 in `mod-auto-supply` is the captain census (restored for this work): it prints every
+F9 in `mod-crash-reporter` is the captain census: it prints every
 record as `trader 67 CAPT nav 172/250 trade 86/200 combat 129/150 ... GATED OUT`, marks
 over-cap skills, and appends to `_probe1.log` so presses years apart diff directly.
 

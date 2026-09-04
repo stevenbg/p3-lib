@@ -75,7 +75,7 @@ static POPULATE_HOOKS: [AtomicPtr<CallRel32Hook>; 3] = [
     AtomicPtr::new(std::ptr::null_mut()),
 ];
 
-/// The shared hotkey registry (hotkeys.dll), bound at start(); null = unavailable,
+/// The shared hotkey registry (hotkey_registry.dll), bound at start(); null = unavailable,
 /// keys inert. All key dispatch goes through it - this mod installs no keyboard
 /// hook of its own any more.
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
@@ -86,9 +86,9 @@ unsafe fn hotkeys() -> Option<&'static HotkeysApi> {
 
 /// The three lifetime groups. Handles are 0 when unregistered; registration always
 /// unregisters a stale handle first, so a double-fired open cannot orphan one.
-const OWNER_GLOBAL: &std::ffi::CStr = c"auto-supply";
-const OWNER_OFFICE: &std::ffi::CStr = c"auto-supply office";
-const OWNER_DIALOG: &std::ffi::CStr = c"auto-supply goods dialog";
+const OWNER_GLOBAL: &std::ffi::CStr = c"trading-qol";
+const OWNER_OFFICE: &std::ffi::CStr = c"trading-qol office";
+const OWNER_DIALOG: &std::ffi::CStr = c"trading-qol goods dialog";
 
 /// Session-global keys, registered once at start(): the route keys and the town
 /// dump. (The F9/F10 debug probes live in mod-crash-reporter now.) The handlers
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn start() -> u32 {
         error!("{p}");
     }));
 
-    // All keys go through the shared registry (hotkeys.dll); a missing or stale
+    // All keys go through the shared registry (hotkey_registry.dll); a missing or stale
     // registry degrades to inert keys, never to a load failure.
     match HotkeysApi::bind() {
         Ok(api) => {

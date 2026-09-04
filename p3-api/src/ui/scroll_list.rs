@@ -7,7 +7,7 @@
 //! `[P2Scrollbar0]` in `parchment.ini` (inside `p2arch0_eng.cpr`); its position is `+0x36C`,
 //! range (visible rows) `+0x37C`, step `+0x374`, scrollable flag `+0x360`.
 //!
-//! Everything is driven by the game once the bar is a root-container child: the container
+//! Everything is driven by the game once the bar is a child of the scene container: the container
 //! runs its update (thumb drag) and draw, and the container's mouse-wheel handler
 //! (`0x004B6A90`, reached from the MFC `WM_MOUSEWHEEL` map) hands wheel notches to the bar
 //! whose catchment rect `+0x380` contains the cursor. That rect is the *area* given to
@@ -114,7 +114,7 @@ impl ScrollList {
         unsafe { self.read::<u32>(FIELD_ATTACHED) != 0 }
     }
 
-    /// Register the bar (and its buttons) in the scene's root container, placed at the area
+    /// Register the bar (and its buttons) in the scene container, placed at the area
     /// given - for a bar riding on a window that is not ours. Call after that window is in
     /// the container, so the bar draws above it. The ship overview's per-open order
     /// (`0x004757E0`..): release the thumb, place, hide, then the count.

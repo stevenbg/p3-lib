@@ -15,7 +15,7 @@
 //!   (`0x004B90E0` / `0x004B9150`, thiscall on `0x006DA5F0`, the window as the first
 //!   stack argument). Every stack entry and exit, whoever triggers it.
 //! - `open` / `close` / `dtor`: vtable hooks on the trading-office window class
-//!   (slots `+0x120` / `+0x118` / `+0x0`) - the class auto-supply scopes its keys by,
+//!   (slots `+0x120` / `+0x118` / `+0x0`) - the class mod-trading-qol scopes its keys by,
 //!   so its close is the one the registry design would rely on.
 //!
 //! Every line carries the window pointer (labelled when it matches a known global),
@@ -61,7 +61,7 @@ const CHURCH_WINDOW_PTR: *const u32 = 0x006E556C as _;
 /// The auto-trade goods dialog: NOT a manager window (round 1 finding) - a child
 /// widget of the scrollmap ship panel with its own vtable at `0x0066A7F0`. Its close
 /// (`+0x118` = `0x004066F0`) resets the stop index `+0xA4` to -1, which is the field
-/// `mod-auto-supply`'s scoping predicate reads - so these hooks answer whether every
+/// `mod-trading-qol`'s scoping predicate reads - so these hooks answer whether every
 /// path that visibly hides the dialog actually runs close, or whether a hide can
 /// leave the predicate reading "open". `+0xCC` is the shared base-class show(flag),
 /// writing the visibility byte `+0x48`; hooking the dialog's SLOT scopes it to the

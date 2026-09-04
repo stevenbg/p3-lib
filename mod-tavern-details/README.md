@@ -74,7 +74,7 @@ the word. The keys act on their down edge, so nothing has to be held, and the ch
 survives closing and reopening the tavern. The page's bottom line names the three keys;
 the alt variants are not advertised on the page.
 
-The keys go through the shared hotkey registry (`hotkeys.dll`, see `mod-hotkeys`) and
+The keys go through the shared hotkey registry (`hotkey_registry.dll`, see `mod-hotkey-registry`) and
 are registered only while page `-1` is the one on screen - armed when the window opens
 (it always opens on that page), disarmed the moment a tab is clicked (a detour on the
 window's own page switcher, `0x005CED00`) and on close. They do nothing anywhere else,

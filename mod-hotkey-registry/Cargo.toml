@@ -1,11 +1,11 @@
 [package]
-name = "mod-hotkeys"
+name = "mod-hotkey-registry"
 edition = "2021"
 version.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
-name = "hotkeys"
+name = "hotkey_registry"
 
 [dependencies]
 log = { workspace = true }

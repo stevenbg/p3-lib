@@ -1,9 +1,9 @@
 //! The debug keys: throwaway in-game probes for whatever is being reverse-engineered
-//! right now, moved here from mod-auto-supply so the gameplay mod and the debugging
-//! toolbox stay separate. F9 (with modifiers) and F10 are reserved for these; the
-//! probe bodies are rewritten per investigation.
+//! right now, kept in this crate so the gameplay mods and the debugging toolbox stay
+//! separate. F9 (with modifiers) and F10 are reserved for these; the probe bodies are
+//! rewritten per investigation.
 //!
-//! Keys are dispatched through the shared registry (`hotkeys.dll`); without it the
+//! Keys are dispatched through the shared registry (`hotkey_registry.dll`); without it the
 //! probes are inert. All handlers decline (return 0), so the game still sees the
 //! keys.
 //!
@@ -45,7 +45,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{VK_F10, VK_F9};
 const DEBUG_PROBE1_KEY: u32 = VK_F9.0 as u32;
 const DEBUG_PROBE2_KEY: u32 = VK_F10.0 as u32;
 
-/// The registry binding, null when hotkeys.dll is unavailable (probes inert).
+/// The registry binding, null when hotkey_registry.dll is unavailable (probes inert).
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
@@ -67,7 +67,7 @@ const PROBE_KEYS: [(u32, u32); 15] = [
     (DEBUG_PROBE2_KEY, MOD_ALT),
     (DEBUG_PROBE2_KEY, MOD_ALT | MOD_CTRL),
     (DEBUG_PROBE2_KEY, MOD_ALT | MOD_SHIFT),
-    // The convoy-leader probe, for teaching mod-auto-supply's route keys to work on a
+    // The convoy-leader probe, for teaching mod-trading-qol's route keys to work on a
     // convoy selection.
     (DEBUG_PROBE2_KEY, MOD_CTRL | MOD_SHIFT),
     // The beggar-target dump, moved off plain F9 when the spouse probe took it.
@@ -115,7 +115,7 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
 }
 
 /// Post an in-game popup on the event ticker, mirrored to the debug log (a copy of
-/// mod-auto-supply's helper - the probes' only shared dependencies were this and
+/// mod-trading-qol's helper - the probes' only shared dependencies were this and
 /// [selected_ship_index]).
 pub(crate) unsafe fn notify(text: &str) {
     info!("{text}");
@@ -858,7 +858,7 @@ unsafe fn debug_probe1_ship() {
 /// The convoy array, from `done/hotkey-supply.md`: records of [CONVOY_SIZE] bytes, and
 /// `convoy+0x10` is the LEAD SHIP INDEX - the ship that carries the convoy's trade route
 /// at [SHIP_ROUTE_HEAD_OFFSET]. `ship+0x8` is the ship's convoy index. This probe exists to
-/// confirm those two hops before mod-auto-supply's route keys start relying on them, which
+/// confirm those two hops before mod-trading-qol's route keys start relying on them, which
 /// is needed because the ship panel reports the *clicked* member rather than the leader, so
 /// pressing a route key on a convoy currently reads an empty route.
 const SHIP_CONVOY_INDEX_OFFSET: u32 = 0x8;
@@ -906,7 +906,7 @@ unsafe fn debug_probe_convoy() {
         Some(*((ship.address + SHIP_ROUTE_HEAD_OFFSET) as *const u16))
     };
     // One ship's line: name, convoy index, route head and whether that head is a real pool
-    // entry - which is exactly the test mod-auto-supply's route reader applies.
+    // entry - which is exactly the test mod-trading-qol's route reader applies.
     let describe = |index: u16| -> String {
         let Some(ship) = ships.get_ship(index) else {
             return format!("ship {index}: OUT OF RANGE (ships_size {ships_size})");
@@ -1683,9 +1683,8 @@ unsafe fn retire_probe_hang() {
 }
 
 // ---------------------------------------------------------------------------
-// The operation logger. Moved here from mod-auto-supply on 28 Aug 2026: it is a
-// debugging tool rather than a gameplay feature, and it had been sitting there
-// uncalled since the F9/F10 keys moved into this crate.
+// The operation logger: a debugging tool rather than a gameplay feature, so it lives
+// with the probes.
 //
 // It names the opcode behind any UI action in seconds, which is why it is the one
 // probe worth keeping permanently. Write-up: `.claude/notes/tools/operation-queue.md`.

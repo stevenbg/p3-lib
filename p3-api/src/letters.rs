@@ -31,7 +31,7 @@ pub const TASK_OPCODE_TAVERN_MISSION: u16 = 0x1b;
 /// Subtype 0x28 has exactly one creation site, `0x00518AB2`, guarded by the game's
 /// actual departure check at `0x00518A96`: `cmp [ship+0x40], MIN_SAILORS[type]` - crew
 /// below the `0x673660` table files 0x28, at-or-above files the generic subtype 0
-/// instead (`0x00518ABD`). mod-auto-supply hooks that site to hire the shortfall.
+/// instead (`0x00518ABD`). mod-trading-qol hooks that site to hire the shortfall.
 pub const ROUTE_NOTE_KIND_CREW_TOO_LOW: u32 = 0x28;
 /// `0x00518AB2`, module-relative for `hook_call_rel32`.
 pub const ROUTE_NOTE_CREW_TOO_LOW_CALL_SITE_OFFSET: u32 = 0x00118AB2;
