@@ -58,6 +58,10 @@ impl UIShipPanelPtr {
     /// The value [Self::VIEW_OFFSET] takes while the Goods view is showing - the default
     /// view, which draws the same barrel-and-capacity artwork as the Auto trade view.
     pub const VIEW_GOODS: u32 = 0;
+    /// A third view that draws the same barrel-and-capacity artwork as the Goods and
+    /// Auto trade views (confirmed in play). Not produced by the four named buttons, so
+    /// its title is unidentified, but it shares the barrel layout.
+    pub const VIEW_GOODS_ALT: u32 = 3;
     /// The value [Self::VIEW_OFFSET] takes while the Auto trade view is showing.
     pub const VIEW_AUTO_TRADE: u32 = 5;
 
@@ -102,11 +106,11 @@ impl UIShipPanelPtr {
         self.get_view() == Some(Self::VIEW_AUTO_TRADE)
     }
 
-    /// Is the panel on a view that draws the barrel-and-capacity artwork - the Goods
-    /// view or the Auto trade view, which share that layout? What a mod needs before
-    /// drawing over the barrel.
+    /// Is the panel on a view that draws the barrel-and-capacity artwork - Goods,
+    /// Auto trade, or the third barrel view [Self::VIEW_GOODS_ALT], which share that
+    /// layout? What a mod needs before drawing over the barrel.
     pub unsafe fn is_barrel_view(&self) -> bool {
-        matches!(self.get_view(), Some(Self::VIEW_GOODS | Self::VIEW_AUTO_TRADE))
+        matches!(self.get_view(), Some(Self::VIEW_GOODS | Self::VIEW_GOODS_ALT | Self::VIEW_AUTO_TRADE))
     }
 
     /// The current selection object, whose first `u16` is the selected ship index.
