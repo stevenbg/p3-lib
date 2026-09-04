@@ -55,5 +55,4 @@ endless churn.
 
 Silent in normal play. When it does intervene it writes one line to
 `_captain_retire_fix.log` in the game folder naming the captain, the ship recorded, and
-the ship he was found on - or that he was on none. Also logged via OutputDebugString
-(mod-tavern-details must be installed for DebugView to show it).
+the ship he was found on - or that he was on none. Also logged via OutputDebugString.

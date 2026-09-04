@@ -5,7 +5,7 @@ game raises a fatal exception. Patrician 3 normally dies to desktop silently - n
 minidump, no error dialog, nothing in DebugView - which makes crashes nearly
 impossible to diagnose; with this mod loaded, every crash leaves a report behind.
 
-Install: put `crash_reporter.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the debug keys). On load it logs "installed" (visible in DebugView; `p3-modloader` unlocks the gated mod logging).
+Install: put `crash_reporter.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the debug keys).
 
 ## How it works
 

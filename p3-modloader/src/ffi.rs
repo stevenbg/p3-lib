@@ -12,9 +12,9 @@ const WINMAIN_ADDRESS: u32 = 0x0064BE10;
 /// Sets the PEB BeingDebugged flag so `IsDebuggerPresent()` returns true, which is what
 /// unlocks the gated `win_dbg_logger` output of the modloader and of **every mod**. It
 /// lives here because this DLL is an import of the exe: its `DllMain` runs before any
-/// game code and before any mod loads, so no mod's `start()` logs are ever swallowed by
-/// directory order again (the gap `mod-tavern-details` used to plug). No real debugger
-/// attaches; output still reaches DebugView via `OutputDebugString`.
+/// game code and before any mod loads, so no mod's `start()` logs are swallowed by
+/// directory order. No real debugger attaches; output still reaches DebugView via
+/// `OutputDebugString`.
 ///
 /// Debug builds only: release builds compile the `debug!`/`info!` logging away
 /// entirely (the workspace sets `log`'s `release_max_level_error`), so there is

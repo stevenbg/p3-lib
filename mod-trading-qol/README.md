@@ -302,5 +302,4 @@ mod-tavern-details.)
   the marginal price at the end point, so a limit set exactly at a level lets the last
   transaction overshoot that stock point by up to one transaction chunk. Correcting for
   it needs the game's transaction chunk size, which is not reverse engineered yet.
-- Log output goes to OutputDebugString (DebugView or a debugger); mod-tavern-details fakes
-  the PEB BeingDebugged flag at load, which unlocks the gated logging of all mods.
+- Log output goes to OutputDebugString (DebugView or a debugger).
