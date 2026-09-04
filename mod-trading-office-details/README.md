@@ -27,7 +27,8 @@ Right-aligned lines, top to bottom:
   capacity (`town+0x2FC/+0x2FA/+0x2F8`), the residents of its own houses (`+0x77C/+0x77A/
   +0x778`) plus those of every office's houses (`office+0x2E2/+0x2E0/+0x2DE`), and the house
   count as capacity over the class's per-house capacity (280/140/80). Houses near full are
-  the cue to build more.
+  the cue to build more; a `*` in front of a class means a house of that type is already on
+  the construction list below.
 - **Under construction**: every site still being built in this town, grouped into yours,
   other merchants' and the town's, each group in the order the town's building workforce
   pays for them - the building's name, the game's own remaining building time (the number

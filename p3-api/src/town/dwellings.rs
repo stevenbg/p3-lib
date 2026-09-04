@@ -52,6 +52,19 @@ impl CitizenClass {
         }
     }
 
+    /// The class a dwelling building id houses: the name table (`0x006A57C8`) gives three
+    /// ids per house type - `0x15`..`0x17` Merchant's House, `0x18`..`0x1A` Gabled House,
+    /// `0x1B`..`0x1D` Half-timbered House; the construction pass chains exactly these nine
+    /// as dwellings (`0x005200F0`). `None` for any other building.
+    pub fn from_dwelling_building_id(building_id: u8) -> Option<CitizenClass> {
+        match building_id {
+            0x15..=0x17 => Some(CitizenClass::Rich),
+            0x18..=0x1A => Some(CitizenClass::Wealthy),
+            0x1B..=0x1D => Some(CitizenClass::Poor),
+            _ => None,
+        }
+    }
+
     /// People one house of this class holds (`0x00672A18` + 2 per class, rich first).
     pub fn per_house_capacity(self) -> u16 {
         unsafe { *((PER_HOUSE_CAPACITY_TABLE_ADDRESS + 4 - 2 * self.k()) as *const u16) }

@@ -66,10 +66,16 @@ pub(crate) unsafe fn draw_page(window: UITradingOfficeWindowPtr) {
 
 /// The town's housing per class, as the house info panel's "All dwellings in this town"
 /// block shows it: how many houses stand and how full they are. Full houses are the cue to
-/// build more; the game shows this only by clicking a town-owned house.
+/// build more; the game shows this only by clicking a town-owned house. A `*` in front of
+/// a class means a house of that type is already on the town's construction list.
 unsafe fn draw_dwellings(x: i32, y: i32, town_index: u8) -> i32 {
     let mut y = y;
     let town = GAME_WORLD_PTR.get_town(town_index);
+    let being_built: Vec<CitizenClass> = town
+        .get_pending_construction_sites()
+        .iter()
+        .filter_map(|(_, site)| CitizenClass::from_dwelling_building_id(site.get_building_id()))
+        .collect();
     font::ddraw_set_font(font::get_header_font());
     draw_text(x + VALUE_X, y, b"Dwellings");
     font::ddraw_set_font(font::get_normal_font());
@@ -81,7 +87,8 @@ unsafe fn draw_dwellings(x: i32, y: i32, town_index: u8) -> i32 {
         };
         // Name and count right-aligned in black, the occupancy in its own column fading
         // from black at 90% to red at 95% and above - full houses are the cue to build.
-        let line = format!("{}: {}", class.house_name(), dwellings.houses);
+        let mark = if being_built.contains(&class) { "* " } else { "" };
+        let line = format!("{mark}{}: {}", class.house_name(), dwellings.houses);
         draw_text(x + VALUE_X - OCCUPANCY_COLUMN_WIDTH, y, line.as_bytes());
         ddraw_set_constant_color(occupancy_color(percent));
         ddraw_set_text_mode(TEXT_MODE_LEFT);
