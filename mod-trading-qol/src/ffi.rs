@@ -62,12 +62,19 @@ pub(crate) const TRADE_WARES: std::ops::Range<u16> = 0..20;
 /// The town-scene object pointer; its +0xc324 field is the current town index.
 const TOWN_SCENE_PTR: *const u32 = 0x006e51ac as _;
 const TOWN_SCENE_CURRENT_TOWN_OFFSET: u32 = 0xc324;
-/// The window classes share their vtable layout: +0x118 is close, +0x120 is open.
+/// The window classes share their vtable layout: +0x118 is close, +0x120 is open, +0xF4 the
+/// per-frame update the scene container calls while the window is visible.
 const OFFICE_WINDOW_OPEN_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x120;
 const OFFICE_WINDOW_CLOSE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x118;
+const OFFICE_WINDOW_UPDATE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0xF4;
 
 static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+static UPDATE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+/// The number box class's key slot (module-relative pointer location): every focused number
+/// box in the game gets its keys through it; ours acts only on the office's price boxes.
+const NUMBER_WIDGET_KEY_POINTER_OFFSET: u32 = p3_api::ui::number_widget::VTABLE - 0x0040_0000 + p3_api::ui::number_widget::SLOT_KEY as u32;
+static NUMBER_KEY_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static DIALOG_CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static POPULATE_HOOKS: [AtomicPtr<CallRel32Hook>; 3] = [
     AtomicPtr::new(std::ptr::null_mut()),
@@ -253,6 +260,22 @@ pub unsafe extern "C" fn start() -> u32 {
             return 3;
         }
     }
+    // The sync column's buttons are polled from the window's per-frame update.
+    match hook_function_pointer(OFFICE_WINDOW_UPDATE_POINTER_OFFSET, office_window_update_hook as usize as u32) {
+        Ok(hook) => UPDATE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            error!("failed to hook office window update");
+            return 6;
+        }
+    }
+    // Plain Q..Y typed into a focused price box reprice that one ware.
+    match hook_function_pointer(NUMBER_WIDGET_KEY_POINTER_OFFSET, number_widget_key_hook as usize as u32) {
+        Ok(hook) => NUMBER_KEY_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            error!("failed to hook the number box key handler");
+            return 7;
+        }
+    }
 
     // The goods-dialog keys are registered after populate (the dialog's open: the
     // panel's Goods button and the dialog's own arrows - populate's three call
@@ -292,6 +315,8 @@ unsafe extern "thiscall" fn office_window_open_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*OPEN_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
     register_group(OWNER_OFFICE, &OFFICE_KEYS, &OFFICE_HANDLES, office_hotkeys);
+    // After the game's open, so our widgets register behind its children and draw on top.
+    crate::sync::on_open(&UITradingOfficeWindowPtr { address: window_address });
 }
 
 #[no_mangle]
@@ -299,6 +324,27 @@ unsafe extern "thiscall" fn office_window_close_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*CLOSE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
     unregister_group(&OFFICE_HANDLES);
+    crate::sync::on_close();
+}
+
+/// The scene container's per-frame update of the window (vtable `+0xF4`, `0x005D9500`).
+#[no_mangle]
+unsafe extern "thiscall" fn office_window_update_hook(window_address: u32) {
+    let orig: extern "thiscall" fn(u32) = mem::transmute((*UPDATE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
+    orig(window_address);
+    crate::sync::on_update(&UITradingOfficeWindowPtr { address: window_address });
+}
+
+/// The number box class's key handler (vtable `+0x1C`, `0x0045C300`): `thiscall(vk, repeat,
+/// flags)`, reached only for the focused box. A level key on an office price box is ours and
+/// never reaches the game's digit filter; everything else passes through.
+#[no_mangle]
+unsafe extern "thiscall" fn number_widget_key_hook(widget_address: u32, vk: u32, repeat: u32, flags: u32) {
+    if crate::office::on_price_widget_key(widget_address, vk) {
+        return;
+    }
+    let orig: extern "thiscall" fn(u32, u32, u32, u32) = mem::transmute((*NUMBER_KEY_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
+    orig(widget_address, vk, repeat, flags);
 }
 
 /// Populate = the goods dialog opening (or moving to another stop). thiscall with
@@ -320,7 +366,7 @@ unsafe extern "thiscall" fn dialog_close_hook(dialog: u32) {
 }
 
 /// The price level a Q..Y key stands for.
-fn level_of(vk: u32) -> Option<PriceLevel> {
+pub(crate) fn level_of(vk: u32) -> Option<PriceLevel> {
     LEVEL_KEYS.iter().find(|&&(key, _)| key == vk).map(|&(_, level)| level)
 }
 

@@ -3,5 +3,6 @@ pub(crate) mod ffi;
 pub(crate) mod goods_dialog;
 pub(crate) mod office;
 pub(crate) mod routes;
+pub(crate) mod sync;
 pub(crate) mod thaw;
 pub(crate) mod prices;

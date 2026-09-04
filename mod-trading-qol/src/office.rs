@@ -2,8 +2,6 @@
 //! provision and lock, DEL resets everything, CTRL/ALT+QWERTY reprice. Registration
 //! lives in [crate::ffi] (the window's vtable open/close hooks); this is the actions.
 
-use std::mem;
-
 use log::{debug, info};
 use num_traits::FromPrimitive;
 use p3_api::{
@@ -13,7 +11,7 @@ use p3_api::{
     operations::{execute_operation, OPERATIONS_PTR},
     ships::ShipsPtr,
     town::get_town_name,
-    ui::ui_trading_office_window::UITradingOfficeWindowPtr,
+    ui::ui_trading_office_window::{UITradingOfficeWindowPtr, ADMINISTRATOR_PAGE, ROW_COUNT, WARE_DISPLAY_ORDER},
 };
 
 use crate::prices::{buy_price, sell_price, PriceLevel};
@@ -35,8 +33,6 @@ const LOCKED_BUILDING_MATERIALS: [(WareId, i32); 6] = [
 /// asks for an equal amount of everything regardless of how it is measured.
 const BUY_AMOUNT_LOADS: i32 = 20;
 const BUY_AMOUNT_BARRELS: i32 = 200;
-/// The administrator view of the trading office window ("Trading Office" side button, pages 0-6).
-const ADMINISTRATOR_PAGE: i32 = 4;
 
 /// Returns the administrator view's office and its index, or logs why not.
 unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, String)> {
@@ -293,18 +289,8 @@ pub(crate) unsafe fn apply_prices(sell: Option<PriceLevel>, buy: Option<PriceLev
     refresh_administrator_view();
 }
 
-/// The administrator view's amount rows: widget structs at window+0x9840 + row*0x190,
-/// rows in the game's ware display order (the table at 0x698538, sorted at runtime by
-/// localized name - the open method's populate loop at 0x5d8f40 reads it the same way).
-/// The number widget setter 0x45c930 clamps to [row+0x180]..[row+0x184], stores the
-/// value at row+0x188 and refreshes the label text.
-const OFFICE_ROW_BASE: u32 = 0x9840;
-const OFFICE_ROW_STRIDE: u32 = 0x190;
-const WARE_DISPLAY_ORDER: *const u8 = 0x00698538 as _;
-const WIDGET_SET_VALUE: u32 = 0x0045c930;
-
 /// Re-selects the administrator page (rebuilds the direction arrows and prices) and
-/// pushes the office's amounts into the row widgets the way the window's own open
+/// pushes the office's amounts into the row boxes the way the window's own open
 /// method does - the amounts are populated only there, which is why they never
 /// refreshed before. (Cycling the window's close+open repopulates too, but detaches
 /// the side menu: the game's real open path goes through a view controller.)
@@ -320,14 +306,54 @@ unsafe fn refresh_administrator_view() {
         return;
     };
     let stocks = office.get_administrator_trade_stock();
-    let set_value: extern "thiscall" fn(u32, i32) = mem::transmute(WIDGET_SET_VALUE);
-    for row in 0..crate::ffi::TRADE_WARES.end as u32 {
-        let ware = *WARE_DISPLAY_ORDER.add(row as usize) as usize;
+    for row in 0..ROW_COUNT {
+        let ware = *WARE_DISPLAY_ORDER.add(row) as usize;
         if ware >= crate::ffi::TRADE_WARES.end as usize {
             continue;
         }
         let scaling = WareId::from_usize(ware).unwrap().get_scaling();
         let value = (stocks[ware] / scaling).clamp(0, 9999);
-        set_value(window.get_address() + OFFICE_ROW_BASE + row * OFFICE_ROW_STRIDE, value);
+        window.amount_widget(row).set_value(value);
     }
+}
+
+/// A plain Q..Y key typed into a focused price box of the administrator view: set that one
+/// ware's price to the level - the buy price for a buy order, the sell price for a sell -
+/// by writing the box's value. The window itself commits a focused box's value to the office
+/// every frame (operation `0x5B` with the row's direction), exactly as if the digits had been
+/// typed. Returns true when the key was taken; a box that is not one of the price boxes, or a
+/// key that is not a level, falls through to the game's digit filter.
+pub(crate) unsafe fn on_price_widget_key(widget_address: u32, vk: u32) -> bool {
+    let Some(level) = crate::ffi::level_of(vk) else {
+        return false;
+    };
+    let window = UITradingOfficeWindowPtr::new();
+    if window.get_address() == 0 {
+        return false;
+    }
+    let Some(row) = window.price_widget_row(widget_address) else {
+        return false;
+    };
+    let ware_index = *WARE_DISPLAY_ORDER.add(row) as u16;
+    if !crate::ffi::TRADE_WARES.contains(&ware_index) {
+        return false;
+    }
+    let ware_id = WareId::from_u16(ware_index).unwrap();
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    let Some(office) = GAME_WORLD_PTR.get_office_in_of(window.get_town_index() as _, merchant_index as _) else {
+        return false;
+    };
+    // The direction is the order's: a price of 0 is "no order", and there is nothing to price.
+    let current = office.get_administrator_trade_prices()[ware_index as usize];
+    let (price, what) = match current {
+        0 => {
+            crate::ffi::notify(&format!("{ware_id:?}: no order to price"));
+            return true;
+        }
+        p if p < 0 => (buy_price(ware_index, level), "buy"),
+        _ => (sell_price(ware_index, level), "sell"),
+    };
+    window.price_widget(row).set_value(price);
+    info!("price box {level:?} on row {row}: {ware_id:?} {what} price {price}");
+    true
 }

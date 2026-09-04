@@ -58,9 +58,9 @@ pub const CONTAINER_STACK: u32 = 0x006D_A5F0;
 /// `thiscall(stack) -> container*`: the scene on top of the stack, or 0 when it is empty.
 const CONTAINER_ROOT: u32 = 0x004B_9730;
 /// `thiscall(child)`, `ret 4`: append a child (offset from its `+0x84` rect).
-const CONTAINER_ADD: u32 = 0x004B_4E30;
+pub(crate) const CONTAINER_ADD: u32 = 0x004B_4E30;
 /// `thiscall(child)`, `ret 4`: remove a child; a no-op when absent.
-const CONTAINER_REMOVE: u32 = 0x004B_4EB0;
+pub(crate) const CONTAINER_REMOVE: u32 = 0x004B_4EB0;
 /// `cdecl(rect*) -> bool`: begin a draw; 0 when the rect misses the dirty region.
 const RENDER_BEGIN_RECT: u32 = 0x004B_B7C0;
 /// `cdecl(context)`: the render context handed down the widget tree as the draw's first

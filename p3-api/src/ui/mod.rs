@@ -4,12 +4,15 @@ use class37::Class37Ptr;
 
 use crate::data::{screen_rectangle::Rect, ui_render_text_at};
 
+pub mod animation;
+pub mod button;
 pub mod class37;
 pub mod class73;
 pub mod custom_window;
 pub mod ddraw;
 pub mod font;
 pub mod graphics;
+pub mod number_widget;
 pub mod rich_text;
 pub mod scroll_list;
 pub mod ui_church_window;
@@ -22,6 +25,7 @@ pub mod ui_tavern_window;
 pub mod ui_town_hall_sidemenu;
 pub mod ui_town_hall_window;
 pub mod ui_trading_office_window;
+pub mod widget;
 pub mod window_manager;
 
 pub unsafe fn rect_clipper_stuff(rect: *const Rect) {
