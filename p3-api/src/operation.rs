@@ -94,6 +94,23 @@ pub enum Operation {
         office_index: u32,
         ware_id: WareId,
     },
+    /// Employ an administrator in the merchant's office in that town (opcode 0x5E, mode 0,
+    /// handler 0x0053D990). The handler resolves the office by merchant and town
+    /// (0x005308A0) and, if `office+0x2F2` holds no live auto-trader index, allocates a
+    /// fresh record (0x005097C0), stores its index there, zeroes its trade skill and
+    /// recomputes the wage (0x004FE160). An office that already has one is left alone.
+    /// The trading office window issues it from its hire button at 0x005DC945.
+    HireAdministrator {
+        merchant_index: u16,
+        town_index: u16,
+    },
+    /// Dismiss the office's administrator (opcode 0x5E, mode 1): frees his record to
+    /// the freelist (0x005098B0) and clears bits 0-1 of `office+0x2D6`. A re-hire gets a
+    /// new record at trade 0.
+    DismissAdministrator {
+        merchant_index: u16,
+        town_index: u16,
+    },
     /// The administrator view's per-ware checkbox "Lock min. store quantity for auto
     /// trade ships": sets or clears the ware's bit in the office lock bitmap
     /// (office+0x3b4). The executor (opcode 0x66, handlers 0x53644b/0x53dd90) resolves
@@ -306,6 +323,14 @@ impl Operation {
                 op[8..0x0c].copy_from_slice(&price.to_le_bytes());
                 op[0x0c..0x10].copy_from_slice(&office_index.to_le_bytes());
                 op[0x10..0x14].copy_from_slice(&ware_id.to_le_bytes());
+            }
+            Operation::HireAdministrator { merchant_index, town_index } | Operation::DismissAdministrator { merchant_index, town_index } => {
+                let opcode: u32 = 0x5e;
+                let mode: u32 = if matches!(self, Operation::HireAdministrator { .. }) { 0 } else { 1 };
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4..6].copy_from_slice(&merchant_index.to_le_bytes());
+                op[8..0x0a].copy_from_slice(&town_index.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mode.to_le_bytes());
             }
             Operation::OfficeAutotradeLockChange {
                 ware_id,

@@ -11,6 +11,7 @@ use p3_api::{
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
+    ships::ShipsPtr,
     town::get_town_name,
     ui::ui_trading_office_window::UITradingOfficeWindowPtr,
 };
@@ -64,16 +65,26 @@ unsafe fn resolve_office() -> Option<(p3_api::data::office::OfficePtr, u16, Stri
     Some((office, office_index, town))
 }
 
-/// F1: for every ware whose current order is "do nothing", set BUY (at the Center buy
-/// level, t1) if the town produces the ware, otherwise SELL (at the Center sell level,
-/// t0 - the supply price). Wares that already have an order are left untouched; a buy's
-/// amount is set to [BUY_AMOUNT_LOADS] / [BUY_AMOUNT_BARRELS] only if the current amount
-/// is 0.
+/// F1: employ an administrator if the office has none, then for every ware whose current
+/// order is "do nothing", set BUY (at the Center buy level, t1) if the town produces the
+/// ware, otherwise SELL (at the Center sell level, t0 - the supply price). Wares that
+/// already have an order are left untouched; a buy's amount is set to [BUY_AMOUNT_LOADS] /
+/// [BUY_AMOUNT_BARRELS] only if the current amount is 0.
 pub(crate) unsafe fn on_setup_hotkey() {
     let Some((office, office_index, town)) = resolve_office() else {
         return;
     };
     let town_index = UITradingOfficeWindowPtr::new().get_town_index() as u8;
+    // The administrator index is out of range while nobody is employed - the game's own
+    // test. Executed directly, like the orders below, so the view refresh sees him.
+    let hired = office.get_administrator_index() >= ShipsPtr::new().get_auto_traders_size();
+    if hired {
+        execute_operation(&Operation::HireAdministrator {
+            merchant_index: OPERATIONS_PTR.get_player_merchant_index() as u16,
+            town_index: town_index as u16,
+        });
+        info!("setup in {town}: employed an administrator");
+    }
     let production = GAME_WORLD_PTR.get_town(town_index).get_production_values();
     let current_prices = office.get_administrator_trade_prices();
     let stocks = office.get_administrator_trade_stock();
@@ -114,7 +125,8 @@ pub(crate) unsafe fn on_setup_hotkey() {
         bought.join(", ")
     );
     crate::ffi::notify(&format!(
-        "Office setup in {town}: {} buys, {sold} sells, {untouched} kept",
+        "Office setup in {town}: {}{} buys, {sold} sells, {untouched} kept",
+        if hired { "administrator employed, " } else { "" },
         bought.len()
     ));
     refresh_administrator_view();
