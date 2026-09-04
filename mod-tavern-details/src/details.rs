@@ -32,16 +32,15 @@ pub static KNOWN_MISSIONS: &CStr = c"Known missions";
 pub static OFFER: &CStr = c"Offer";
 pub static TERMS: &CStr = c"Terms";
 pub static MY_CAPTAINS: &CStr = c"My captains";
-pub static CREW_HINT: &CStr = c"1: crew";
-pub static MISSIONS_HINT: &CStr = c"2: missions";
-pub static CAPTAINS_HINT: &CStr = c"3: my captains";
+/// The key hints, one line on the page's bottom row whatever the view above shows.
+pub static HINTS: &CStr = c"1: crew    2: missions    3: my captains";
 
 /// Text mode 2 draws right-aligned: every column x below is the right edge of that
 /// column, so a long town name reaches further left than a short one. `TRADE_X` and
 /// `VALUE_X` are shared by the sailors and missions views; the captains table has its own
 /// tighter columns below. The one exception is the missions table's offer column
 /// ([MISSION_OFFER_X]), which is drawn left-aligned and so names its left edge.
-const TOWN_X: i32 = 135;
+pub(crate) const TOWN_X: i32 = 135;
 const TRADE_X: i32 = 225;
 const VALUE_X: i32 = 345;
 /// Icons are 16x16, and heading a column with one instead of a word lets the skill columns
@@ -62,21 +61,6 @@ const CREW_X: i32 = TOWN_X + 220;
 /// has to hold a town name, and no town name is as wide as the "Known missions" heading
 /// over it, so the space it gives up is free. It goes to the terms cell, which is the one
 /// that runs out of room.
-/// The my-captains table's own columns. The crew table leaves 70px between the name and
-/// its first number because a kind icon sits in that gap ([KIND_X]); this table has no
-/// icon there, so every column is one even step from the last.
-const CAPTAIN_COLUMN_GAP: i32 = 30;
-/// Four even columns are narrower than the crew page's five, so the table is shifted right
-/// until its last column lands on [CREW_X] and both pages fill the same band. The shift also
-/// buys the name column the room it needs: a ship name can run to 31 characters, which is
-/// wider than [TOWN_X] alone, and these names are right-aligned.
-const CAPTAIN_SHIFT: i32 = CREW_X - (TOWN_X + 4 * CAPTAIN_COLUMN_GAP);
-const CAPTAIN_NAME_X: i32 = TOWN_X + CAPTAIN_SHIFT;
-const CAPTAIN_SKILL_1_X: i32 = CAPTAIN_NAME_X + CAPTAIN_COLUMN_GAP;
-const CAPTAIN_SKILL_2_X: i32 = CAPTAIN_SKILL_1_X + CAPTAIN_COLUMN_GAP;
-const CAPTAIN_SKILL_3_X: i32 = CAPTAIN_SKILL_2_X + CAPTAIN_COLUMN_GAP;
-const CAPTAIN_PAY_X: i32 = CAPTAIN_SKILL_3_X + CAPTAIN_COLUMN_GAP;
-
 const MISSION_SHIFT: i32 = 30;
 const MISSION_TOWN_X: i32 = TOWN_X - MISSION_SHIFT;
 /// The offer column is the one **left**-aligned column on the page, so this x is its LEFT
@@ -94,21 +78,27 @@ const TERMS_GAP: i32 = 10;
 /// The text modes the page uses: `1` draws from the x given, `2` draws back to it.
 const TEXT_MODE_LEFT: u32 = 1;
 const TEXT_MODE_RIGHT: u32 = 2;
-const FIRST_ROW_Y: i32 = 12;
-const ROW_HEIGHT: i32 = 16;
-const BLACK: u32 = 0xff000000;
+pub(crate) const FIRST_ROW_Y: i32 = 12;
+pub(crate) const ROW_HEIGHT: i32 = 16;
+pub(crate) const BLACK: u32 = 0xff000000;
 
 /// What the page shows, switched by a key press and kept across openings of the
 /// window: 1 the captains and pirates, 2 the mission offers, with alt selecting
-/// every town instead of only the enterable ones. The keys go through the shared
-/// hotkey registry, registered only while this page (the tavern's -1 page) is on
-/// screen - see ffi.rs for the scope events.
+/// every town instead of only the enterable ones; 3 the player's own captains, with
+/// alt revealing their skill caps. The keys go through the shared hotkey registry,
+/// registered only while this page (the tavern's -1 page) is on screen - see ffi.rs
+/// for the scope events.
 static VIEW: AtomicU8 = AtomicU8::new(VIEW_CREW);
 static SHOW_ALL_TOWNS: AtomicBool = AtomicBool::new(false);
 
 const VIEW_CREW: u8 = 0;
 const VIEW_MISSIONS: u8 = 1;
 const VIEW_CAPTAINS: u8 = 2;
+
+/// Whether key 3's view is the one selected - the scrollbar rides along only then.
+pub(crate) fn captains_view_selected() -> bool {
+    VIEW.load(Ordering::Relaxed) == VIEW_CAPTAINS
+}
 
 pub(crate) const PAGE_KEY_CREW: u32 = VK_1.0 as u32;
 pub(crate) const PAGE_KEY_MISSIONS: u32 = VK_2.0 as u32;
@@ -159,9 +149,9 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     ddraw_set_text_mode(TEXT_MODE_RIGHT);
 
     let x = window.get_x();
-    let mut y = window.get_y() + FIRST_ROW_Y;
-    // Stop before the window's bottom edge instead of drawing past it.
-    let last_y = window.get_y() + window.get_height() - ROW_HEIGHT;
+    let y = window.get_y() + FIRST_ROW_Y;
+    // The tables stop above the hint row, which sits on the window's last row.
+    let last_y = last_table_row_y(window);
 
     let all_towns = SHOW_ALL_TOWNS.load(Ordering::Relaxed);
     let view = VIEW.load(Ordering::Relaxed);
@@ -170,29 +160,27 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     match view {
         VIEW_MISSIONS => {
             let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
-            y = draw_missions(window, y, last_y, heading, &towns, all_towns);
+            draw_missions(window, y, last_y, heading, &towns, all_towns);
         }
         VIEW_CAPTAINS => {
-            y = draw_my_captains(x, y, last_y, MY_CAPTAINS);
+            crate::my_captains::draw(window, y, MY_CAPTAINS, all_towns);
         }
         _ => {
             let heading = if all_towns { CREW } else { KNOWN_CREW };
-            y = draw_crew(x, y, last_y, heading, &towns, all_towns);
+            draw_crew(x, y, last_y, heading, &towns, all_towns);
         }
     }
 
-    if y <= last_y {
-        font::ddraw_set_font(font::get_normal_font());
-        let other = match view {
-            VIEW_MISSIONS => CREW_HINT,
-            VIEW_CAPTAINS => CREW_HINT,
-            _ => MISSIONS_HINT,
-        };
-        draw_text(x + VALUE_X, y + ROW_HEIGHT, other.to_bytes());
-        if view != VIEW_CAPTAINS {
-            draw_text(x + VALUE_X, y + 2 * ROW_HEIGHT, CAPTAINS_HINT.to_bytes());
-        }
-    }
+    font::ddraw_set_font(font::get_normal_font());
+    ddraw_set_constant_color(BLACK);
+    ddraw_set_text_mode(TEXT_MODE_RIGHT);
+    draw_text(x + VALUE_X, last_y + ROW_HEIGHT, HINTS.to_bytes());
+}
+
+/// The last row a table may draw on: the row above the hint line, which takes the window's
+/// last row.
+pub(crate) fn last_table_row_y(window: UITavernWindowPtr) -> i32 {
+    window.get_y() + window.get_height() - 2 * ROW_HEIGHT
 }
 
 /// One row per mission a tavern's side room offers, by town.
@@ -301,7 +289,7 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
 
 /// A graphic's width, for placing it against right-aligned text; `ICON` covers the case
 /// where the graphic is missing.
-unsafe fn icon_width(id: u32) -> i32 {
+pub(crate) unsafe fn icon_width(id: u32) -> i32 {
     graphic_frame_size(id, 0).map(|(width, _)| width).unwrap_or(ICON)
 }
 
@@ -377,53 +365,6 @@ unsafe fn draw_crew(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8], a
     y
 }
 
-/// Key 3: the player's own captains, one row per ship that has one - the ship's name and
-/// the captain's three skills in the same columns, and under the same icons, the crew table
-/// uses. A ship without a captain is left out; so is a captain-less fleet, which simply
-/// draws the heading and nothing under it.
-///
-/// The fleet is the merchant's own ship chain (`merchant+0xE` head, `ship+0x4` next), so
-/// convoy members and ships at sea are included - a captain trains wherever his ship is.
-/// The walk is bounded by the ship count, since a corrupt link would otherwise spin.
-unsafe fn draw_my_captains(x: i32, y: i32, last_y: i32, heading: &CStr) -> i32 {
-    let mut y = y;
-    font::ddraw_set_font(font::get_header_font());
-    draw_text(x + CAPTAIN_NAME_X, y, heading.to_bytes());
-    for (frame, column) in [(0, CAPTAIN_SKILL_1_X), (1, CAPTAIN_SKILL_2_X), (2, CAPTAIN_SKILL_3_X)] {
-        draw_graphic_frame(GRAPHIC_ID_BONUS, frame, x + column - icon_width(GRAPHIC_ID_BONUS), y);
-    }
-    draw_graphic(GRAPHIC_ID_MONEY, x + CAPTAIN_PAY_X - icon_width(GRAPHIC_ID_MONEY), y);
-    ddraw_set_constant_color(BLACK);
-    y += ROW_HEIGHT;
-
-    font::ddraw_set_font(font::get_normal_font());
-    let ships = ShipsPtr::new();
-    let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
-
-    let mut ship_index = merchant.get_first_ship_index();
-    for _ in 0..ships.get_ships_size() {
-        let Some(ship) = ships.get_ship(ship_index) else {
-            break;
-        };
-        if y > last_y {
-            break;
-        }
-        if let Some(trader) = ships.get_auto_trader(ship.get_captain_index()) {
-            // The name comes out of a fixed 32-byte buffer, so it carries its padding.
-            let name = ship.get_name();
-            draw_text(x + CAPTAIN_NAME_X, y, name.trim_end_matches('\0').as_bytes());
-            // Same order as the game's captain panel: trade, navigation, combat.
-            draw_number(x + CAPTAIN_SKILL_1_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
-            draw_number(x + CAPTAIN_SKILL_2_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
-            draw_number(x + CAPTAIN_SKILL_3_X, y, AutoTraderPtr::skill_level(trader.get_combat_skill()) as i32, "");
-            draw_number(x + CAPTAIN_PAY_X, y, trader.get_daily_wage() as i32, "");
-            y += ROW_HEIGHT;
-        }
-        ship_index = ship.get_next_ship_index_of_merchant();
-    }
-    y
-}
-
 /// The towns the player may legally enter, which is where he can hire: the ones he has
 /// a trading office in, plus the ones one of his ships is in port at. With `all_towns`,
 /// every town instead, enterable or not.
@@ -491,7 +432,7 @@ unsafe fn towns_with_player_ships(ships: &ShipsPtr, player_merchant: u16) -> [bo
 
 /// The game's text drawing takes a NUL-terminated string in its own codepage, so
 /// latin1 bytes go through unchanged.
-unsafe fn draw_text(x: i32, y: i32, text: &[u8]) {
+pub(crate) unsafe fn draw_text(x: i32, y: i32, text: &[u8]) {
     let mut buffer = text.to_vec();
     buffer.push(0);
     ui_render_text_at(x, y, &buffer);
@@ -501,12 +442,12 @@ unsafe fn draw_text(x: i32, y: i32, text: &[u8]) {
 /// switched and switched back: left on `x`, then straight back to the page's own mode.
 /// Leaving it on the left mode would left-align whatever the next row draws first - the town
 /// name - and the terms cell only restores the mode when a row actually has terms.
-unsafe fn draw_text_left(x: i32, y: i32, text: &[u8]) {
+pub(crate) unsafe fn draw_text_left(x: i32, y: i32, text: &[u8]) {
     ddraw_set_text_mode(TEXT_MODE_LEFT);
     draw_text(x, y, text);
     ddraw_set_text_mode(TEXT_MODE_RIGHT);
 }
 
-unsafe fn draw_number(x: i32, y: i32, value: i32, suffix: &str) {
+pub(crate) unsafe fn draw_number(x: i32, y: i32, value: i32, suffix: &str) {
     draw_text(x, y, format!("{value}{suffix}").as_bytes());
 }

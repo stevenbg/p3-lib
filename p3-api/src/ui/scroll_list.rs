@@ -98,12 +98,45 @@ impl ScrollList {
         self.write(FIELD_ROW_HEIGHT, row_height);
     }
 
-    /// The number of rows. Applied at once while attached.
+    /// The number of rows. Applied at once while attached - but only when it changed, since
+    /// applying it hides and re-shows the bar, which would reset a drag in progress.
     pub unsafe fn set_count(&self, count: u32) {
+        if count == self.read::<u32>(FIELD_COUNT) && self.is_attached() {
+            return;
+        }
         self.write(FIELD_COUNT, count);
-        if self.read::<u32>(FIELD_ATTACHED) != 0 {
+        if self.is_attached() {
             self.apply_count();
         }
+    }
+
+    pub fn is_attached(&self) -> bool {
+        unsafe { self.read::<u32>(FIELD_ATTACHED) != 0 }
+    }
+
+    /// Register the bar (and its buttons) in the scene's root container, placed at the area
+    /// given - for a bar riding on a window that is not ours. Call after that window is in
+    /// the container, so the bar draws above it. The ship overview's per-open order
+    /// (`0x004757E0`..): release the thumb, place, hide, then the count.
+    pub unsafe fn attach_to_root(&self) {
+        let root = super::custom_window::root_container();
+        if root == 0 {
+            return;
+        }
+        let release_thumb: extern "thiscall" fn(u32) = std::mem::transmute(SCROLLBAR_RELEASE_THUMB);
+        release_thumb(self.bar());
+        let area: Rect = self.read(FIELD_AREA);
+        let set_rect: extern "thiscall" fn(u32, *const Rect, i32, i32, u32) = std::mem::transmute(SCROLLBAR_SET_RECT);
+        set_rect(self.bar(), &area, 0, self.read(FIELD_ROW_HEIGHT), root);
+        self.write(FIELD_ATTACHED, 1u32);
+        self.apply_count();
+    }
+
+    /// Take the bar and its buttons out of the root container.
+    pub unsafe fn detach(&self) {
+        let detach: extern "thiscall" fn(u32) = std::mem::transmute(SCROLLBAR_DETACH);
+        detach(self.bar());
+        self.write(FIELD_ATTACHED, 0u32);
     }
 
     /// The first visible row, as the bar stands now.
@@ -143,22 +176,12 @@ impl ScrollList {
 }
 
 impl Widget for ScrollList {
-    /// The ship overview's per-open order (`0x004757E0`..): release the thumb, place (which
-    /// registers bar and buttons in the container), hide, then the count.
-    unsafe fn attach(&mut self, _window: &GameWindow, root: u32) {
-        let release_thumb: extern "thiscall" fn(u32) = std::mem::transmute(SCROLLBAR_RELEASE_THUMB);
-        release_thumb(self.bar());
-        let area: Rect = self.read(FIELD_AREA);
-        let set_rect: extern "thiscall" fn(u32, *const Rect, i32, i32, u32) = std::mem::transmute(SCROLLBAR_SET_RECT);
-        set_rect(self.bar(), &area, 0, self.read(FIELD_ROW_HEIGHT), root);
-        self.write(FIELD_ATTACHED, 1u32);
-        self.apply_count();
+    unsafe fn attach(&mut self, _window: &GameWindow, _root: u32) {
+        ScrollList::attach_to_root(self);
     }
 
     unsafe fn detach(&mut self) {
-        let detach: extern "thiscall" fn(u32) = std::mem::transmute(SCROLLBAR_DETACH);
-        detach(self.bar());
-        self.write(FIELD_ATTACHED, 0u32);
+        ScrollList::detach(self);
     }
 
     /// The bar only dirties itself when it moves; the rows it scrolls are the window's.

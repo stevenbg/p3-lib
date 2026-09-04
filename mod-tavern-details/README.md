@@ -8,7 +8,7 @@ Install: put `tavern_details.dll` into the `mods` folder (requires the modloader
 
 ## Page contents
 
-Two views, **1** and **2**.
+Three views, **1**, **2** and **3**.
 
 1 - everyone a town has to hire, one row per man, headed by the game's own icons - the
 three skill bonuses out of one sheet, the coin, the crew figure:
@@ -42,7 +42,20 @@ empty.
 A smuggler's order names its destination only in the message that follows acceptance, so
 the filtered view leaves that cell blank and only the unrestricted one fills it in.
 
-Both views cover the towns the player may legally enter, which is where he can hire:
+3 - **my captains**: the player's own captained ships, one row per ship - its name, the
+captain's trade, navigation and combat levels under the same icons, and his daily wage.
+The fleet is the merchant's own ship chain (below), so convoy members and ships at sea
+are included: a captain trains wherever his ship is. The table is sorted by name; a click
+on a column header sorts by that column - names ascending, numbers descending - and a
+second click reverses it, marked by a `^` or `v` beside the header. When the fleet has
+more captains than the page has rows, the game's own scrollbar appears down the right
+edge: its buttons, thumb and the mouse wheel over the table all work, because it is the
+same `CP2Scrollbar` the ship overview uses, driven by the game (see below). **Alt+3** is
+the same table with every skill written as `level/cap`, the cap being the ceiling of the
+captain record's slot (`p3-api`'s `auto_trader::skill_caps` - it belongs to the slot, not
+the man, so two captains at the same level can have different room to grow).
+
+Views 1 and 2 cover the towns the player may legally enter, which is where he can hire:
 the ones he has a trading office in, plus the ones one of his ships is in - including a
 ship still entering the harbour, which is when the town becomes enterable and its tavern
 reachable (ship status `<= 3`, town from the ship's `+0x39`).
@@ -52,30 +65,26 @@ ship `+0x4` for the next link), the way the game's per-merchant ship census at
 `0x004F0AB1` does, so a world with a thousand ships in it costs no more than the
 player's own fleet.
 
-Each view has a filtered and an unrestricted variant: **1**/**2** list only the enterable
-towns and only what the player could know, **Alt+1**/**Alt+2** every town in the game and
-everything readable - a pirate's skills and a smuggler's destination appear only there. The
-filtered headings say "Known crew/missions in town", since what they list is what the
-player can see rather than what exists; the unrestricted ones drop the word. The keys act on their
-down edge, so nothing has to be held, and the chosen view survives closing and reopening
-the tavern. The page's bottom line names the key for the other view; the alt variants
-are not advertised on the page.
+Each view has a plain and an alt variant: **1**/**2** list only the enterable towns and
+only what the player could know, **Alt+1**/**Alt+2** every town in the game and everything
+readable - a pirate's skills and a smuggler's destination appear only there - and **Alt+3**
+adds the skill caps. The filtered headings say "Known crew/missions in town", since what
+they list is what the player can see rather than what exists; the unrestricted ones drop
+the word. The keys act on their down edge, so nothing has to be held, and the chosen view
+survives closing and reopening the tavern. The page's bottom line names the three keys;
+the alt variants are not advertised on the page.
 
 The keys go through the shared hotkey registry (`hotkeys.dll`, see `mod-hotkeys`) and
 are registered only while page `-1` is the one on screen - armed when the window opens
 (it always opens on that page), disarmed the moment a tab is clicked (a detour on the
 window's own page switcher, `0x005CED00`) and on close. They do nothing anywhere else,
-and without the registry they are inert while the rest of the mod keeps working. The
-historical reason they are number keys - `mod-auto-supply`'s all-seeing `WH_KEYBOARD`
-hook would have acted on any F-key from anywhere - is gone now that every mod's keys
-are scoped through the registry; they simply stay 1 and 2.
+and without the registry they are inert while the rest of the mod keeps working.
 
 ## Letter popups name their town
 
-Folded in from `mod-ui-tweaks`, whose one tweak was about the same thing this page is
-about - knowing where a mission wants the ship without opening every letter. The
-incoming-letter notifications on the top right read "Personal letter: Patrol -
-Stockholm" instead of "Personal letter: Patrol".
+The incoming-letter notifications on the top right read "Personal letter: Patrol -
+Stockholm" instead of "Personal letter: Patrol", so the town a mission wants the ship in
+is known without opening the letter.
 
 Simple letters carry a usable town byte. Scripted letters do not: their town byte is
 the low byte of whatever script variable the letter was created with, which need not be
@@ -89,10 +98,6 @@ Two call hooks do it (`src/letter_popups.rs`): the mailbox insert's announcer ca
 enqueue call (`0x004D7D12`) rebuilds the popup string with the town appended. The
 enqueue takes its string by value and releases it, so the hook releases the incoming
 one and hands the original a fresh one.
-
-This mod also fakes the PEB BeingDebugged flag at load, which is what unlocks the gated
-`win_dbg_logger` output of **every** mod for DebugView - it came along with
-`mod-ui-tweaks` and stays here, in one obvious place, until it is no longer wanted.
 
 ## How it works
 
@@ -113,8 +118,10 @@ instance, only while one is available in that town.)
 |Phase|Where|What for|
 |-|-|-|
 |open (`+0x120`)|vtable hook|set the class48 drawing state once, so the page's text is not clipped|
-|update (`+0xF4`)|detour at `0x005CD54D`, continue `0x005CD553`|register the window's area as changed (`0x004B9650`) while the page is shown|
+|update (`+0xF4`)|detour at `0x005CD54D`, continue `0x005CD553`|register the window's area as changed (`0x004B9650`) while the page is shown; keep the captains view's scrollbar attached, counted and polled|
 |draw (`+0x9C`)|detour at `0x005CE3E0`, continue `0x005CE3E6`|render the page text|
+|event (`+0x18`)|vtable hook|the widget event handler, `(point*, type)`; type `-2` is a left click, tested against the captains table's header cells|
+|close (`+0x118`)|vtable hook|disarm the page keys, take the scrollbar down|
 
 Beyond the addresses - the page field is `+0x1BF4`, the jump tables are `0x005CDBC8`
 (update) and `0x005CE4F4` (draw) - nothing about the pattern differs from
@@ -129,3 +136,17 @@ and the text flickering.
 The page draws no window title: the game's own page `-1` has none, and
 `render_window_title` (`0x00420C70`) would spend the top of the window on the title
 banner graphic, which the tables need for rows.
+
+### The scrollbar
+
+The captains view's bar is the game's `CP2Scrollbar` inside its list controller, through
+`p3-api`'s `ui::scroll_list::ScrollList`. Windows and their sub-widgets are all direct
+children of one flat root widget container, drawn and updated in registration order, so
+the bar is registered there (`set_rect`, `0x00460EF0`, does that itself) *after* the
+tavern window while view 3 is on screen and taken out (`0x00461480`) the moment the view,
+the page or the window goes. The game then does the rest: the container draws it, drags
+its thumb, and the container's mouse-wheel handler (`0x004B6A90`) feeds notches to the bar
+whose catchment rect - the whole list area handed to `set_rect` - contains the cursor.
+This mod only reads the first visible row back (`controller + 0x3A4`) and starts the table
+there. The bar shows itself when the count exceeds the rows that fit; the table stops a row
+short of the hint line so the bar clears the window's close button.

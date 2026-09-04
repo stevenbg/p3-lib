@@ -34,6 +34,13 @@ const WINDOW_OPEN_POINTER_OFFSET: u32 = UITavernWindowPtr::VTABLE_OFFSET + 0x120
 static WINDOW_OPEN_HOOK: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 const WINDOW_CLOSE_POINTER_OFFSET: u32 = UITavernWindowPtr::VTABLE_OFFSET + 0x118;
 static WINDOW_CLOSE_HOOK: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+/// The widget event handler, `thiscall(point*, type)`, `ret 8`: the root container's input
+/// dispatcher calls it on the topmost child under the cursor with the screen point. Types
+/// seen in the dispatcher: 1 and 2 (button down/up), -2 (left click - the ship overview's
+/// row click, play-verified here as the header click), -3.
+const WINDOW_EVENT_POINTER_OFFSET: u32 = UITavernWindowPtr::VTABLE_OFFSET + 0x18;
+static WINDOW_EVENT_HOOK: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+const EVENT_LEFT_CLICK: i32 = -2;
 
 /// The tavern's page switcher `set_page(page)` (`0x005CED00`): the single method
 /// behind every tab click and most in-page jumps (play-verified for the hotkey
@@ -48,17 +55,18 @@ static SET_PAGE_CONTINUATION: u32 = 0x005CED07;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"tavern-details page";
 
-/// The details page's keys: 1 crew (alt: every town), 2 missions (alt: every town).
-/// Registered while the tavern window shows its -1 page, unregistered the moment a
-/// tab is clicked or the window closes.
-const PAGE_KEYS: [(u32, u32); 5] = [
+/// The details page's keys: 1 crew (alt: every town), 2 missions (alt: every town),
+/// 3 my captains (alt: with the skill caps). Registered while the tavern window shows its
+/// -1 page, unregistered the moment a tab is clicked or the window closes.
+const PAGE_KEYS: [(u32, u32); 6] = [
     (crate::details::PAGE_KEY_CREW, 0),
     (crate::details::PAGE_KEY_CREW, MOD_ALT),
     (crate::details::PAGE_KEY_MISSIONS, 0),
     (crate::details::PAGE_KEY_MISSIONS, MOD_ALT),
     (crate::details::PAGE_KEY_CAPTAINS, 0),
+    (crate::details::PAGE_KEY_CAPTAINS, MOD_ALT),
 ];
-static PAGE_HANDLES: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
+static PAGE_HANDLES: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
 
 unsafe fn register_page_keys() {
     let Some(api) = HOTKEYS.load(Ordering::SeqCst).as_ref() else { return };
@@ -135,6 +143,13 @@ pub unsafe extern "C" fn start() -> u32 {
         error!("failed to detour the tavern set_page at {SET_PAGE_PATCH_ADDRESS:#010x}");
         return 6;
     }
+    match hook_function_pointer(WINDOW_EVENT_POINTER_OFFSET, window_event_hook as usize as u32) {
+        Ok(hook) => WINDOW_EVENT_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            error!("failed to hook the tavern window's event handler");
+            return 7;
+        }
+    }
     match HotkeysApi::bind() {
         Ok(api) => HOTKEYS.store(Box::into_raw(Box::new(api)), Ordering::SeqCst),
         Err(reason) => warn!("hotkeys registry unavailable ({reason}) - the page keys are inert"),
@@ -162,6 +177,23 @@ unsafe extern "thiscall" fn window_close_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*WINDOW_CLOSE_HOOK.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
     unregister_page_keys();
+    crate::my_captains::detach();
+}
+
+/// Mouse events on the tavern window. A left click on the -1 page while the captains view
+/// is up goes to the table's header hit test; everything goes on to the game as well.
+#[no_mangle]
+unsafe extern "thiscall" fn window_event_hook(window_address: u32, point: *const [i32; 2], event: i32) {
+    let orig: extern "thiscall" fn(u32, *const [i32; 2], i32) = mem::transmute((*WINDOW_EVENT_HOOK.load(Ordering::SeqCst)).old_absolute);
+    orig(window_address, point, event);
+    if event != EVENT_LEFT_CLICK || point.is_null() {
+        return;
+    }
+    let window = UITavernWindowPtr::new();
+    if window.get_selected_page() == -1 && crate::details::captains_view_selected() {
+        let [x, y] = *point;
+        crate::my_captains::on_click(window, x, y);
+    }
 }
 
 /// Called from the set_page asm stub with the page being switched to: entering the
@@ -181,6 +213,7 @@ unsafe extern "C" fn on_set_page(page: i32) {
 unsafe extern "thiscall" fn tavern_update_hook() -> i32 {
     let window = UITavernWindowPtr::new();
     let selected_page = window.get_selected_page();
+    crate::my_captains::update(window, selected_page == -1 && crate::details::captains_view_selected());
     if selected_page == -1 {
         crate::details::invalidate(window);
     }
