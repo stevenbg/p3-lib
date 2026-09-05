@@ -1,6 +1,6 @@
 use num_traits::cast::FromPrimitive;
 use p3_api::{
-    data::{ddraw_set_constant_color, ddraw_set_text_mode, enums::WareId, fill_p3_string, render_window_title, ui_render_text_at},
+    data::{ddraw_set_constant_color, enums::WareId, fill_p3_string, render_window_title, ui_render_text_at},
     game_world::GAME_WORLD_PTR,
     ui::{
         font,
@@ -94,7 +94,7 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
     render_window_title(title_p3_string as _, window.address as _);
 
     ddraw_set_constant_color(0xff000000);
-    ddraw_set_text_mode(2);
+    font::ddraw_set_text_mode(font::TextMode::AlignRight);
     let x = window.get_x();
     let mut y = window.get_y() + 60;
 
@@ -144,7 +144,7 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
         let layout = window.address + TOWN_HALL_WINDOW_LAYOUT_OFFSET;
         draw_rich_text(layout, stock_cell.as_bytes_with_nul(), x + COL_OFFSETS[1], y, 150, 20, color);
         draw_rich_text(layout, consumption_cell.as_bytes_with_nul(), x + COL_OFFSETS[2], y, 150, 20, color);
-        ddraw_set_text_mode(2);
+        font::ddraw_set_text_mode(font::TextMode::AlignRight);
         font::ddraw_set_font(font::get_normal_font());
 
         y += 20;

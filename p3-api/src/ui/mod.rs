@@ -13,6 +13,7 @@ pub mod ddraw;
 pub mod font;
 pub mod graphics;
 pub mod number_widget;
+pub mod page_window;
 pub mod rich_text;
 pub mod scroll_list;
 pub mod ui_church_window;

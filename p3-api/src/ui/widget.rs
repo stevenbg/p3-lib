@@ -13,6 +13,13 @@ use super::custom_window::{root_container, CONTAINER_ADD, CONTAINER_REMOVE};
 
 /// `thiscall(x, y, z)`, `ret 0xC` (base `0x00402550`): writes `+0x14`/`+0x18`. The game's
 /// windows pass [`CHILD_Z`] for `z`.
+/// `event(point*, type)`, `ret 8`: the root container's input dispatcher calls it on the
+/// topmost child under the cursor. Type `1` is a press, `-2` a left click.
+pub const SLOT_EVENT: usize = 0x18;
+/// `close()`, run on every way of leaving the window.
+pub const SLOT_CLOSE: usize = 0x118;
+/// `open()`, run when the window is put on screen.
+pub const SLOT_OPEN: usize = 0x120;
 pub const SLOT_SET_POSITION: usize = 0x64;
 /// `thiscall(out*)`, `ret 4` (base `0x00402470`): copies `+0x2C`, `+0x30`, `+0x34` - width,
 /// height, depth.

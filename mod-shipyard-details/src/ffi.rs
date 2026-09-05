@@ -7,7 +7,7 @@ use hooklet::windows::x86::{deploy_rel32_raw, X86Rel32Type};
 use log::debug;
 use p3_api::{
     data::{
-        class48::Class48Ptr, ddraw_set_constant_color, ddraw_set_text_mode, fill_p3_string, render_window_title, statics::get_shipyard_level_requirements,
+        class48::Class48Ptr, ddraw_set_constant_color, fill_p3_string, render_window_title, statics::get_shipyard_level_requirements,
         ui_render_text_at,
     },
     game_world::GAME_WORLD_PTR,
@@ -98,7 +98,7 @@ pub unsafe extern "thiscall" fn shipyard_rendering_hook() -> i32 {
         render_window_title(title_p3_string as _, window.address as _);
 
         ddraw_set_constant_color(0xff000000);
-        ddraw_set_text_mode(2);
+        font::ddraw_set_text_mode(font::TextMode::AlignRight);
         font::ddraw_set_font(get_normal_font());
         let x = window.get_x() + 200;
         let mut y = window.get_y() + 200;

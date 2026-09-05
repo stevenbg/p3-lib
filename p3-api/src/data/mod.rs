@@ -73,11 +73,6 @@ pub fn ddraw_set_clip_rect_r(rect: [u32; 4]) {
     function(rect.as_ptr())
 }
 
-pub fn ddraw_set_text_mode(mode: u32) {
-    let function: extern "cdecl" fn(mode: u32) = unsafe { mem::transmute(0x004BBA10) };
-    function(mode)
-}
-
 pub fn ddraw_copy_clipper(mode: *const c_void) {
     let function: extern "cdecl" fn(mode: *const c_void) = unsafe { mem::transmute(0x004BB280) };
     function(mode)

@@ -1,0 +1,9 @@
+[package]
+name = "p3-page"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+log = { workspace = true }
+hooklet = { workspace = true }
+p3-api = { path = "../p3-api" }

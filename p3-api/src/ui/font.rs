@@ -2,7 +2,10 @@ use std::{ffi::c_void, mem};
 
 use crate::data::p3_ptr::P3Pointer;
 
+/// The alignment `ui_render_text_at` applies to the x it is given: `AlignRight` draws the
+/// text ending at x, `AlignLeft` starting there.
 #[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextMode {
     AlignCenter = 0,
     AlignLeft = 1,

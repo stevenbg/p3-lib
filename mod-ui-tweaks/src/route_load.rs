@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use hooklet::windows::x86::{hook_function_pointer, FunctionPointerHook};
 use log::{error, info};
 use p3_api::{
-    data::{ddraw_fill_solid_rect, ddraw_set_constant_color, ddraw_set_text_mode, ui_render_text_at},
-    ui::{font, ui_ship_panel::UIShipPanelPtr},
+    data::{ddraw_fill_solid_rect, ddraw_set_constant_color, ui_render_text_at},
+    ui::{font, font::TextMode, ui_ship_panel::UIShipPanelPtr},
 };
 
 /// The panel's draw method, vtable slot `+0x9C` (`0x0048B060`). `thiscall` with four
@@ -49,7 +49,6 @@ const CHAR_WIDTH: i32 = 8;
 const LINE_HEIGHT: i32 = 13;
 const PAD_X: i32 = 3;
 const PAD_Y: i32 = 1;
-const TEXT_MODE_RIGHT: u32 = 2;
 
 pub(crate) unsafe fn install() -> Result<(), &'static str> {
     match hook_function_pointer(DRAW_POINTER_OFFSET, draw_hook as usize as u32) {
@@ -119,7 +118,7 @@ unsafe fn draw_load_requirement(panel: UIShipPanelPtr, origin_x: i32, origin_y: 
     // Tiepolo Bold at 16px, the panel's own body face. See `p3_api::ui::font` for all
     // six and what each one is.
     font::ddraw_set_font(font::get_normal_font());
-    ddraw_set_text_mode(TEXT_MODE_RIGHT);
+    font::ddraw_set_text_mode(TextMode::AlignRight);
     let mut buffer = text.into_bytes();
     buffer.push(0);
 
