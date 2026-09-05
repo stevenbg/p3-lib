@@ -1,19 +1,22 @@
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 
 use log::warn;
 use p3_api::{
-    data::{ddraw_set_constant_color, ui_render_text_at},
+    data::enums::FacilityId,
     game_world::GAME_WORLD_PTR,
     missions::alderman_missions::{AldermanMissionDataPtr, FoundTownPtr},
     operations::OPERATIONS_PTR,
     scheduled_tasks::{scheduled_task::ScheduledTaskData, SCHEDULED_TASKS_PTR},
-    ui::{
-        font::{self, get_normal_font},
-        ui_town_hall_window::UITownHallWindowPtr,
-    },
+    ui::ui_town_hall_window::UITownHallWindowPtr,
 };
+use p3_page::{Cell, Column, Page, Table};
 
-const COL_OFFSETS: &[i32; 2] = &[25, 400];
+/// Under the window's title banner, in the game's own 20 px pitch for this window.
+const FIRST_ROW_Y: i32 = 60;
+const ROW_HEIGHT: i32 = 20;
+/// Labels from the left, values ending at the right column.
+const COLUMNS: [Column; 2] = [Column::left(25, 300), Column::right(400, 300)];
+
 static TASK_RESCHEDULING_IN: &CStr = c"Rescheduling in";
 static TASK_RESCHEDULES_REMAINING: &CStr = c"Reschedule Counter";
 static TOWN: &CStr = c"Town";
@@ -46,30 +49,18 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
         _ => return,
     };
 
-    // Render general info
-    ddraw_set_constant_color(0xff000000);
-    font::ddraw_set_font(get_normal_font());
-    let x = window.get_x();
-    let mut y = window.get_y() + 60;
+    let mut page = Page::new(&window, FIRST_ROW_Y);
+    page.row_height = ROW_HEIGHT;
+    page.reset_state();
+    let table = Table::new(&page, COLUMNS);
+    let mut y = page.top;
 
-    font::ddraw_set_text_mode(font::TextMode::AlignLeft);
-    ui_render_text_at(x + COL_OFFSETS[0], y, TASK_RESCHEDULING_IN.to_bytes());
-    font::ddraw_set_text_mode(font::TextMode::AlignRight);
     let rescheduling_in = task.get_due_timestamp() - GAME_WORLD_PTR.get_game_time_raw();
-    let task_due_in_cstring = CString::new(format!("{rescheduling_in}")).unwrap();
-    ui_render_text_at(x + COL_OFFSETS[1], y, task_due_in_cstring.to_bytes());
-    y += 20;
+    y = table.row(y, &[TASK_RESCHEDULING_IN.into(), (rescheduling_in as i32).into()]);
+    y = table.row(y, &[TASK_RESCHEDULES_REMAINING.into(), (mission.get_reschedule_counter() as i32).into()]);
 
-    font::ddraw_set_text_mode(font::TextMode::AlignLeft);
-    ui_render_text_at(x + COL_OFFSETS[0], y, TASK_RESCHEDULES_REMAINING.to_bytes());
-    font::ddraw_set_text_mode(font::TextMode::AlignRight);
-    let reschedules_remaining = mission.get_reschedule_counter();
-    let task_due_in_cstring = CString::new(format!("{reschedules_remaining}")).unwrap();
-    ui_render_text_at(x + COL_OFFSETS[1], y, task_due_in_cstring.to_bytes());
-
-    // Render mission-specific info
     match mission.get_data() {
-        AldermanMissionDataPtr::FoundTownPtr(ptr) => render_aldermans_office_modifications_found_town(window, &ptr),
+        AldermanMissionDataPtr::FoundTownPtr(ptr) => draw_found_town(&table, y, &ptr),
         AldermanMissionDataPtr::OverlandTradeRoute(_ptr) => {}
         AldermanMissionDataPtr::NotoriousPirate(_ptr) => {}
         AldermanMissionDataPtr::PirateHideout(_ptr) => {}
@@ -77,67 +68,50 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
     }
 }
 
-unsafe fn render_aldermans_office_modifications_found_town(window: UITownHallWindowPtr, data: &FoundTownPtr) {
+/// The found-town mission's terms: the town, what will produce well there, and what will
+/// not. The fisherman's house reads as whale oil when the descriptor's `0x20000` bit is set,
+/// in which case fish is the low production.
+unsafe fn draw_found_town(table: &Table, y: i32, data: &FoundTownPtr) {
     let town = data.get_town();
     let effective_raw = data.get_production_effective_raw();
-    let effective = data.get_production_effective();
-    let x = window.get_x();
-    let mut y = window.get_y() + 100;
+    let mut y = table.row(y, &[TOWN.into(), format!("{town:?}").into()]);
 
-    font::ddraw_set_text_mode(font::TextMode::AlignLeft);
-    ui_render_text_at(x + COL_OFFSETS[0], y, TOWN.to_bytes());
-    font::ddraw_set_text_mode(font::TextMode::AlignRight);
-    let town_cstring = CString::new(format!("{town:?}")).unwrap();
-    ui_render_text_at(x + COL_OFFSETS[1], y, town_cstring.to_bytes());
-    y += 20;
-
-    font::ddraw_set_text_mode(font::TextMode::AlignLeft);
-    ui_render_text_at(x + COL_OFFSETS[0], y, EFFECTIVE_PRODUCTION.to_bytes());
-    font::ddraw_set_text_mode(font::TextMode::AlignRight);
-    let mut effective_string = String::new();
-    for facility in effective {
-        match facility {
-            p3_api::data::enums::FacilityId::Militia => warn!("Unexpected facility {facility:?}"),
-            p3_api::data::enums::FacilityId::Shipyard => warn!("Unexpected facility {facility:?}"),
-            p3_api::data::enums::FacilityId::Construction => warn!("Unexpected facility {facility:?}"),
-            p3_api::data::enums::FacilityId::Weaponsmith => warn!("Unexpected facility {facility:?}"),
-            p3_api::data::enums::FacilityId::HuntingLodge => effective_string.push_str("Skins, "),
-            p3_api::data::enums::FacilityId::FishermansHouse => {
-                if effective_raw & 0x20000 != 0 {
-                    effective_string.push_str("Whale Oil, ")
+    let whale_oil = effective_raw & 0x20000 != 0;
+    let mut effective: Vec<&str> = Vec::new();
+    for facility in data.get_production_effective() {
+        let ware = match facility {
+            FacilityId::Militia | FacilityId::Shipyard | FacilityId::Construction | FacilityId::Weaponsmith => {
+                warn!("Unexpected facility {facility:?}");
+                continue;
+            }
+            FacilityId::HuntingLodge => "Skins",
+            FacilityId::FishermansHouse => {
+                if whale_oil {
+                    "Whale Oil"
                 } else {
-                    effective_string.push_str("Fish, ")
+                    "Fish"
                 }
             }
-            p3_api::data::enums::FacilityId::Brewery => effective_string.push_str("Beer, "),
-            p3_api::data::enums::FacilityId::Workshop => effective_string.push_str("Iron Goods, "),
-            p3_api::data::enums::FacilityId::Apiary => effective_string.push_str("Honey, "),
-            p3_api::data::enums::FacilityId::GrainFarm => effective_string.push_str("Grain, "),
-            p3_api::data::enums::FacilityId::CattleFarm => effective_string.push_str("Meat, Leather, "),
-            p3_api::data::enums::FacilityId::Sawmill => effective_string.push_str("Timber, "),
-            p3_api::data::enums::FacilityId::WeavingMill => effective_string.push_str("Cloth, "),
-            p3_api::data::enums::FacilityId::Saltery => effective_string.push_str("Salt, "),
-            p3_api::data::enums::FacilityId::Ironsmelter => effective_string.push_str("Pig Iron, "),
-            p3_api::data::enums::FacilityId::SheepFarm => effective_string.push_str("Wool, "),
-            p3_api::data::enums::FacilityId::Vineyard => effective_string.push_str("Wine, "),
-            p3_api::data::enums::FacilityId::Pottery => effective_string.push_str("Pottery, "),
-            p3_api::data::enums::FacilityId::Brickworks => effective_string.push_str("Bricks, "),
-            p3_api::data::enums::FacilityId::Pitchmaker => effective_string.push_str("Pitch, "),
-            p3_api::data::enums::FacilityId::HempFarm => effective_string.push_str("Hemp, "),
-        }
+            FacilityId::Brewery => "Beer",
+            FacilityId::Workshop => "Iron Goods",
+            FacilityId::Apiary => "Honey",
+            FacilityId::GrainFarm => "Grain",
+            FacilityId::CattleFarm => "Meat, Leather",
+            FacilityId::Sawmill => "Timber",
+            FacilityId::WeavingMill => "Cloth",
+            FacilityId::Saltery => "Salt",
+            FacilityId::Ironsmelter => "Pig Iron",
+            FacilityId::SheepFarm => "Wool",
+            FacilityId::Vineyard => "Wine",
+            FacilityId::Pottery => "Pottery",
+            FacilityId::Brickworks => "Bricks",
+            FacilityId::Pitchmaker => "Pitch",
+            FacilityId::HempFarm => "Hemp",
+        };
+        effective.push(ware);
     }
-    effective_string.pop();
-    effective_string.pop();
-    let effective_cstring = CString::new(effective_string).unwrap();
-    ui_render_text_at(x + COL_OFFSETS[1], y, effective_cstring.to_bytes());
-    y += 20;
+    y = table.row(y, &[EFFECTIVE_PRODUCTION.into(), effective.join(", ").into()]);
 
-    font::ddraw_set_text_mode(font::TextMode::AlignLeft);
-    ui_render_text_at(x + COL_OFFSETS[0], y, LOW_PRODUCTION.to_bytes());
-
-    font::ddraw_set_text_mode(font::TextMode::AlignRight);
-    let mut ineffective_string = String::new();
-    if effective_raw & 0x20000 != 0 {
-        ineffective_string.push_str("Fish")
-    }
+    let low = if whale_oil { Cell::from("Fish") } else { Cell::Empty };
+    table.row(y, &[LOW_PRODUCTION.into(), low]);
 }

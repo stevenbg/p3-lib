@@ -1,113 +1,85 @@
+//! Fills the town hall window's empty starting page (selected page `-1`) with the
+//! Hanse-wide goods table, and adds the mission's figures to the alderman's office
+//! (page 7).
+//!
+//! The draw method loads the page with `mov eax,[esi+0x18E4]` at `0x005E09AC`, the update
+//! method (`0x005E0850`) with the same load at `0x005E085B`; both are detoured through
+//! `p3_page`. Page 7 is a page the game draws itself, so switching to it re-applies the
+//! drawing state: the side panel's call to `set_selected_page` is hooked for that.
+
 use std::{
-    arch::global_asm,
-    ffi::c_void,
-    mem, ptr,
+    mem,
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use hooklet::windows::x86::{deploy_rel32_raw, CallRel32Hook, FunctionPointerHook, X86Rel32Type};
-use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer_width_module};
-use log::debug;
+use hooklet::windows::x86::{hook_call_rel32, CallRel32Hook};
+use log::{error, info};
 use p3_api::ui::ui_town_hall_window::UITownHallWindowPtr;
-use windows::core::PCSTR;
+use p3_page::{page::prepare_drawing_state, Page};
 
-const TOWN_HALL_WINDOW_OPEN_POINTER_OFFSET: u32 = UITownHallWindowPtr::VTABLE_OFFSET + 0x120;
-pub static TOWN_HALL_WINDOW_OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+use crate::pages::{aldermans_office, details};
 
-const TOWN_HALL_SIDEPANEL_SET_SELECTED_PAGE_PATCH_OFFSET: u32 = 0x1A94BC;
-pub static TOWN_HALL_SIDEPANEL_SET_SELECTED_PAGE_HOOK_PTR: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+p3_page::details_page_detours! {
+    window: UITownHallWindowPtr,
+    draw: { patch: 0x005E09AC, original: [0x8b, 0x86, 0xe4, 0x18, 0x00, 0x00], base: "esi" },
+    update: { patch: 0x005E085B, original: [0x8b, 0x86, 0xe4, 0x18, 0x00, 0x00], base: "esi" },
+    on_open: on_open,
+    on_update: on_update,
+    on_draw: on_draw,
+}
 
-const LOAD_TOWN_HALL_SELECTED_PAGE_PATCH_ADDRESS: u32 = 0x005E09AC;
-static LOAD_TOWN_HALL_SELECTED_PAGE_CONTINUATION: u32 = 0x005E09B2;
+/// The alderman's office page, which the game draws itself and this mod adds to.
+const ALDERMANS_OFFICE_PAGE: i32 = 7;
+
+/// The side panel's call to the window's `set_selected_page`, module-relative.
+const SIDEPANEL_SET_SELECTED_PAGE_CALL_OFFSET: u32 = 0x1A94BC;
+static SET_SELECTED_PAGE_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
 
 #[no_mangle]
 pub unsafe extern "C" fn start() -> u32 {
     let _ = log::set_logger(&win_dbg_logger::DEBUGGER_LOGGER);
-    log::set_max_level(log::LevelFilter::Trace);
+    log::set_max_level(log::LevelFilter::Info);
 
-    debug!("Hooking town hall window's open function through vtable");
-    match hook_function_pointer_width_module(
-        PCSTR::from_raw(ptr::null()),
-        TOWN_HALL_WINDOW_OPEN_POINTER_OFFSET,
-        town_hall_window_open_hook as usize as u32,
-    ) {
-        Ok(hook) => {
-            debug!("Hook {hook:X?} set");
-            TOWN_HALL_WINDOW_OPEN_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-        }
+    if let Err(step) = install_page_detours() {
+        error!("town hall details: page detours not installed (step {step})");
+        return step;
+    }
+    match hook_call_rel32(SIDEPANEL_SET_SELECTED_PAGE_CALL_OFFSET, set_selected_page_hook as *const () as usize as u32) {
+        Ok(hook) => SET_SELECTED_PAGE_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
         Err(_) => {
-            return 1;
+            error!("failed to hook the side panel's set_selected_page call");
+            return 5;
         }
     }
-
-    debug!("Hooking sidepanel's call to ui_town_hall_window_set_selected_page");
-    match hook_call_rel32(
-        TOWN_HALL_SIDEPANEL_SET_SELECTED_PAGE_PATCH_OFFSET,
-        town_hall_window_set_selected_page_hook as usize as u32,
-    ) {
-        Ok(hook) => {
-            debug!("Hook {hook:X?} set");
-            TOWN_HALL_SIDEPANEL_SET_SELECTED_PAGE_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
-        }
-        Err(_) => {
-            return 2;
-        }
-    }
-
-    debug!("Detouring town hall's rendering function at the selected page switch");
-    if deploy_rel32_raw(
-        LOAD_TOWN_HALL_SELECTED_PAGE_PATCH_ADDRESS as _,
-        (&load_town_hall_selected_page_detour) as *const _ as _,
-        X86Rel32Type::Jump,
-    )
-    .is_err()
-    {
-        return 3;
-    }
-
+    info!("town hall details loaded");
     0
 }
 
+unsafe fn on_open(_window: UITownHallWindowPtr) {
+    prepare_drawing_state();
+}
+
+unsafe fn on_update(window: UITownHallWindowPtr, page: i32) {
+    if page == -1 || page == ALDERMANS_OFFICE_PAGE {
+        Page::new(&window, 0).invalidate();
+    }
+}
+
+unsafe fn on_draw(window: UITownHallWindowPtr, page: i32) {
+    if page == -1 {
+        details::draw_page(window);
+    } else if page == ALDERMANS_OFFICE_PAGE {
+        aldermans_office::draw_page(window);
+    }
+}
+
+/// The game's own drawing of the alderman's office sets up its clipping, so the drawing
+/// state is re-applied whenever that page is selected.
 #[no_mangle]
-unsafe extern "thiscall" fn town_hall_window_open_hook(ui_town_hall_window_address: u32) {
-    let orig_address = (*TOWN_HALL_WINDOW_OPEN_HOOK_PTR.load(Ordering::SeqCst)).old_absolute;
-    let orig: extern "thiscall" fn(a1: u32) = mem::transmute(orig_address);
-    orig(ui_town_hall_window_address);
-    crate::handle_open()
+unsafe extern "thiscall" fn set_selected_page_hook(window_address: u32, page: u32) {
+    let orig: extern "thiscall" fn(u32, u32) = mem::transmute((*SET_SELECTED_PAGE_HOOK.load(Ordering::SeqCst)).old_absolute);
+    orig(window_address, page);
+    if page as i32 == ALDERMANS_OFFICE_PAGE {
+        prepare_drawing_state();
+    }
 }
-
-#[no_mangle]
-unsafe extern "thiscall" fn town_hall_window_set_selected_page_hook(ui_town_hall_window_address: u32, page: u32) {
-    let orig_address = (*TOWN_HALL_SIDEPANEL_SET_SELECTED_PAGE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute;
-    let orig: extern "thiscall" fn(ui_town_hall_window_address: u32, page: u32) = mem::transmute(orig_address);
-    orig(ui_town_hall_window_address, page);
-    crate::handle_set_selected_page(page)
-}
-
-#[no_mangle]
-unsafe extern "thiscall" fn town_hall_selected_page_switch_hook() -> i32 {
-    crate::handle_selected_page_switch()
-}
-
-extern "C" {
-    static load_town_hall_selected_page_detour: c_void;
-}
-
-global_asm!("
-.global {load_town_hall_selected_page_detour}
-{load_town_hall_selected_page_detour}:
-# save regs
-push ecx
-push edx
-
-call {town_hall_rendering_hook}
-
-# restore regs
-pop edx
-pop ecx
-
-jmp [{continuation}]
-",
-load_town_hall_selected_page_detour = sym load_town_hall_selected_page_detour,
-town_hall_rendering_hook = sym town_hall_selected_page_switch_hook,
-continuation = sym LOAD_TOWN_HALL_SELECTED_PAGE_CONTINUATION);

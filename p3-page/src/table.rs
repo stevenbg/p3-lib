@@ -95,6 +95,21 @@ impl<'p> Table<'p> {
         y + self.page.row_height
     }
 
+    /// [Table::row] with every cell in `color` instead of the page's black.
+    pub unsafe fn row_colored(&self, y: i32, cells: &[Cell], color: u32) -> i32 {
+        if !self.fits(y) {
+            return y;
+        }
+        for (column, cell) in self.columns.iter().zip(cells) {
+            if cell.is_empty() {
+                continue;
+            }
+            let colored = Cell::Colored(color, Box::new(cell.clone()));
+            self.page.draw_cell(self.page.abs_x(column.x), y, column.align, column.width, &colored);
+        }
+        y + self.page.row_height
+    }
+
     unsafe fn draw_cells(&self, y: i32, cells: &[Cell]) {
         for (column, cell) in self.columns.iter().zip(cells) {
             if cell.is_empty() {

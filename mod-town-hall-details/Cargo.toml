@@ -11,13 +11,6 @@ name="town_hall_details"
 log = { workspace = true }
 win_dbg_logger = { workspace = true }
 p3-api = { path = "../p3-api" }
+p3-page = { path = "../p3-page" }
 hooklet = { workspace = true }
 num-traits = { workspace = true }
-num-derive = { workspace = true }
-
-[dependencies.windows]
-version = "0.48"
-features = [
-    "Win32_Foundation",
-    "Win32_System_Memory",
-]

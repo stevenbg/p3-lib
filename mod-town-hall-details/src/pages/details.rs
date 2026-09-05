@@ -1,16 +1,26 @@
 use num_traits::cast::FromPrimitive;
 use p3_api::{
-    data::{ddraw_set_constant_color, enums::WareId, fill_p3_string, render_window_title, ui_render_text_at},
+    data::{enums::WareId, fill_p3_string, render_window_title},
     game_world::GAME_WORLD_PTR,
-    ui::{
-        font,
-        rich_text::{draw_rich_text, TOWN_HALL_WINDOW_LAYOUT_OFFSET},
-        ui_town_hall_window::UITownHallWindowPtr,
-    },
+    ui::ui_town_hall_window::UITownHallWindowPtr,
 };
-use std::ffi::{CStr, CString};
+use p3_page::{Cell, Column, Page, Symbol, Table};
+use std::ffi::CStr;
 
-const COL_OFFSETS: &[i32; 4] = &[90, 180, 270, 360];
+/// Under the window's title banner.
+const FIRST_ROW_Y: i32 = 60;
+/// Wider than the other details pages, matching the game's own tables on this window.
+const ROW_HEIGHT: i32 = 20;
+/// Four right-aligned columns; the width bounds the rich-text cells' wrapping.
+const COLUMNS: [Column; 4] = [Column::right(90, 90), Column::right(180, 90), Column::right(270, 90), Column::right(360, 90)];
+
+/// Nobody consumes the ware.
+const GREY: u32 = 0xFFD3_D3D3;
+/// One of the three wares the Hanse runs out of first.
+const GREEN: u32 = 0xFF7C_FC00;
+/// Spices are imported, never produced.
+const DARK_RED: u32 = 0xFF66_0000;
+
 pub static TITLE: &CStr = c"Details";
 pub static GOODS: &CStr = c"Goods";
 pub static STOCK: &CStr = c"Stock";
@@ -34,11 +44,11 @@ impl HanseaticWareData {
         self.ware_id().get_scaling()
     }
 
-    fn unit_symbol(&self) -> &'static str {
+    fn symbol(&self) -> Symbol {
         if self.ware_id().is_barrel_ware() {
-            "B"
+            Symbol::Barrel
         } else {
-            "L"
+            Symbol::Load
         }
     }
 
@@ -93,26 +103,20 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
     fill_p3_string((&mut title_p3_string) as *mut _ as _, TITLE.to_bytes());
     render_window_title(title_p3_string as _, window.address as _);
 
-    ddraw_set_constant_color(0xff000000);
-    font::ddraw_set_text_mode(font::TextMode::AlignRight);
-    let x = window.get_x();
-    let mut y = window.get_y() + 60;
+    let mut page = Page::new(&window, FIRST_ROW_Y);
+    page.row_height = ROW_HEIGHT;
+    page.reset_state();
+    let table = Table::new(&page, COLUMNS);
+    let mut y = table.header(page.top, &[GOODS.into(), STOCK.into(), CONSUMPTION.into(), DAYS.into()], None);
 
-    font::ddraw_set_font(font::get_header_font());
-    ui_render_text_at(x + COL_OFFSETS[0], y, GOODS.to_bytes());
-    ui_render_text_at(x + COL_OFFSETS[1], y, STOCK.to_bytes());
-    ui_render_text_at(x + COL_OFFSETS[2], y, CONSUMPTION.to_bytes());
-    ui_render_text_at(x + COL_OFFSETS[3], y, DAYS.to_bytes());
-    y += 20;
-
+    // The three wares that run out first are the effective productions to build; meat and
+    // leather come from one building, so together they count once.
     let mut effective_prods_count = 0;
-    font::ddraw_set_font(font::get_normal_font());
     let mut has_meat_or_leather = false;
     for data in &hanse_data {
         let ware = data.ware_id();
-        let days = data.get_days();
         let mut color = if !data.has_consumption() {
-            0xFFD3D3D3
+            GREY
         } else if effective_prods_count < 3 {
             if ware == WareId::Meat || ware == WareId::Leather {
                 if !has_meat_or_leather {
@@ -122,31 +126,23 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
             } else {
                 effective_prods_count += 1;
             }
-            0xFF7CFC00
+            GREEN
         } else {
-            0xFF000000
+            p3_page::BLACK
         };
         if ware == WareId::Spices {
-            color = 0xFF660000;
+            color = DARK_RED;
         }
-        ddraw_set_constant_color(color);
-        ui_render_text_at(x + COL_OFFSETS[0], y, CString::new(format!("{ware:?}")).unwrap().to_bytes());
-        ui_render_text_at(x + COL_OFFSETS[3], y, CString::new(format!("{days}")).unwrap().to_bytes());
-
-        // Stock and consumption carry the game's own load/barrel symbol, which only the
-        // rich-text pass can splice in. `\r` right-aligns with x as the cell's right
-        // edge, matching the plain cells above; the pass sets its own font and colour,
-        // so both are restored for the next row.
         let scaling = data.scaling();
-        let symbol = data.unit_symbol();
-        let stock_cell = CString::new(format!("\\r{}\\{symbol}", data.total_wares / scaling)).unwrap();
-        let consumption_cell = CString::new(format!("\\r{}\\{symbol}", data.total_consumption / scaling)).unwrap();
-        let layout = window.address + TOWN_HALL_WINDOW_LAYOUT_OFFSET;
-        draw_rich_text(layout, stock_cell.as_bytes_with_nul(), x + COL_OFFSETS[1], y, 150, 20, color);
-        draw_rich_text(layout, consumption_cell.as_bytes_with_nul(), x + COL_OFFSETS[2], y, 150, 20, color);
-        font::ddraw_set_text_mode(font::TextMode::AlignRight);
-        font::ddraw_set_font(font::get_normal_font());
-
-        y += 20;
+        y = table.row_colored(
+            y,
+            &[
+                format!("{ware:?}").into(),
+                Cell::amount(data.total_wares / scaling, data.symbol()),
+                Cell::amount(data.total_consumption / scaling, data.symbol()),
+                data.get_days().into(),
+            ],
+            color,
+        );
     }
 }
