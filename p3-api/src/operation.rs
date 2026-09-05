@@ -189,6 +189,24 @@ pub enum Operation {
     ///
     /// The scrollmap's speed buttons enqueue exactly this: `0x004202A0` with level 0,
     /// `0x00420300` with level 1, both leaving the divisors at `-1`.
+    /// Opcode 0x45 (`0x00535FA4`): stores `stands` into the merchant's candidature flag at
+    /// `+0x118` via `0x004F9390` (a human's value is taken as given; an AI merchant's is
+    /// forced to 1). The town hall's "Accept candidature?" Yes/No.
+    SetCandidature {
+        merchant_index: u32,
+        stands: bool,
+    },
+    /// Opcode 0x46 (inline `0x00535FD6`, queued `0x0053AF00`): make `merchant_index` mayor of
+    /// `town_index`. Refused unless the seat is not held by a merchant (`town+0x6F1 >=
+    /// merchant count`) and the merchant is at least [crate::merchant::RANK_PATRICIAN] in
+    /// his hometown - or `+0x10` carries `0xBADEAFFE`, which waives the rank check only;
+    /// `cheat` sets it, as do the 14-day vacancy task 0x2F (`0x004EA1D9`) and the debug
+    /// menu's "make mayor" commands.
+    AppointMayor {
+        merchant_index: u32,
+        town_index: u32,
+        cheat: bool,
+    },
     SetGameSpeed {
         speed1_ms_per_tick: i32,
         speed2_ms_per_tick: i32,
@@ -323,6 +341,24 @@ impl Operation {
                 op[8..0x0c].copy_from_slice(&price.to_le_bytes());
                 op[0x0c..0x10].copy_from_slice(&office_index.to_le_bytes());
                 op[0x10..0x14].copy_from_slice(&ware_id.to_le_bytes());
+            }
+            Operation::SetCandidature { merchant_index, stands } => {
+                let opcode: u32 = 0x45;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4..8].copy_from_slice(&merchant_index.to_le_bytes());
+                op[8..0x0c].copy_from_slice(&(*stands as u32).to_le_bytes());
+            }
+            Operation::AppointMayor {
+                merchant_index,
+                town_index,
+                cheat,
+            } => {
+                let opcode: u32 = 0x46;
+                let token: u32 = if *cheat { 0xBADE_AFFE } else { 0 };
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4..8].copy_from_slice(&merchant_index.to_le_bytes());
+                op[8..0x0c].copy_from_slice(&town_index.to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&token.to_le_bytes());
             }
             Operation::HireAdministrator { merchant_index, town_index } | Operation::DismissAdministrator { merchant_index, town_index } => {
                 let opcode: u32 = 0x5e;

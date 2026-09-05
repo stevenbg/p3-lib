@@ -4,6 +4,15 @@ use crate::{data::p3_ptr::P3Pointer, latin1_ptr_to_string};
 
 pub const MERCHANT_SIZE: u32 = 0x650;
 
+/// The per-town rank byte ([MerchantPtr::get_rank_in]) at which a merchant may stand for
+/// mayor and be appointed by operation 0x46 (`cmp ..,5` at `0x00528D79` / `0x0053602F`).
+pub const RANK_PATRICIAN: u8 = 5;
+/// Written to a town notable's rank byte while he holds the mayor's seat (`0x00529149`).
+pub const RANK_MAYOR: u8 = 6;
+/// Written to the alderman's rank bytes (`0x004F7653`) and to a notable mayor who is the
+/// alderman (`0x0052913F`).
+pub const RANK_ALDERMAN: u8 = 7;
+
 #[derive(Clone, Debug)]
 pub struct MerchantPtr {
     pub address: u32,
@@ -72,13 +81,49 @@ impl MerchantPtr {
     /// recomputed next to `update_merchant_reputation_and_value` from the per-town
     /// reputation float at `+0x2FC + town*4` and the company value at `+0x46C` (the
     /// `0xDBBA0` = 900,000 compare at `0x004F7AD4` is the Patrician step). Observed 3..5
-    /// for AI merchants in a live 24-town game; the value-to-title mapping is not pinned
-    /// down, so treat it as an ordinal.
+    /// for AI merchants in a live 24-town game. The top of the scale is pinned by the
+    /// mayor code ([RANK_PATRICIAN], [RANK_MAYOR], [RANK_ALDERMAN]); below that treat it as
+    /// an ordinal.
     ///
     /// The pirate AI reads the **home town** entry as its "is this merchant worth robbing"
     /// test - see [crate::game_setup::pirate_attack_rank_threshold].
     pub fn get_rank_in(&self, town_index: u8) -> u8 {
         unsafe { self.get(0x39c + town_index as u32) }
+    }
+
+    /// The merchant's reputation **in one town**: the float at `+0x2FC + town*4` that
+    /// `update_merchant_reputation_and_value` (`0x004F7BB0`) assembles. The mayor election
+    /// scores its candidates by this value truncated to an integer (`0x004F9580`).
+    ///
+    /// Most terms are **local to the town** they are earned in:
+    /// - `+1.0` in the town whose outrigger ship this merchant owns (`0x004F7F87`);
+    /// - per office in [Self::get_first_office_index]'s chain (next at `office+0x2C8`),
+    ///   credited to the office's town (`office+0x2C6`): the residents of his houses there
+    ///   × the rent factor × `0.003` (`0x004F8002`..`0x004F8032`) and the employees of his
+    ///   businesses there (`record+0x4`, chained from `office+0x2CC`) × `0.01`
+    ///   (`0x004F8083`);
+    /// - the three per-town slots at `+0x11C` (buildings, social, trading; stride `0xC`).
+    ///
+    /// Merchant-wide, added to every town (`0x004F817F`): `min(5, capacity / 100000) +
+    /// min(5, company_value / 100000)`, times the base factor at `+0x464`. The spouse bonus
+    /// (`+0x32`) goes to the hometown only (`0x004F81B1`). Social and trading are the only
+    /// slots multiplied by `0.99` per daily update (`0x004F81DC`).
+    pub fn get_reputation_in(&self, town_index: u8) -> f32 {
+        unsafe { self.get(0x2fc + town_index as u32 * 4) }
+    }
+
+    /// The mayor-candidature flag at `+0x118` (`0x004F9360`): a human's is set by the
+    /// constructor (`0x004F72D3`) and toggled by [crate::operation::Operation::SetCandidature];
+    /// an AI merchant always stands unless its control word has bit `0x4`.
+    pub fn is_mayor_candidate(&self) -> bool {
+        unsafe { self.get::<i32>(0x118) != 0 }
+    }
+
+    /// Whether the merchant is a guild member in `town_index`: bit `town` of the bitmap at
+    /// `+0x468`, set by operation 0x37 Join Guild (`0x004F8560`). One of the four conditions
+    /// for standing in that town's mayor election (`0x00528D65`).
+    pub fn is_guild_member_in(&self, town_index: u8) -> bool {
+        unsafe { self.get::<u32>(0x468) & (1u32 << town_index) != 0 }
     }
 
     pub fn get_first_office_index(&self) -> u16 {

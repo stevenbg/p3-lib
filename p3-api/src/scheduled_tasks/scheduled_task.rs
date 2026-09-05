@@ -2,6 +2,10 @@ use crate::{data::p3_ptr::P3Pointer, missions::alderman_missions::AldermanMissio
 
 pub const SCHEDULED_TASK_SIZE: u32 = 0x18;
 pub const SCHEDULED_TASK_OPCODE_ALDERMAN_MISSION: u16 = 0x32;
+/// One per town: the yearly mayor election (`0x004DBB00`). Task data `+0x8` (u16) is the
+/// town's election day of the year, `+0xE` the town index; on that day it runs
+/// `0x00528E60(town)` and re-arms for `((year * 365 + day) << 8) | 0xFA`.
+pub const SCHEDULED_TASK_OPCODE_MAYOR_ELECTION: u16 = 0x02;
 /// The ten-day world update (`0x004DDA40`, rescheduled `due += 0xA00` by the dispatcher
 /// at `0x004D8668`). Among much else it runs the captain scan `0x004DCEA0`, which keeps
 /// its round counter in this task's own data at `+0x8`.

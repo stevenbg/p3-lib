@@ -340,8 +340,32 @@ impl TownPtr {
         unsafe { self.get(0x82e) }
     }
 
+    /// The briber's merchant index per councillor (`0xFF` = none), written by the bath
+    /// house bribe and spent by the mayor election: each slot naming a candidate is worth
+    /// 3 of its 120 votes and is cleared (`0x00528F9A`).
     pub fn get_councillor_bribes(&self) -> [u8; 4] {
         unsafe { self.get(0x6dc) }
+    }
+
+    /// The mayor's id at `+0x6F1`: a merchant index, or, at or above the merchant count, a
+    /// town notable (`0xFF - n` for notable `n`, `0xFF` also meaning vacated). Written by the
+    /// yearly election (`0x005290BE`) and by operation 0x46 (`0x00536049`), which only
+    /// accepts a seat not held by a merchant.
+    pub fn get_mayor_id(&self) -> u8 {
+        unsafe { self.get(0x6f1) }
+    }
+
+    /// Consecutive election wins of the sitting mayor at `+0x6F3`: zeroed when the seat
+    /// changes hands, incremented on a re-election, capped at 250 (`0x0052900E`).
+    pub fn get_mayor_consecutive_terms(&self) -> u8 {
+        unsafe { self.get(0x6f3) }
+    }
+
+    /// The four notables' rank bytes at `+0x6E4`, rewritten after every mayor election in
+    /// every town to `5, 5, 4, 4`, with [crate::merchant::RANK_MAYOR] or
+    /// [crate::merchant::RANK_ALDERMAN] for a notable holding a seat (`0x005290F8`).
+    pub fn get_notable_ranks(&self) -> [u8; 4] {
+        unsafe { self.get(0x6e4) }
     }
 
     pub unsafe fn get_first_office_index(&self) -> u16 {
