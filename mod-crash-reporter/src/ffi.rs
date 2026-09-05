@@ -27,7 +27,7 @@
 //!
 //! This mod found the patrol-letter crash fixed by mod-fix-patrol-letter-crash.
 //! The dump was then widened by what the d3d9 lost-device crash needed and did not
-//! get (`.claude/notes/todo/device-lost-crash.md`): the bad pointer lived at
+//! get (`.claude/notes/done/device-lost-crash.md`): the bad pointer lived at
 //! `object+0x78`, just outside the 0x40 register window of the time; the stack scan
 //! listed SEH handlers and stale dwords indistinguishably from return addresses;
 //! and nothing said which of the two same-named `ddraw` DLLs a `module+offset`

@@ -49,16 +49,16 @@ const DEBUG_PROBE2_KEY: u32 = VK_F10.0 as u32;
 static HOTKEYS: AtomicPtr<HotkeysApi> = AtomicPtr::new(std::ptr::null_mut());
 const OWNER: &std::ffi::CStr = c"crash-reporter debug probes";
 
-const PROBE_KEYS: [(u32, u32); 15] = [
+const PROBE_KEYS: [(u32, u32); 14] = [
     (DEBUG_PROBE1_KEY, 0),
     (DEBUG_PROBE1_KEY, MOD_CTRL),
     (DEBUG_PROBE1_KEY, MOD_SHIFT),
     (DEBUG_PROBE1_KEY, MOD_ALT),
     // The operation logger: the one permanent tool here, rather than a throwaway.
     (DEBUG_PROBE1_KEY, MOD_CTRL | MOD_SHIFT),
-    // The d3d9 resource-list detector: one-shot check, and the continuous watch.
+    // The d3d9 resource-list detector's one-shot check. Its continuous watch
+    // ([toggle_probe_d3d9_watch]) is not bound to a key.
     (DEBUG_PROBE1_KEY, MOD_CTRL | MOD_ALT),
-    (DEBUG_PROBE1_KEY, MOD_SHIFT | MOD_ALT),
     (DEBUG_PROBE2_KEY, 0),
     (DEBUG_PROBE2_KEY, MOD_CTRL),
     (DEBUG_PROBE2_KEY, MOD_SHIFT),
@@ -99,7 +99,6 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, MOD_ALT) => debug_probe_administrators(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
-        (DEBUG_PROBE1_KEY, m) if m == MOD_SHIFT | MOD_ALT => toggle_probe_d3d9_watch(),
         (DEBUG_PROBE1_KEY, 0) => crate::scroll_window::toggle(),
         (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
@@ -2307,7 +2306,7 @@ unsafe fn dump_dwords(g: &mut Guarded, addr: u32, count: u32) -> String {
 }
 
 /// CTRL+ALT+F9: one-shot check of d3d9's resource list, for the crash in
-/// `.claude/notes/todo/device-lost-crash.md`.
+/// `.claude/notes/done/device-lost-crash.md`.
 ///
 /// That crash is `d3d9+0x62df8` storing through a resource's `next` link while the GOG
 /// wrapper tears a surface down, and the resource is otherwise live and coherent - one
@@ -2316,8 +2315,8 @@ unsafe fn dump_dwords(g: &mut Guarded, addr: u32, count: u32) -> String {
 /// display-mode change and on exit, while the corrupted resource is rare, so the crash
 /// needs both to coincide. The defect is static though, and d3d9 keeps every resource of
 /// a device on a doubly-linked list - so a broken link is visible **at rest**, with no
-/// mode switch, no release and no crash needed. Press this to check now; SHIFT+ALT+F9
-/// watches continuously and timestamps the moment a link breaks.
+/// mode switch, no release and no crash needed. Press this to check now;
+/// [toggle_probe_d3d9_watch] watches continuously and timestamps the moment a link breaks.
 unsafe fn debug_probe_d3d9_list() {
     let mut g = Guarded::new();
     let mut out = Vec::new();
@@ -2358,10 +2357,11 @@ unsafe fn debug_probe_d3d9_list() {
     notify(&format!("{headline} -> {D3D9_LIST_LOG}"));
 }
 
-/// SHIFT+ALT+F9: watch the list continuously, off the ships tick so it samples at every
-/// game speed. Quiet by design - it writes only when the fault state changes, plus a
-/// heartbeat, so a clean session leaves a handful of lines and the first broken link is
-/// timestamped to the tick.
+/// The continuous watch, **not bound to a key** (rebind [toggle_probe_d3d9_watch] on a
+/// probe key to use it): walks the list off the ships tick so it samples at every game
+/// speed. Quiet by design - it writes only when the fault state changes, plus a heartbeat,
+/// so a clean session leaves a handful of lines and the first broken link is timestamped
+/// to the tick.
 static D3D9_WATCH_ON: AtomicBool = AtomicBool::new(false);
 /// A day between heartbeats (a day is 256 ticks).
 const D3D9_WATCH_HEARTBEAT: u32 = 256;
@@ -2383,6 +2383,7 @@ fn d3d9_watch_due() -> bool {
     true
 }
 
+#[allow(dead_code)]
 unsafe fn toggle_probe_d3d9_watch() {
     let on = !D3D9_WATCH_ON.load(Ordering::SeqCst);
     if on {

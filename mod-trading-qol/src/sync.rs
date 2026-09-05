@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use log::{info, warn};
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::enums::WareId,
+    data::{ddraw_set_constant_color, enums::WareId, ui_render_text_at},
     game_world::GAME_WORLD_PTR,
     operation::Operation,
     operations::{execute_operation, OPERATIONS_PTR},
@@ -23,6 +23,7 @@ use p3_api::{
     ui::{
         animation::{Animation2D, LOCK_CHECKMARK_ID, LOCK_CHECKMARK_INI, LOCK_CHECKMARK_X_OFFSET},
         button::{Button, ButtonKind, ButtonTemplate},
+        font,
         ui_trading_office_window::{UITradingOfficeWindowPtr, ADMINISTRATOR_PAGE, CORNER_BUTTON_MARGIN, FIRST_ROW_Y, ROW_COUNT, ROW_PITCH, WARE_DISPLAY_ORDER},
     },
 };
@@ -30,7 +31,13 @@ use p3_api::{
 /// The checkbox column's x inside the window; the checkmark hangs 4 px further left, as
 /// the game's does, so the pair spans 2..26 px, short of the ware names.
 const COLUMN_X: i32 = 6;
-const SYNC_CAPTION: &[u8] = b"Sync";
+const SYNC_CAPTION: &[u8] = b"Set";
+/// The explanation drawn to the right of the Sync button (latin1, NUL-terminated for the
+/// game's text renderer), and its gap from the button and offset down to the button's baseline.
+const SYNC_HINT: &[u8] = b"qty & price across offices\0";
+const SYNC_HINT_GAP: i32 = 6;
+const SYNC_HINT_Y_OFFSET: i32 = 2;
+const BLACK: u32 = 0xff00_0000;
 
 struct Widgets {
     checks: Vec<Button>,
@@ -102,6 +109,17 @@ pub(crate) unsafe fn on_open(window: &UITradingOfficeWindowPtr) {
     show_all(widgets, false);
 }
 
+/// Whether the office shown has an administrator - without one the administrator page
+/// shows only the "employ an administrator" notice, and so should we. The index is out of
+/// range while nobody is employed, the game's own test.
+unsafe fn administrator_employed(window: &UITradingOfficeWindowPtr) -> bool {
+    let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
+    match GAME_WORLD_PTR.get_office_in_of(window.get_town_index() as _, merchant_index as _) {
+        Some(office) => office.get_administrator_index() < p3_api::ships::ShipsPtr::new().get_auto_traders_size(),
+        None => false,
+    }
+}
+
 /// Each frame after the game's update: follow the page, poll the buttons.
 pub(crate) unsafe fn on_update(window: &UITradingOfficeWindowPtr) {
     let mut guard = WIDGETS.lock().unwrap();
@@ -109,7 +127,7 @@ pub(crate) unsafe fn on_update(window: &UITradingOfficeWindowPtr) {
     if !widgets.sync.is_attached() {
         return;
     }
-    let on_page = window.get_selected_page() == ADMINISTRATOR_PAGE;
+    let on_page = window.get_selected_page() == ADMINISTRATOR_PAGE && administrator_employed(window);
     if on_page != widgets.shown {
         widgets.shown = on_page;
         show_all(widgets, on_page);
@@ -126,6 +144,22 @@ pub(crate) unsafe fn on_update(window: &UITradingOfficeWindowPtr) {
     if widgets.sync.clicked() {
         on_sync(widgets, window);
     }
+}
+
+/// After the game's draw: the hint beside the Sync button, while the column is up. The
+/// window's own draw has set the render context; we only pick the font, colour and alignment.
+pub(crate) unsafe fn on_draw(_window: &UITradingOfficeWindowPtr) {
+    let guard = WIDGETS.lock().unwrap();
+    let Some(widgets) = guard.as_ref() else { return };
+    if !widgets.shown || !widgets.sync.is_attached() {
+        return;
+    }
+    let (x, y) = widgets.sync.position();
+    let (width, _) = widgets.sync.size();
+    font::ddraw_set_font(font::get_normal_font());
+    font::ddraw_set_text_mode(font::TextMode::AlignLeft);
+    ddraw_set_constant_color(BLACK);
+    ui_render_text_at(x + width + SYNC_HINT_GAP, y + SYNC_HINT_Y_OFFSET, SYNC_HINT);
 }
 
 /// After the game's close: out of the scene, and the selection is forgotten - it belongs to

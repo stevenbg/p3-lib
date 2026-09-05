@@ -67,10 +67,13 @@ const TOWN_SCENE_CURRENT_TOWN_OFFSET: u32 = 0xc324;
 const OFFICE_WINDOW_OPEN_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x120;
 const OFFICE_WINDOW_CLOSE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x118;
 const OFFICE_WINDOW_UPDATE_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0xF4;
+/// `+0x9C` is the draw the scene container calls each frame the window meets the dirty region.
+const OFFICE_WINDOW_DRAW_POINTER_OFFSET: u32 = UITradingOfficeWindowPtr::VTABLE_OFFSET + 0x9C;
 
 static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static UPDATE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
+static DRAW_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 /// The number box class's key slot (module-relative pointer location): every focused number
 /// box in the game gets its keys through it; ours acts only on the office's price boxes.
 const NUMBER_WIDGET_KEY_POINTER_OFFSET: u32 = p3_api::ui::number_widget::VTABLE - 0x0040_0000 + p3_api::ui::number_widget::SLOT_KEY as u32;
@@ -268,6 +271,14 @@ pub unsafe extern "C" fn start() -> u32 {
             return 6;
         }
     }
+    // The sync column's caption is text, drawn after the window's own draw.
+    match hook_function_pointer(OFFICE_WINDOW_DRAW_POINTER_OFFSET, office_window_draw_hook as usize as u32) {
+        Ok(hook) => DRAW_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
+        Err(_) => {
+            error!("failed to hook office window draw");
+            return 8;
+        }
+    }
     // Plain Q..Y typed into a focused price box reprice that one ware.
     match hook_function_pointer(NUMBER_WIDGET_KEY_POINTER_OFFSET, number_widget_key_hook as usize as u32) {
         Ok(hook) => NUMBER_KEY_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
@@ -333,6 +344,15 @@ unsafe extern "thiscall" fn office_window_update_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*UPDATE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
     crate::sync::on_update(&UITradingOfficeWindowPtr { address: window_address });
+}
+
+/// The window's draw (vtable `+0x9C`, `0x005D95A0`): `thiscall(context, x, y, z)`, `ret 0x10`.
+/// Ours paints after the game's, so the text lands on top of the page.
+#[no_mangle]
+unsafe extern "thiscall" fn office_window_draw_hook(window_address: u32, context: u32, x: i32, y: i32, z: u32) {
+    let orig: extern "thiscall" fn(u32, u32, i32, i32, u32) = mem::transmute((*DRAW_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
+    orig(window_address, context, x, y, z);
+    crate::sync::on_draw(&UITradingOfficeWindowPtr { address: window_address });
 }
 
 /// The number box class's key handler (vtable `+0x1C`, `0x0045C300`): `thiscall(vk, repeat,
