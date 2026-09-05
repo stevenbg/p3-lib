@@ -29,19 +29,19 @@ use std::{
 use log::info;
 use p3_api::{
     auto_trader::{skill_caps, AutoTraderPtr, SKILL_PER_LEVEL},
-    data::{ddraw_set_constant_color, screen_rectangle::Rect},
+    data::screen_rectangle::Rect,
     game_world::GAME_WORLD_PTR,
     operations::OPERATIONS_PTR,
     ships::ShipsPtr,
     ui::{
-        font,
-        graphics::{draw_graphic, draw_graphic_frame, GRAPHIC_ID_BONUS, GRAPHIC_ID_MONEY},
+        graphics::{GRAPHIC_ID_BONUS, GRAPHIC_ID_MONEY},
         scroll_list::ScrollList,
         ui_tavern_window::UITavernWindowPtr,
     },
 };
+use p3_page::{Cell, Column, Page, Table};
 
-use crate::details::{draw_number, draw_text, draw_text_left, icon_width, last_table_row_y, BLACK, FIRST_ROW_Y, ROW_HEIGHT};
+use crate::details::page;
 
 /// The bar's right edge from the window's right edge: inside the frame.
 const RIGHT_MARGIN: i32 = 12;
@@ -49,47 +49,39 @@ const RIGHT_MARGIN: i32 = 12;
 const BAR_WIDTH: i32 = 27;
 /// Between the pay column's digits and the bar.
 const BAR_GAP: i32 = 8;
-/// Between the right-aligned value columns.
+/// Between the right-aligned value columns, which is also how wide each is.
 const COLUMN_GAP: i32 = 36;
-/// How far left of the name column its header cell (and the wheel area) reaches.
+/// How far left of the name column its cell (and the wheel area) reaches.
 const NAME_CELL_WIDTH: i32 = 120;
-/// Right edges of the header cells: each column is right-aligned at its position, so a
-/// cell runs from the previous column's edge to its own, with a little slack past the digits.
-const CELL_SLACK: i32 = 6;
-/// The sort marker, drawn just right of the sorted column's header.
-const MARKER_GAP: i32 = 2;
 
-/// The table's columns as window-relative right edges, laid out from the window's right
-/// edge inwards so the bar sits against the frame.
-struct Columns {
-    name: i32,
-    skills: [i32; 3],
-    pay: i32,
-    bar_right: i32,
-}
-
-fn columns(window: UITavernWindowPtr) -> Columns {
-    let bar_right = window.get_width() - RIGHT_MARGIN;
+/// The table's columns, laid out from the window's right edge inwards so the bar sits
+/// against the frame; also the bar's window-relative right edge.
+fn columns(page: &Page) -> ([Column; 5], i32) {
+    let bar_right = page.width - RIGHT_MARGIN;
     let pay = bar_right - BAR_WIDTH - BAR_GAP;
-    Columns {
-        name: pay - 4 * COLUMN_GAP,
-        skills: [pay - 3 * COLUMN_GAP, pay - 2 * COLUMN_GAP, pay - COLUMN_GAP],
-        pay,
-        bar_right,
-    }
+    let columns = [
+        Column::right(pay - 4 * COLUMN_GAP, NAME_CELL_WIDTH),
+        Column::right(pay - 3 * COLUMN_GAP, COLUMN_GAP),
+        Column::right(pay - 2 * COLUMN_GAP, COLUMN_GAP),
+        Column::right(pay - COLUMN_GAP, COLUMN_GAP),
+        Column::right(pay, COLUMN_GAP),
+    ];
+    (columns, bar_right)
 }
 
-/// The last row the table uses: one above the page's last table row, so the bar (which
-/// runs the table's full height at the right edge) clears the close button.
-fn last_row_y(window: UITavernWindowPtr) -> i32 {
-    last_table_row_y(window) - ROW_HEIGHT
+/// The table ends one row above the page's last table row, so the bar (which runs the
+/// table's full height at the right edge) clears the close button.
+fn table(page: &Page) -> (Table<'_>, i32) {
+    let (columns, bar_right) = columns(page);
+    (Table::new(page, columns).ending_at(page.last_y - page.row_height), bar_right)
 }
 
 /// The scrollbar's object, built on first use; 0 before that.
 static LIST: AtomicU32 = AtomicU32::new(0);
 
 /// The sort, kept across openings like the view: a click on a column header selects it
-/// (name ascending, numbers descending), a second click reverses it.
+/// (name ascending, numbers descending), a second click reverses it. The column numbers are
+/// the table's column indices.
 static SORT_COLUMN: AtomicU8 = AtomicU8::new(COLUMN_NAME);
 static SORT_REVERSED: AtomicBool = AtomicBool::new(false);
 const COLUMN_NAME: u8 = 0;
@@ -115,8 +107,9 @@ pub(crate) unsafe fn update(window: UITavernWindowPtr, active: bool) {
         address => ScrollList { address },
     };
     if !list.is_attached() {
-        let area = table_area(window);
-        list.set_area(area, ROW_HEIGHT);
+        let page = page(&window);
+        let area = table_area(&page);
+        list.set_area(area, page.row_height);
         list.attach_to_root();
         list.set_count(own_captains().len() as u32);
         info!(
@@ -147,35 +140,25 @@ pub(crate) unsafe fn detach() {
 
 /// The rows under the heading, down to the table's last row; the bar sits against its
 /// right edge and the wheel works anywhere inside it.
-unsafe fn table_area(window: UITavernWindowPtr) -> Rect {
-    let x = window.get_x();
-    let columns = columns(window);
+fn table_area(page: &Page) -> Rect {
+    let (table, bar_right) = table(page);
+    let (left, _) = table.extent();
     Rect {
-        left: x + columns.name - NAME_CELL_WIDTH,
-        top: window.get_y() + FIRST_ROW_Y + ROW_HEIGHT,
-        right: x + columns.bar_right,
-        bottom: last_row_y(window) + ROW_HEIGHT,
+        left: page.abs_x(left),
+        top: page.top + page.row_height,
+        right: page.abs_x(bar_right),
+        bottom: table.last_y + page.row_height,
     }
 }
 
 /// A left click at screen `x`,`y`: a header cell selects or reverses the sort.
 pub(crate) unsafe fn on_click(window: UITavernWindowPtr, x: i32, y: i32) {
-    let heading_y = window.get_y() + FIRST_ROW_Y;
-    if y < heading_y || y >= heading_y + ROW_HEIGHT {
-        return;
-    }
-    let left = window.get_x();
-    let c = columns(window);
-    let cells = [
-        (COLUMN_NAME, left + c.name - NAME_CELL_WIDTH, left + c.name + CELL_SLACK),
-        (COLUMN_TRADE, left + c.name + CELL_SLACK, left + c.skills[0] + CELL_SLACK),
-        (COLUMN_NAVIGATION, left + c.skills[0] + CELL_SLACK, left + c.skills[1] + CELL_SLACK),
-        (COLUMN_COMBAT, left + c.skills[1] + CELL_SLACK, left + c.skills[2] + CELL_SLACK),
-        (COLUMN_WAGE, left + c.skills[2] + CELL_SLACK, left + c.pay + CELL_SLACK),
-    ];
-    let Some(&(column, _, _)) = cells.iter().find(|&&(_, from, to)| x >= from && x < to) else {
+    let page = page(&window);
+    let (table, _) = table(&page);
+    let Some(column) = table.hit_test(x, y, page.top) else {
         return;
     };
+    let column = column as u8;
     if SORT_COLUMN.load(Ordering::Relaxed) == column {
         SORT_REVERSED.fetch_xor(true, Ordering::Relaxed);
     } else {
@@ -193,7 +176,8 @@ fn compare(column: u8, a: &(Vec<u8>, Captain), b: &(Vec<u8>, Captain)) -> Order 
         COLUMN_TRADE => b.1.ptr.get_trade_skill().cmp(&a.1.ptr.get_trade_skill()),
         COLUMN_NAVIGATION => b.1.ptr.get_navigation_skill().cmp(&a.1.ptr.get_navigation_skill()),
         COLUMN_COMBAT => b.1.ptr.get_combat_skill().cmp(&a.1.ptr.get_combat_skill()),
-        _ => b.1.ptr.get_daily_wage().cmp(&a.1.ptr.get_daily_wage()),
+        COLUMN_WAGE => b.1.ptr.get_daily_wage().cmp(&a.1.ptr.get_daily_wage()),
+        _ => Order::Equal,
     };
     if SORT_REVERSED.load(Ordering::Relaxed) {
         order.reverse()
@@ -204,57 +188,46 @@ fn compare(column: u8, a: &(Vec<u8>, Captain), b: &(Vec<u8>, Captain)) -> Order 
 
 /// The heading and the rows from the bar's first visible row on; `show_caps` (alt) writes
 /// every skill as `level/cap`. Returns the y below the last row drawn, like the other tables.
-pub(crate) unsafe fn draw(window: UITavernWindowPtr, y: i32, heading: &CStr, show_caps: bool) -> i32 {
-    let x = window.get_x();
-    let c = columns(window);
-    let last_y = last_row_y(window);
-    let mut y = y;
-    font::ddraw_set_font(font::get_header_font());
-    draw_text(x + c.name, y, heading.to_bytes());
-    for (frame, column) in c.skills.iter().enumerate() {
-        draw_graphic_frame(GRAPHIC_ID_BONUS, frame as u32, x + column - icon_width(GRAPHIC_ID_BONUS), y);
-    }
-    draw_graphic(GRAPHIC_ID_MONEY, x + c.pay - icon_width(GRAPHIC_ID_MONEY), y);
-    ddraw_set_constant_color(BLACK);
-    // The sort marker, right of the sorted header: `^` for the natural direction, `v` for
-    // the reversed one. Drawn left-aligned so it hangs off the column's right edge.
-    let sorted = match SORT_COLUMN.load(Ordering::Relaxed) {
-        COLUMN_NAME => c.name,
-        COLUMN_TRADE => c.skills[0],
-        COLUMN_NAVIGATION => c.skills[1],
-        COLUMN_COMBAT => c.skills[2],
-        _ => c.pay,
-    };
-    font::ddraw_set_font(font::get_normal_font());
-    draw_text_left(x + sorted + MARKER_GAP, y, if SORT_REVERSED.load(Ordering::Relaxed) { b"v" } else { b"^" });
-    y += ROW_HEIGHT;
+pub(crate) unsafe fn draw(page: &Page, heading: &CStr, show_caps: bool) -> i32 {
+    let (table, _) = table(page);
+    let sort = (SORT_COLUMN.load(Ordering::Relaxed) as usize, SORT_REVERSED.load(Ordering::Relaxed));
+    let mut y = table.header(
+        page.top,
+        &[
+            heading.into(),
+            Cell::graphic_frame(GRAPHIC_ID_BONUS, 0),
+            Cell::graphic_frame(GRAPHIC_ID_BONUS, 1),
+            Cell::graphic_frame(GRAPHIC_ID_BONUS, 2),
+            Cell::graphic(GRAPHIC_ID_MONEY),
+        ],
+        Some(sort),
+    );
 
     let first_row = match LIST.load(Ordering::Relaxed) {
         0 => 0,
         address => ScrollList { address }.first_row() as usize,
     };
     for (name, trader) in own_captains().into_iter().skip(first_row) {
-        if y > last_y {
+        if !table.fits(y) {
             break;
         }
-        draw_text(x + c.name, y, &name);
         // Same order as the game's captain panel: trade, navigation, combat. The caps come
         // back as (navigation, trade, combat).
         let (navigation_cap, trade_cap, combat_cap) = skill_caps(trader.index);
-        for (column, skill, cap) in [
-            (c.skills[0], trader.ptr.get_trade_skill(), trade_cap),
-            (c.skills[1], trader.ptr.get_navigation_skill(), navigation_cap),
-            (c.skills[2], trader.ptr.get_combat_skill(), combat_cap),
-        ] {
+        let [trade, navigation, combat] = [
+            (trader.ptr.get_trade_skill(), trade_cap),
+            (trader.ptr.get_navigation_skill(), navigation_cap),
+            (trader.ptr.get_combat_skill(), combat_cap),
+        ]
+        .map(|(skill, cap)| {
             let level = AutoTraderPtr::skill_level(skill);
             if show_caps {
-                draw_text(x + column, y, format!("{level}/{}", cap / SKILL_PER_LEVEL).as_bytes());
+                Cell::from(format!("{level}/{}", cap / SKILL_PER_LEVEL))
             } else {
-                draw_number(x + column, y, level as i32, "");
+                Cell::number(level as i32)
             }
-        }
-        draw_number(x + c.pay, y, trader.ptr.get_daily_wage() as i32, "");
-        y += ROW_HEIGHT;
+        });
+        y = table.row(y, &[name.into(), trade, navigation, combat, Cell::number(trader.ptr.get_daily_wage() as i32)]);
     }
     y
 }

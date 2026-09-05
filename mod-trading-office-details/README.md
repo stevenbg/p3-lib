@@ -46,8 +46,9 @@ update method load the selected page into `eax` with a 6-byte
 `mov eax, [esi+0xecc4]` and dispatch through a jump table, so both can be detoured
 by replacing that load with a jump and returning the same value in `eax`.
 
-This mod hooks all three phases, matching what `mod-shipyard-details` and
-`mod-town-hall-details` do:
+This mod hooks all three phases through `p3-page`'s `details_page_detours!`, which
+verifies the six bytes at each detour site before writing; the page itself is laid out
+with `p3-page`'s `Page` and `Table`:
 
 |Phase|Where|What for|
 |-|-|-|

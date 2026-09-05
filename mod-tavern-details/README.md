@@ -110,9 +110,13 @@ instance, only while one is available in that town.)
 |event (`+0x18`)|vtable hook|the widget event handler, `(point*, type)`; type `-2` is a left click, tested against the captains table's header cells|
 |close (`+0x118`)|vtable hook|disarm the page keys, take the scrollbar down|
 
-Beyond the addresses - the page field is `+0x1BF4`, the jump tables are `0x005CDBC8`
-(update) and `0x005CE4F4` (draw) - nothing about the pattern differs from
-`mod-trading-office-details`, which patches the same three phases on its own window.
+The open hook and the two detours come from `p3-page`'s `details_page_detours!`, which
+verifies the six bytes at each site before writing; the event and close hooks and the
+`set_page` detour are this mod's own. The tables are `p3-page` `Table`s: the crew and
+missions views with fixed columns, the captains view with columns laid out from the
+window's right edge, whose header hit test drives the sort. Beyond the addresses - the
+page field is `+0x1BF4`, the jump tables are `0x005CDBC8` (update) and `0x005CE4F4`
+(draw) - nothing about the pattern differs from `mod-trading-office-details`.
 
 Submitting the changed area matters: without it the page keeps showing older pixels
 until something else submits the region (a mouse move over it, or alt-tabbing back

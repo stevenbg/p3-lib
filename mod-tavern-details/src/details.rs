@@ -3,23 +3,17 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use p3_api::{
     auto_trader::AutoTraderPtr,
-    data::{class48::Class48Ptr, ddraw_set_constant_color, ddraw_set_text_mode, screen_rectangle::Rect, ui_render_text_at},
     game_world::GAME_WORLD_PTR,
     letters::LettersPtr,
     operations::OPERATIONS_PTR,
     ships::ShipsPtr,
     town::get_town_name_bytes,
     ui::{
-        font,
-        graphics::{
-            draw_graphic, draw_graphic_frame, graphic_frame_size, GRAPHIC_ID_BONUS, GRAPHIC_ID_CAPTAIN, GRAPHIC_ID_CREW, GRAPHIC_ID_MONEY,
-            GRAPHIC_ID_PIRATE,
-        },
-        rect_clipper_stuff,
-        rich_text::{draw_rich_text, TAVERN_WINDOW_LAYOUT_OFFSET},
+        graphics::{GRAPHIC_ID_BONUS, GRAPHIC_ID_CAPTAIN, GRAPHIC_ID_CREW, GRAPHIC_ID_MONEY, GRAPHIC_ID_PIRATE},
         ui_tavern_window::UITavernWindowPtr,
     },
 };
+use p3_page::{Align, Cell, Column, Page, Symbol, Table};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_2, VK_3};
 
 pub static CREW: &CStr = c"Crew";
@@ -35,52 +29,47 @@ pub static MY_CAPTAINS: &CStr = c"My captains";
 /// The key hints, one line on the page's bottom row whatever the view above shows.
 pub static HINTS: &CStr = c"1: crew    2: missions    3: my captains";
 
-/// Text mode 2 draws right-aligned: every column x below is the right edge of that
-/// column, so a long town name reaches further left than a short one. `TRADE_X` and
-/// `VALUE_X` are shared by the sailors and missions views; the captains table has its own
-/// tighter columns below. The one exception is the missions table's offer column
-/// ([MISSION_OFFER_X]), which is drawn left-aligned and so names its left edge.
-pub(crate) const TOWN_X: i32 = 135;
+/// Right-aligned columns name their right edge, so a long town name reaches further left
+/// than a short one. `TRADE_X` and `VALUE_X` are shared by the crew and missions views; the
+/// captains table has its own tighter columns, laid out from the window's right edge.
+const TOWN_X: i32 = 135;
 const TRADE_X: i32 = 225;
-const VALUE_X: i32 = 345;
-/// Icons are 16x16, and heading a column with one instead of a word lets the skill columns
-/// of the captains table sit closer together than the shared positions above.
-const ICON: i32 = 16;
-/// The kind column is as wide as the widest figure in it, so a narrower one can be centred
+pub(crate) const VALUE_X: i32 = 345;
+/// The kind column is as wide as the widest figure in it, so a narrower one is centred
 /// against the others rather than hugging the left.
 const KIND_WIDTH: i32 = 26;
 /// The crew table: a kind icon marks whose row it is, then the three skills, what he asks,
-/// and the town's hireable sailors - captains, pirates and sailors in one page.
-const KIND_X: i32 = TOWN_X + 6;
-const SKILL_1_X: i32 = TOWN_X + 70;
-const SKILL_2_X: i32 = TOWN_X + 100;
-const SKILL_3_X: i32 = TOWN_X + 130;
-const PAY_X: i32 = TOWN_X + 180;
-const CREW_X: i32 = TOWN_X + 220;
+/// and the town's hireable sailors - captains, pirates and sailors in one page. The game's
+/// own icons head the columns: the three skill bonuses out of one sheet, the coin for what
+/// he asks, the crew figure for the sailors.
+const CREW_COLUMNS: [Column; 7] = [
+    Column::right(TOWN_X, 120),
+    Column::center(TOWN_X + 6, KIND_WIDTH),
+    Column::right(TOWN_X + 70, 30),
+    Column::right(TOWN_X + 100, 30),
+    Column::right(TOWN_X + 130, 30),
+    Column::right(TOWN_X + 180, 50),
+    Column::right(TOWN_X + 220, 40),
+];
 /// The missions table sits further left than the shared columns: its first column only
 /// has to hold a town name, and no town name is as wide as the "Known missions" heading
 /// over it, so the space it gives up is free. It goes to the terms cell, which is the one
 /// that runs out of room.
 const MISSION_SHIFT: i32 = 30;
 const MISSION_TOWN_X: i32 = TOWN_X - MISSION_SHIFT;
-/// The offer column is the one **left**-aligned column on the page, so this x is its LEFT
-/// edge, not its right one. Its values are words of very different length - "Patrol" against
-/// "Pirate hunter" - and right-aligning those against the right-aligned town names beside
-/// them leaves a ragged gap in the middle of the table. It sits a gutter right of the town
-/// column's right edge.
+/// The offer column is the one **left**-aligned column on the page. Its values are words of
+/// very different length - "Patrol" against "Pirate hunter" - and right-aligning those
+/// against the right-aligned town names beside them leaves a ragged gap in the middle of
+/// the table. It sits a gutter right of the town column's right edge.
 const MISSION_OFFER_X: i32 = MISSION_TOWN_X + 12;
-/// Where the terms cell begins - unchanged by the offer column's alignment, since the offer
-/// column no longer has a fixed right edge to measure from. It has to clear the widest offer
-/// title, which "Pirate hunter" is.
-const MISSION_TERMS_LEFT: i32 = TRADE_X - MISSION_SHIFT + TERMS_GAP;
-/// Between the offer column and the terms cell, so the two never touch.
+/// Where the terms cell begins: it has to clear the widest offer title, which "Pirate
+/// hunter" is, by a gap so the two never touch.
 const TERMS_GAP: i32 = 10;
-/// The text modes the page uses: `1` draws from the x given, `2` draws back to it.
-const TEXT_MODE_LEFT: u32 = 1;
-const TEXT_MODE_RIGHT: u32 = 2;
+const MISSION_TERMS_LEFT: i32 = TRADE_X - MISSION_SHIFT + TERMS_GAP;
+/// The terms hang off the window's right edge, inside the frame; a narrow window falls back
+/// to the column position the other views share.
+const TERMS_RIGHT_MARGIN: i32 = 15;
 pub(crate) const FIRST_ROW_Y: i32 = 12;
-pub(crate) const ROW_HEIGHT: i32 = 16;
-pub(crate) const BLACK: u32 = 0xff000000;
 
 /// What the page shows, switched by a key press and kept across openings of the
 /// window: 1 the captains and pirates, 2 the mission offers, with alt selecting
@@ -119,39 +108,23 @@ pub(crate) unsafe extern "C" fn page_hotkeys(vk: u32, mods: u32) -> u32 {
     0
 }
 
-/// Called when the window opens, like the other details mods do it, so the page's
-/// text is not clipped away.
-pub(crate) unsafe fn prepare_drawing_state() {
-    let class48 = Class48Ptr::new();
-    class48.set_ignore_below_gradient(0);
-    class48.set_gradient_y(0);
+/// The page, with its bottom row kept for the key hints.
+pub(crate) fn page(window: &UITavernWindowPtr) -> Page {
+    Page::new(window, FIRST_ROW_Y).reserve_bottom_rows(1)
 }
 
-/// Submit the window's area to the renderer. Called from the window's update method
-/// (`0x005CD540`), which is the phase the game itself uses for this call; from the
-/// draw method instead - once or per frame - the art comes out torn and the text
-/// flickers.
+/// Submit the window's area to the renderer, from the window's update method
+/// (`0x005CD540`) - the phase the game itself uses for this call.
 pub(crate) unsafe fn invalidate(window: UITavernWindowPtr) {
-    let rect = Rect {
-        left: window.get_x(),
-        top: window.get_y(),
-        right: window.get_x() + window.get_width(),
-        bottom: window.get_y() + window.get_height(),
-    };
-    rect_clipper_stuff(&rect);
+    page(&window).invalidate();
 }
 
 /// No window title: the page the game itself draws here has none, and
 /// `render_window_title` would spend the top of the window on a banner graphic that
 /// the tables need for rows.
 pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
-    ddraw_set_constant_color(BLACK);
-    ddraw_set_text_mode(TEXT_MODE_RIGHT);
-
-    let x = window.get_x();
-    let y = window.get_y() + FIRST_ROW_Y;
-    // The tables stop above the hint row, which sits on the window's last row.
-    let last_y = last_table_row_y(window);
+    let page = page(&window);
+    page.reset_state();
 
     let all_towns = SHOW_ALL_TOWNS.load(Ordering::Relaxed);
     let view = VIEW.load(Ordering::Relaxed);
@@ -160,27 +133,19 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     match view {
         VIEW_MISSIONS => {
             let heading = if all_towns { MISSIONS } else { KNOWN_MISSIONS };
-            draw_missions(window, y, last_y, heading, &towns, all_towns);
+            draw_missions(&page, heading, &towns, all_towns);
         }
         VIEW_CAPTAINS => {
-            crate::my_captains::draw(window, y, MY_CAPTAINS, all_towns);
+            crate::my_captains::draw(&page, MY_CAPTAINS, all_towns);
         }
         _ => {
             let heading = if all_towns { CREW } else { KNOWN_CREW };
-            draw_crew(x, y, last_y, heading, &towns, all_towns);
+            draw_crew(&page, heading, &towns, all_towns);
         }
     }
 
-    font::ddraw_set_font(font::get_normal_font());
-    ddraw_set_constant_color(BLACK);
-    ddraw_set_text_mode(TEXT_MODE_RIGHT);
-    draw_text(x + VALUE_X, last_y + ROW_HEIGHT, HINTS.to_bytes());
-}
-
-/// The last row a table may draw on: the row above the hint line, which takes the window's
-/// last row.
-pub(crate) fn last_table_row_y(window: UITavernWindowPtr) -> i32 {
-    window.get_y() + window.get_height() - 2 * ROW_HEIGHT
+    page.reset_state();
+    page.draw_text(page.abs_x(VALUE_X), page.bottom_row_y(), Align::Right, HINTS.to_bytes());
 }
 
 /// One row per mission a tavern's side room offers, by town.
@@ -188,25 +153,21 @@ pub(crate) fn last_table_row_y(window: UITavernWindowPtr) -> i32 {
 /// An offer is a letter in the player's own mailbox: the side room walks his letter
 /// chain with the game's predicate at `0x004D7900` - type `0x71`, the town byte matching
 /// the tavern, and a descriptor date still in the future - and titles its page with the
-/// start of the letter's text, which is where "Patrol" or "Escort" comes from.
-unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
-    let x = window.get_x();
-    // The terms hang off the window's right edge; a narrow window falls back to the
-    // column position the other views share.
-    let terms_right = (window.get_width() - 15).max(VALUE_X);
-    // Everything between the offer column and that edge. The rich-text pass wraps at this
-    // width, so a cell narrower than its text spills onto a second line and over the row
-    // below - which is what a long destination town did at the fixed 170 this replaces.
-    let terms_width = terms_right - MISSION_TERMS_LEFT;
+/// letter's own title. What the offer is worth goes in one cell: where the cargo goes, how
+/// much of it, and the sum, with the game's own load and coin symbols.
+unsafe fn draw_missions(page: &Page, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
+    let terms_right = (page.width - TERMS_RIGHT_MARGIN).max(VALUE_X);
+    let table = Table::new(
+        page,
+        [
+            Column::right(MISSION_TOWN_X, 100),
+            Column::left(MISSION_OFFER_X, MISSION_TERMS_LEFT - MISSION_OFFER_X),
+            // A cell narrower than its text would wrap onto the row below.
+            Column::right(terms_right, terms_right - MISSION_TERMS_LEFT),
+        ],
+    );
+    let mut y = table.header(page.top, &[heading.into(), OFFER.into(), TERMS.into()], None);
 
-    let mut y = y;
-    font::ddraw_set_font(font::get_header_font());
-    draw_text(x + MISSION_TOWN_X, y, heading.to_bytes());
-    draw_text_left(x + MISSION_OFFER_X, y, OFFER.to_bytes());
-    draw_text(x + terms_right, y, TERMS.to_bytes());
-    y += ROW_HEIGHT;
-
-    font::ddraw_set_font(font::get_normal_font());
     let letters = LettersPtr::new();
     let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u16;
     let merchant = GAME_WORLD_PTR.get_merchant(player_merchant);
@@ -223,19 +184,14 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
                 index = letter.get_next_index();
                 continue;
             }
-            if y > last_y {
+            if !table.fits(y) {
                 return y;
             }
             found = true;
-            if let Some(town) = get_town_name_bytes(*town_index) {
-                draw_text(x + MISSION_TOWN_X, y, &town);
-            }
-            if let Some(title) = letter.get_title_bytes() {
-                draw_text_left(x + MISSION_OFFER_X, y, &title);
-            }
-            // What the offer is worth, in one cell: where the cargo goes, how much of it,
-            // and the sum. A smuggler names his town only once the order is accepted, so
-            // the filtered view - what the player could know - leaves that part out.
+            let town = get_town_name_bytes(*town_index).map(Cell::from).unwrap_or(Cell::Empty);
+            let title = letter.get_title_bytes().map(Cell::from).unwrap_or(Cell::Empty);
+            // A smuggler names his town only once the order is accepted, so the filtered
+            // view - what the player could know - leaves that part out.
             let mut terms: Vec<Vec<u8>> = Vec::new();
             let disclosed = all_towns || !letter.tavern_mission_conceals_destination();
             if let Some(destination) = letter.get_destination_town_index().filter(|_| disclosed) {
@@ -244,122 +200,89 @@ unsafe fn draw_missions(window: UITavernWindowPtr, y: i32, last_y: i32, heading:
                 }
             }
             if let Some(loads) = letter.get_required_loads() {
-                terms.push(format!("{loads}\\L").into_bytes());
+                terms.push(format!("{loads}{}", Symbol::Load.escape()).into_bytes());
             }
             if let Some(reward) = letter.get_reward() {
-                terms.push(format!("{reward}\\C").into_bytes());
+                terms.push(format!("{reward}{}", Symbol::Coin.escape()).into_bytes());
             }
             // A treasure map is the one offer that costs money instead of paying it, so
             // its sum goes in with a minus.
             if let Some(price) = letter.get_asking_price() {
-                terms.push(format!("-{price}\\C").into_bytes());
+                terms.push(format!("-{price}{}", Symbol::Coin.escape()).into_bytes());
             }
-            if !terms.is_empty() {
-                // Through the framework's rich-text pass, for the game's own cargo and
-                // coin symbols. `\r` offsets the line by minus its own width
-                // (`0x00420AB2`), so the x argument is the cell's RIGHT edge, while the
-                // width argument only bounds word wrap. That pass sets its own font and
-                // colour, so the page's state is restored after it.
-                let mut cell = b"\\r".to_vec();
-                cell.extend(terms.join(&b", "[..]));
-                cell.push(0);
-                draw_rich_text(
-                    window.address + TAVERN_WINDOW_LAYOUT_OFFSET,
-                    &cell,
-                    x + terms_right,
-                    y,
-                    terms_width,
-                    ROW_HEIGHT,
-                    BLACK,
-                );
-                ddraw_set_constant_color(BLACK);
-                ddraw_set_text_mode(TEXT_MODE_RIGHT);
-                font::ddraw_set_font(font::get_normal_font());
-            }
-            y += ROW_HEIGHT;
+            let terms = if terms.is_empty() { Cell::Empty } else { Cell::rich(terms.join(&b", "[..])) };
+            y = table.row(y, &[town, title, terms]);
             index = letter.get_next_index();
         }
     }
     if !found {
-        draw_text(x + MISSION_TOWN_X, y, NONE.to_bytes());
-        y += ROW_HEIGHT;
+        y = table.row(y, &[NONE.into(), Cell::Empty, Cell::Empty]);
     }
     y
-}
-
-/// A graphic's width, for placing it against right-aligned text; `ICON` covers the case
-/// where the graphic is missing.
-pub(crate) unsafe fn icon_width(id: u32) -> i32 {
-    graphic_frame_size(id, 0).map(|(width, _)| width).unwrap_or(ICON)
 }
 
 /// The whole hiring picture of a town in one table: a row per hireable captain or pirate,
 /// marked by the game's own figure for which he is, with his three skills and what he
 /// asks - a daily wage for a captain, a share of the loot for a pirate - and the town's
 /// hireable sailors on its first row. A town with nobody waiting still gets a row, so its
-/// sailors are visible.
+/// sailors are visible; anyone waiting there follows on that row and the ones under it.
 ///
 /// A pirate's skills are left blank unless `all_towns`: the filtered table shows what the
 /// player could know, and only the unrestricted one gives them away.
-unsafe fn draw_crew(x: i32, y: i32, last_y: i32, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
-    let mut y = y;
-    font::ddraw_set_font(font::get_header_font());
-    draw_text(x + TOWN_X, y, heading.to_bytes());
-    // The game's own icons head the columns: the three skill bonuses out of one sheet, the
-    // coin for what he asks, the crew figure for the sailors. Columns are right-aligned, so
-    // an icon heading one sits its own width to the left.
-    for (frame, column) in [(0, SKILL_1_X), (1, SKILL_2_X), (2, SKILL_3_X)] {
-        draw_graphic_frame(GRAPHIC_ID_BONUS, frame, x + column - icon_width(GRAPHIC_ID_BONUS), y);
-    }
-    // The icons are not one size, so each is placed by its own width to line its right edge
-    // up with the numbers under it.
-    draw_graphic(GRAPHIC_ID_MONEY, x + PAY_X - icon_width(GRAPHIC_ID_MONEY), y);
-    draw_graphic(GRAPHIC_ID_CREW, x + CREW_X - icon_width(GRAPHIC_ID_CREW), y);
-    // The blits leave the constant colour white; everything below is text again.
-    ddraw_set_constant_color(BLACK);
-    y += ROW_HEIGHT;
+unsafe fn draw_crew(page: &Page, heading: &CStr, towns: &[u8], all_towns: bool) -> i32 {
+    let table = Table::new(page, CREW_COLUMNS);
+    let mut y = table.header(
+        page.top,
+        &[
+            heading.into(),
+            Cell::Empty,
+            Cell::graphic_frame(GRAPHIC_ID_BONUS, 0),
+            Cell::graphic_frame(GRAPHIC_ID_BONUS, 1),
+            Cell::graphic_frame(GRAPHIC_ID_BONUS, 2),
+            Cell::graphic(GRAPHIC_ID_MONEY),
+            Cell::graphic(GRAPHIC_ID_CREW),
+        ],
+        None,
+    );
 
-    font::ddraw_set_font(font::get_normal_font());
     let ships = ShipsPtr::new();
     let merchant = GAME_WORLD_PTR.get_merchant(OPERATIONS_PTR.get_player_merchant_index() as u16);
 
     for town_index in towns {
-        if y > last_y {
+        if !table.fits(y) {
             break;
         }
-        // The town's own row carries its name and its sailors; anyone waiting there follows
-        // on this row and the ones under it.
-        if let Some(town) = get_town_name_bytes(*town_index) {
-            draw_text(x + TOWN_X, y, &town);
-        }
-        draw_number(x + CREW_X, y, merchant.get_available_sailors(*town_index) as i32, "");
+        let mut town = get_town_name_bytes(*town_index).map(Cell::from).unwrap_or(Cell::Empty);
+        let mut sailors = Cell::number(merchant.get_available_sailors(*town_index) as i32);
 
         let waiting = hireable_auto_traders(&ships, *town_index);
         if waiting.is_empty() {
             // Nobody waiting, so the town's own row is all it gets.
-            y += ROW_HEIGHT;
+            y = table.row(y, &[town, Cell::Empty, Cell::Empty, Cell::Empty, Cell::Empty, Cell::Empty, sailors]);
             continue;
         }
         for (is_pirate, trader) in waiting {
-            if y > last_y {
+            if !table.fits(y) {
                 break;
             }
-            let kind = if is_pirate { GRAPHIC_ID_PIRATE } else { GRAPHIC_ID_CAPTAIN };
-            draw_graphic(kind, x + KIND_X + (KIND_WIDTH - icon_width(kind)) / 2, y);
-            ddraw_set_constant_color(BLACK);
-            if all_towns || !is_pirate {
-                // The icon order is the game's own captain panel's: trade under the first
-                // (0x005CFA55 reads +0xA), navigation under the second (0x005CFB16).
-                draw_number(x + SKILL_1_X, y, AutoTraderPtr::skill_level(trader.get_trade_skill()) as i32, "");
-                draw_number(x + SKILL_2_X, y, AutoTraderPtr::skill_level(trader.get_navigation_skill()) as i32, "");
-                draw_number(x + SKILL_3_X, y, AutoTraderPtr::skill_level(trader.get_combat_skill()) as i32, "");
-            }
-            if is_pirate {
-                draw_number(x + PAY_X, y, trader.get_pirate_loot_share_percent() as i32, " %");
+            let kind = Cell::graphic(if is_pirate { GRAPHIC_ID_PIRATE } else { GRAPHIC_ID_CAPTAIN });
+            // The icon order is the game's own captain panel's: trade under the first
+            // (0x005CFA55 reads +0xA), navigation under the second (0x005CFB16).
+            let [trade, navigation, combat] = if all_towns || !is_pirate {
+                [trader.get_trade_skill(), trader.get_navigation_skill(), trader.get_combat_skill()]
+                    .map(|skill| Cell::number(AutoTraderPtr::skill_level(skill) as i32))
             } else {
-                draw_number(x + PAY_X, y, trader.get_daily_wage() as i32, "");
-            }
-            y += ROW_HEIGHT;
+                [Cell::Empty, Cell::Empty, Cell::Empty]
+            };
+            let pay = if is_pirate {
+                Cell::number_with(trader.get_pirate_loot_share_percent() as i32, " %")
+            } else {
+                Cell::number(trader.get_daily_wage() as i32)
+            };
+            // The town's name and sailors go on the first of its rows only.
+            let town_cell = std::mem::replace(&mut town, Cell::Empty);
+            let sailors_cell = std::mem::replace(&mut sailors, Cell::Empty);
+            y = table.row(y, &[town_cell, kind, trade, navigation, combat, pay, sailors_cell]);
         }
     }
     y
@@ -428,26 +351,4 @@ unsafe fn towns_with_player_ships(ships: &ShipsPtr, player_merchant: u16) -> [bo
         index = ship.get_next_ship_index_of_merchant();
     }
     towns
-}
-
-/// The game's text drawing takes a NUL-terminated string in its own codepage, so
-/// latin1 bytes go through unchanged.
-pub(crate) unsafe fn draw_text(x: i32, y: i32, text: &[u8]) {
-    let mut buffer = text.to_vec();
-    buffer.push(0);
-    ui_render_text_at(x, y, &buffer);
-}
-
-/// One left-aligned column on a page that is otherwise right-aligned, so the mode has to be
-/// switched and switched back: left on `x`, then straight back to the page's own mode.
-/// Leaving it on the left mode would left-align whatever the next row draws first - the town
-/// name - and the terms cell only restores the mode when a row actually has terms.
-pub(crate) unsafe fn draw_text_left(x: i32, y: i32, text: &[u8]) {
-    ddraw_set_text_mode(TEXT_MODE_LEFT);
-    draw_text(x, y, text);
-    ddraw_set_text_mode(TEXT_MODE_RIGHT);
-}
-
-pub(crate) unsafe fn draw_number(x: i32, y: i32, value: i32, suffix: &str) {
-    draw_text(x, y, format!("{value}{suffix}").as_bytes());
 }
