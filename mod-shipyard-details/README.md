@@ -23,10 +23,10 @@ Install: put `shipyard_details.dll` into the `mods` folder (requires the modload
 The shipyard window (`p3_api::ui::ui_shipyard_window`) is the same class family as the
 other building windows: its draw method loads the selected page with
 `mov eax,[esi+0xC7C]` at `0x005F4320` and its update method at `0x005F4223`, both
-followed by an unsigned compare that sends page `-1` past every case. `p3-page`'s
+followed by an unsigned compare that sends page `-1` past every case. `p3-ui`'s
 `details_page_detours!` detours both loads, verifying the six bytes at each site first,
 and hooks the window's open method.
 
-The page is two `p3-page` tables in the window's 20 px row pitch, under a "Details" title
-banner drawn with the game's own title routine. The Class48 drawing state is the one every
+The page is two `p3-ui` tables in the window's 20 px row pitch, under a "Details" title
+banner drawn with the game's own title routine. The backdrop drawing state is the one every
 details page uses, set on open and again before each draw.

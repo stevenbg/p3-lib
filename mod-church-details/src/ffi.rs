@@ -9,9 +9,9 @@
 
 use log::{error, info};
 use p3_api::ui::ui_church_window::UIChurchWindowPtr;
-use p3_page::page::prepare_drawing_state;
+use p3_ui::page::prepare_drawing_state;
 
-p3_page::details_page_detours! {
+p3_ui::details_page_detours! {
     window: UIChurchWindowPtr,
     draw: { patch: 0x005C98A5, original: [0x8b, 0x86, 0x30, 0x1d, 0x00, 0x00], base: "esi" },
     update: { patch: 0x005C9542, original: [0x8b, 0x87, 0x30, 0x1d, 0x00, 0x00], base: "edi" },

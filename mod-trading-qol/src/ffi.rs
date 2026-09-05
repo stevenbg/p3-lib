@@ -5,7 +5,7 @@ use hooklet::windows::x86::{hook_call_rel32, hook_function_pointer, CallRel32Hoo
 use log::{debug, error, info, warn};
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::{class48::Class48Ptr, enums::WareId},
+    data::enums::WareId,
     game_world::GAME_WORLD_PTR,
     hotkeys::{HotkeyHandler, HotkeysApi, MOD_ALT, MOD_CTRL, MOD_SHIFT},
     town::get_town_name,
@@ -74,13 +74,6 @@ static OPEN_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::
 static CLOSE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static UPDATE_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
 static DRAW_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
-/// The building backdrop's draw, which paints the building picture and the veil under every
-/// building window; ours fills the strip the widened office leaves beside the picture.
-const BACKDROP_DRAW_POINTER_OFFSET: u32 = Class48Ptr::VTABLE_OFFSET + 0x9C;
-static BACKDROP_DRAW_HOOK_PTR: AtomicPtr<FunctionPointerHook> = AtomicPtr::new(std::ptr::null_mut());
-/// The backdrop's two veil blits read past their 425 x 510 texture once the backdrop is
-/// enlarged; redirected to a tiling blit.
-static VEIL_BLIT_HOOKS: [AtomicPtr<CallRel32Hook>; 2] = [AtomicPtr::new(std::ptr::null_mut()), AtomicPtr::new(std::ptr::null_mut())];
 /// The number box class's key slot (module-relative pointer location): every focused number
 /// box in the game gets its keys through it; ours acts only on the office's price boxes.
 const NUMBER_WIDGET_KEY_POINTER_OFFSET: u32 = p3_api::ui::number_widget::VTABLE - 0x0040_0000 + p3_api::ui::number_widget::SLOT_KEY as u32;
@@ -286,21 +279,10 @@ pub unsafe extern "C" fn start() -> u32 {
             return 8;
         }
     }
-    match hook_function_pointer(BACKDROP_DRAW_POINTER_OFFSET, backdrop_draw_hook as *const () as usize as u32) {
-        Ok(hook) => BACKDROP_DRAW_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-        Err(_) => {
-            error!("failed to hook the building backdrop's draw");
-            return 9;
-        }
-    }
-    for (i, offset) in [Class48Ptr::VEIL_RAMP_BLIT_CALL_OFFSET, Class48Ptr::VEIL_FLAT_BLIT_CALL_OFFSET].into_iter().enumerate() {
-        match hook_call_rel32(offset, crate::wide_office::veil_blit as *const () as usize as u32) {
-            Ok(hook) => VEIL_BLIT_HOOKS[i].store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
-            Err(_) => {
-                error!("failed to hook the backdrop's veil blit at module+{offset:#x}");
-                return 10;
-            }
-        }
+    // The wider office window needs the shared backdrop behind it hooked (see p3_ui::enlarge).
+    if let Err(step) = crate::wide_office::install() {
+        error!("failed to install the backdrop hooks for the wider office window (step {step})");
+        return 9;
     }
     // Plain Q..Y typed into a focused price box reprice that one ware.
     match hook_function_pointer(NUMBER_WIDGET_KEY_POINTER_OFFSET, number_widget_key_hook as usize as u32) {
@@ -380,15 +362,6 @@ unsafe extern "thiscall" fn office_window_draw_hook(window_address: u32, context
     let orig: extern "thiscall" fn(u32, u32, i32, i32, u32) = mem::transmute((*DRAW_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address, context, x, y, z);
     crate::sync::on_draw(&UITradingOfficeWindowPtr { address: window_address });
-}
-
-/// The backdrop's draw (vtable `+0x9C`, `0x00465BA0`): `thiscall(context, x, y, z)`,
-/// `ret 0x10`. Ours paints after the game's, over the veil it has just drawn.
-#[no_mangle]
-unsafe extern "thiscall" fn backdrop_draw_hook(backdrop_address: u32, context: u32, x: i32, y: i32, z: u32) {
-    let orig: extern "thiscall" fn(u32, u32, i32, i32, u32) = mem::transmute((*BACKDROP_DRAW_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
-    orig(backdrop_address, context, x, y, z);
-    crate::wide_office::on_backdrop_drawn();
 }
 
 /// The number box class's key handler (vtable `+0x1C`, `0x0045C300`): `thiscall(vk, repeat,

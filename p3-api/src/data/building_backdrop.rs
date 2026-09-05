@@ -2,20 +2,20 @@ use std::{ffi::c_void, mem};
 
 use super::p3_ptr::P3Pointer;
 
-pub const CLASS48_PTR_ADDRESS: u32 = 0x006CC7E0;
+pub const BUILDING_BACKDROP_ADDRESS: u32 = 0x006CC7E0;
 
 #[derive(Clone, Debug)]
-pub struct Class48Ptr {
+pub struct BuildingBackdropPtr {
     pub address: u32,
 }
 
-impl Default for Class48Ptr {
+impl Default for BuildingBackdropPtr {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Class48Ptr {
+impl BuildingBackdropPtr {
     /// Vtable `0x0066E688`, module-relative. Draw is `+0x9C` = `0x00465BA0`
     /// (`thiscall(context, x, y, z)`, `ret 0x10`): it blits the current building's picture
     /// at the inset, then the whitening veil over it.
@@ -43,7 +43,7 @@ impl Class48Ptr {
     pub const VEIL_RAMP_OFFSET: i32 = 148;
 
     pub fn new() -> Self {
-        let ptr: *const u32 = CLASS48_PTR_ADDRESS as _;
+        let ptr: *const u32 = BUILDING_BACKDROP_ADDRESS as _;
         Self { address: unsafe { *ptr } }
     }
 
@@ -123,7 +123,7 @@ impl Class48Ptr {
     }
 }
 
-impl P3Pointer for Class48Ptr {
+impl P3Pointer for BuildingBackdropPtr {
     fn get_address(&self) -> u32 {
         self.address
     }

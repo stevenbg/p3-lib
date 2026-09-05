@@ -1,5 +1,5 @@
 [package]
-name = "p3-page"
+name = "p3-ui"
 edition = "2021"
 version.workspace = true
 

@@ -46,13 +46,13 @@ update method load the selected page into `eax` with a 6-byte
 `mov eax, [esi+0xecc4]` and dispatch through a jump table, so both can be detoured
 by replacing that load with a jump and returning the same value in `eax`.
 
-This mod hooks all three phases through `p3-page`'s `details_page_detours!`, which
+This mod hooks all three phases through `p3-ui`'s `details_page_detours!`, which
 verifies the six bytes at each detour site before writing; the page itself is laid out
-with `p3-page`'s `Page` and `Table`:
+with `p3-ui`'s `Page` and `Table`:
 
 |Phase|Where|What for|
 |-|-|-|
-|open (`+0x120`)|vtable hook|set the class48 drawing state once, so the page's text is not clipped|
+|open (`+0x120`)|vtable hook|set the backdrop drawing state once, so the page's text is not clipped|
 |update (`+0xF4`, `0x005D9500`)|detour at `0x005D9508`, continue `0x005D950E`|register the window's area as changed (`0x004B9650`) while the page is shown|
 |draw (`+0x9C`, `0x005D95A0`)|detour at `0x005D9674`, continue `0x005D967A`|render the page text|
 

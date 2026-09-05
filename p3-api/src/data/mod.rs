@@ -3,7 +3,7 @@ use std::{ffi::c_void, mem};
 use screen_rectangle::Rect;
 
 pub mod class27;
-pub mod class48;
+pub mod building_backdrop;
 pub mod convoy;
 pub mod enums;
 pub mod merchant_building;

@@ -3,7 +3,7 @@
 //!
 //! The draw method (`0x005CDC60`) loads the page with `mov eax,[esi+0x1BF4]` at
 //! `0x005CE3E0`, the update method (`0x005CD540`) with `mov eax,[edi+0x1BF4]` at
-//! `0x005CD54D`; both are detoured through `p3_page`. On top of that the page hooks the
+//! `0x005CD54D`; both are detoured through `p3_ui`. On top of that the page hooks the
 //! window's close and event slots and the page switcher, for the key registration and the
 //! captains table's header clicks.
 
@@ -23,9 +23,9 @@ use p3_api::{
         ui_tavern_window::UITavernWindowPtr,
     },
 };
-use p3_page::page::prepare_drawing_state;
+use p3_ui::page::prepare_drawing_state;
 
-p3_page::details_page_detours! {
+p3_ui::details_page_detours! {
     window: UITavernWindowPtr,
     draw: { patch: 0x005CE3E0, original: [0x8b, 0x86, 0xf4, 0x1b, 0x00, 0x00], base: "esi" },
     update: { patch: 0x005CD54D, original: [0x8b, 0x87, 0xf4, 0x1b, 0x00, 0x00], base: "edi" },

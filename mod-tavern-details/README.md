@@ -104,15 +104,15 @@ instance, only while one is available in that town.)
 
 |Phase|Where|What for|
 |-|-|-|
-|open (`+0x120`)|vtable hook|set the class48 drawing state once, so the page's text is not clipped|
+|open (`+0x120`)|vtable hook|set the backdrop drawing state once, so the page's text is not clipped|
 |update (`+0xF4`)|detour at `0x005CD54D`, continue `0x005CD553`|register the window's area as changed (`0x004B9650`) while the page is shown; keep the captains view's scrollbar attached, counted and polled|
 |draw (`+0x9C`)|detour at `0x005CE3E0`, continue `0x005CE3E6`|render the page text|
 |event (`+0x18`)|vtable hook|the widget event handler, `(point*, type)`; type `-2` is a left click, tested against the captains table's header cells|
 |close (`+0x118`)|vtable hook|disarm the page keys, take the scrollbar down|
 
-The open hook and the two detours come from `p3-page`'s `details_page_detours!`, which
+The open hook and the two detours come from `p3-ui`'s `details_page_detours!`, which
 verifies the six bytes at each site before writing; the event and close hooks and the
-`set_page` detour are this mod's own. The tables are `p3-page` `Table`s: the crew and
+`set_page` detour are this mod's own. The tables are `p3-ui` `Table`s: the crew and
 missions views with fixed columns, the captains view with columns laid out from the
 window's right edge, whose header hit test drives the sort. Beyond the addresses - the
 page field is `+0x1BF4`, the jump tables are `0x005CDBC8` (update) and `0x005CE4F4`

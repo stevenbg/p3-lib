@@ -11,4 +11,4 @@ name="church_details"
 log = { workspace = true }
 win_dbg_logger = { workspace = true }
 p3-api = { path = "../p3-api" }
-p3-page = { path = "../p3-page" }
+p3-ui = { path = "../p3-ui" }

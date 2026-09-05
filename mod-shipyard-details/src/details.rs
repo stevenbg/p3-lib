@@ -8,7 +8,7 @@ use p3_api::{
     game_world::GAME_WORLD_PTR,
     ui::ui_shipyard_window::UIShipyardWindowPtr,
 };
-use p3_page::{Cell, Column, Page, Table};
+use p3_ui::{Cell, Column, Page, Table};
 
 /// The page starts below the title banner and the window's own art.
 const FIRST_ROW_Y: i32 = 200;
@@ -44,7 +44,7 @@ pub static REQUIRED_XP: &CStr = c"Required XP";
 
 /// The drawing state every details page uses, set on open and again before each draw.
 pub(crate) unsafe fn prepare_drawing_state() {
-    p3_page::page::prepare_drawing_state();
+    p3_ui::page::prepare_drawing_state();
 }
 
 fn page(window: &UIShipyardWindowPtr) -> Page {

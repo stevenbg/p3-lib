@@ -84,10 +84,10 @@ The church window is the same class family as the tavern's: vtable `0x00679A48`,
 its per-frame update and its draw method load the page into `eax` with a 6-byte
 `mov eax,[reg+0x1D30]` before dispatching through a jump table bounded by an **unsigned**
 compare - so the `-1` the window opens on misses every case and nothing but the frame is
-drawn. This mod detours both loads through `p3-page`'s `details_page_detours!`, does its
+drawn. This mod detours both loads through `p3-ui`'s `details_page_detours!`, does its
 work when the page is `-1`, and returns the same page value in `eax`.
 
 Both six-byte sequences are verified before anything is written, so a different game build
 refuses to patch and `start()` fails loudly rather than corrupting code. The page is a
-three-column `p3-page` `Table` - label, value, note - with the coin symbol drawn through the
+three-column `p3-ui` `Table` - label, value, note - with the coin symbol drawn through the
 window's rich-text layout object, plus prose lines at the bottom.

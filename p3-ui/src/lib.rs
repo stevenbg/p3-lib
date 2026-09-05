@@ -9,11 +9,16 @@
 //!   header, the hit test for header clicks, and the extents a scrollbar needs.
 //! - [details_page_detours!] installs the two page-load detours and the open hook a page mod
 //!   needs, verified against the bytes it replaces.
+//! - [enlarge] makes a building window bigger than the 425 x 510 the game gives it, and keeps
+//!   the shared backdrop behind it - picture, veil, frame - looking right at the new size.
+//! - [graphics] holds drawing helpers composed from the game's blits.
 //!
 //! Everything is drawn in the game's own codepage (latin1); text arrives as bytes.
 
 pub mod cell;
 pub mod detours;
+pub mod enlarge;
+pub mod graphics;
 pub mod page;
 pub mod table;
 

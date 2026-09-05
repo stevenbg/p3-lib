@@ -9,7 +9,7 @@ use p3_api::{
     scheduled_tasks::{scheduled_task::ScheduledTaskData, SCHEDULED_TASKS_PTR},
     ui::ui_town_hall_window::UITownHallWindowPtr,
 };
-use p3_page::{Cell, Column, Page, Table};
+use p3_ui::{Cell, Column, Page, Table};
 
 /// Under the window's title banner, in the game's own 20 px pitch for this window.
 const FIRST_ROW_Y: i32 = 60;

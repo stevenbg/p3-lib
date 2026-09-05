@@ -3,12 +3,12 @@
 //!
 //! The draw method (`0x005F42B0`) loads the page with `mov eax,[esi+0xC7C]` at
 //! `0x005F4320`, the update method (`0x005F4220`) with the same load at `0x005F4223`; both
-//! are detoured through `p3_page`. The page has one view and no keys.
+//! are detoured through `p3_ui`. The page has one view and no keys.
 
 use log::{error, info};
 use p3_api::ui::ui_shipyard_window::UIShipyardWindowPtr;
 
-p3_page::details_page_detours! {
+p3_ui::details_page_detours! {
     window: UIShipyardWindowPtr,
     draw: { patch: 0x005F4320, original: [0x8b, 0x86, 0x7c, 0x0c, 0x00, 0x00], base: "esi" },
     update: { patch: 0x005F4223, original: [0x8b, 0x86, 0x7c, 0x0c, 0x00, 0x00], base: "esi" },

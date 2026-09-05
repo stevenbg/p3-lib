@@ -13,7 +13,7 @@ use p3_api::{
         ui_tavern_window::UITavernWindowPtr,
     },
 };
-use p3_page::{Align, Cell, Column, Page, Symbol, Table};
+use p3_ui::{Align, Cell, Column, Page, Symbol, Table};
 use windows::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_2, VK_3};
 
 pub static CREW: &CStr = c"Crew";

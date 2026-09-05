@@ -49,16 +49,16 @@ running and an offer is selected, the mod adds above the game's text:
 
 The town hall window is constructed once at startup and kept in the static `0x006E558C`
 (see the gitbook's UI chapter). The open hook and the two page-load detours come from
-`p3-page`'s `details_page_detours!`, which verifies the six bytes at each site before
+`p3-ui`'s `details_page_detours!`, which verifies the six bytes at each site before
 writing; the page-switch hook is this mod's own:
 
 |Phase|Where|What for|
 |-|-|-|
-|open (vtable `+0x120`)|vtable hook|set the class48 drawing state once, so the page's text is not clipped|
+|open (vtable `+0x120`)|vtable hook|set the backdrop drawing state once, so the page's text is not clipped|
 |page switch|call hook on the side panel's `set_selected_page` call at module offset `0x1A94BC`|re-apply the drawing state when the alderman's office (page 7) is selected|
 |update (`+0xF4`, `0x005E0850`)|detour at `0x005E085B`, continue `0x005E0861`, where the update method loads the selected page|submit the window's area to the renderer (`0x004B9650`) on pages `-1` and 7, so the page does not keep stale pixels|
 |draw|detour at `0x005E09AC`, continue `0x005E09B2`, where the draw method loads the selected page|render the Details page on `-1`, the extra lines on page 7|
 
-Both pages are `p3-page` tables in the window's own 20 px row pitch: the Details page four
+Both pages are `p3-ui` tables in the window's own 20 px row pitch: the Details page four
 right-aligned columns with the game's load and barrel symbols in the stock and consumption
 cells, the alderman's office a label/value pair per line.

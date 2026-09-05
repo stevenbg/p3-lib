@@ -12,7 +12,7 @@
 /// Install the two page-load detours and the open hook for one window.
 ///
 /// ```ignore
-/// p3_page::details_page_detours! {
+/// p3_ui::details_page_detours! {
 ///     window: UIChurchWindowPtr,
 ///     // `mov eax,[esi+0x1D30]` in the draw method
 ///     draw: { patch: 0x005C98A5, original: [0x8b, 0x86, 0x30, 0x1d, 0x00, 0x00], base: "esi" },

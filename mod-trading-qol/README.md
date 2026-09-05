@@ -121,6 +121,17 @@ forgotten when the window closes, so each office starts blank.
 `mod-trading-office-prices-synchronization` does a blanket version of this (every locked
 ware, to every office, whenever the window closes); the two can run side by side.
 
+## A bigger office window
+
+The trading office window opens at 490 x 560 instead of the game's 425 x 510, which makes
+room on the administrator page for another column and more rows. The window itself lays
+its widgets out from its size, so the right-hand columns move outwards and the space opens
+between the arrows and the amounts. The building picture, the whitening veil and the wooden
+frame behind the window belong to a backdrop the game does not scale; `p3-ui`'s `enlarge`
+grows it while the office is open, paints the picture scaled to the new size, veils it the
+way the game does and redraws the frame, and gives the backdrop back to the other buildings
+when the window closes. The sizes are the two constants in `src/wide_office.rs`.
+
 ## Crew rescue: stalled routes hire their own sailors
 
 A route ship that loses sailors (pirates, mostly) trades at its next stop and then

@@ -20,6 +20,9 @@ pub const SLOT_EVENT: usize = 0x18;
 pub const SLOT_CLOSE: usize = 0x118;
 /// `open()`, run when the window is put on screen.
 pub const SLOT_OPEN: usize = 0x120;
+/// `draw(context, x, y, z)`, `ret 0x10`: the scene container calls it each frame the widget
+/// meets the dirty region.
+pub const SLOT_DRAW: usize = 0x9C;
 pub const SLOT_SET_POSITION: usize = 0x64;
 /// `thiscall(out*)`, `ret 4` (base `0x00402470`): copies `+0x2C`, `+0x30`, `+0x34` - width,
 /// height, depth.

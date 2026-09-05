@@ -4,7 +4,7 @@ use p3_api::{
     game_world::GAME_WORLD_PTR,
     ui::ui_town_hall_window::UITownHallWindowPtr,
 };
-use p3_page::{Cell, Column, Page, Symbol, Table};
+use p3_ui::{Cell, Column, Page, Symbol, Table};
 use std::ffi::CStr;
 
 /// Under the window's title banner.
@@ -128,7 +128,7 @@ pub(crate) unsafe fn draw_page(window: UITownHallWindowPtr) {
             }
             GREEN
         } else {
-            p3_page::BLACK
+            p3_ui::BLACK
         };
         if ware == WareId::Spices {
             color = DARK_RED;

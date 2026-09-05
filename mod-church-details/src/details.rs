@@ -17,7 +17,7 @@ use p3_api::{
     },
     ui::ui_church_window::UIChurchWindowPtr,
 };
-use p3_page::{Align, Cell, Column, Page, Symbol, Table};
+use p3_ui::{Align, Cell, Column, Page, Symbol, Table};
 
 /// The page's first row, relative to the window's top edge - matched to the other details
 /// pages so the four look like one feature.

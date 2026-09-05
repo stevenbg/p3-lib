@@ -39,7 +39,7 @@ use p3_api::{
         ui_tavern_window::UITavernWindowPtr,
     },
 };
-use p3_page::{Cell, Column, Page, Table};
+use p3_ui::{Cell, Column, Page, Table};
 
 use crate::details::page;
 

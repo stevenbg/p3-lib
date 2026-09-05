@@ -47,7 +47,7 @@ members = [
     "p3-aim-sys",
     "p3-api",
     "p3-modloader",
-    "p3-page",
+    "p3-ui",
     "p3-rou",
 ]
 exclude = [

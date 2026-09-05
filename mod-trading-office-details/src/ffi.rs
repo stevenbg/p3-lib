@@ -3,13 +3,13 @@
 //!
 //! The draw method (`0x005D95A0`) loads the page with `mov eax,[esi+0xECC4]` at
 //! `0x005D9674`, the update method (`0x005D9500`) with the same load at `0x005D9508`; both
-//! are detoured through `p3_page`.
+//! are detoured through `p3_ui`.
 
 use log::{error, info};
 use p3_api::ui::ui_trading_office_window::UITradingOfficeWindowPtr;
-use p3_page::page::prepare_drawing_state;
+use p3_ui::page::prepare_drawing_state;
 
-p3_page::details_page_detours! {
+p3_ui::details_page_detours! {
     window: UITradingOfficeWindowPtr,
     draw: { patch: 0x005D9674, original: [0x8b, 0x86, 0xc4, 0xec, 0x00, 0x00], base: "esi" },
     update: { patch: 0x005D9508, original: [0x8b, 0x86, 0xc4, 0xec, 0x00, 0x00], base: "esi" },

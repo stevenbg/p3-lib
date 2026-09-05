@@ -4,7 +4,7 @@
 //!
 //! The draw method loads the page with `mov eax,[esi+0x18E4]` at `0x005E09AC`, the update
 //! method (`0x005E0850`) with the same load at `0x005E085B`; both are detoured through
-//! `p3_page`. Page 7 is a page the game draws itself, so switching to it re-applies the
+//! `p3_ui`. Page 7 is a page the game draws itself, so switching to it re-applies the
 //! drawing state: the side panel's call to `set_selected_page` is hooked for that.
 
 use std::{
@@ -15,11 +15,11 @@ use std::{
 use hooklet::windows::x86::{hook_call_rel32, CallRel32Hook};
 use log::{error, info};
 use p3_api::ui::ui_town_hall_window::UITownHallWindowPtr;
-use p3_page::{page::prepare_drawing_state, Page};
+use p3_ui::{page::prepare_drawing_state, Page};
 
 use crate::pages::{aldermans_office, details};
 
-p3_page::details_page_detours! {
+p3_ui::details_page_detours! {
     window: UITownHallWindowPtr,
     draw: { patch: 0x005E09AC, original: [0x8b, 0x86, 0xe4, 0x18, 0x00, 0x00], base: "esi" },
     update: { patch: 0x005E085B, original: [0x8b, 0x86, 0xe4, 0x18, 0x00, 0x00], base: "esi" },

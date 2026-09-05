@@ -12,7 +12,7 @@ use p3_api::{
     },
     ui::ui_trading_office_window::UITradingOfficeWindowPtr,
 };
-use p3_page::{Align, Cell, Column, Page, Table};
+use p3_ui::{Align, Cell, Column, Page, Table};
 
 pub static NO_ADMINISTRATOR: &CStr = c"No administrator employed";
 
