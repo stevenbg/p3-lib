@@ -83,6 +83,10 @@ pub fn ddraw_set_font(font: DdrawFontPtr) {
 pub const FONT_CONTAINER_BASE: u32 = 0x006D_CD28;
 pub const FONT_CONTAINER_STRIDE: u32 = 0xA8;
 pub const FONT_COUNT: u32 = 6;
+/// Index of `Font0`, `tiepolo_black16` - the heading face ([get_header_font]).
+pub const HEADER_FONT_INDEX: u32 = 0;
+/// Index of `Font1`, `tiepolo_bold16` - the body face ([get_normal_font]).
+pub const NORMAL_FONT_INDEX: u32 = 1;
 
 /// One of the six global fonts by index; falls back to index 1 when out of range.
 pub fn get_font(index: u32) -> DdrawFontPtr {
@@ -92,13 +96,13 @@ pub fn get_font(index: u32) -> DdrawFontPtr {
 
 /// `Font1`, `tiepolo_bold16` - the body text of the parchment pages and panels.
 pub fn get_normal_font() -> DdrawFontPtr {
-    get_font(1)
+    get_font(NORMAL_FONT_INDEX)
 }
 
 /// `Font0`, `tiepolo_black16` - the same size as [get_normal_font] in the heavier Black
 /// weight, which is what the game uses for headings.
 pub fn get_header_font() -> DdrawFontPtr {
-    get_font(0)
+    get_font(HEADER_FONT_INDEX)
 }
 
 /// `Font2`, `tiepolo_black20` - Black weight at 20px, the heaviest face that is still

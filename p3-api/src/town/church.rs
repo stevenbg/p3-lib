@@ -22,7 +22,8 @@ use crate::game_world::GAME_WORLD_PTR;
 /// The full expression is `value * 0.0003 / (church_factor + 1) * base_rep_factor`, and
 /// both of those are 1.0 and 0.0 respectively in an unmodified game - so a point of
 /// reputation costs about 3,333 gold of goods. The credit lands in the **social** term,
-/// which decays 1% per update, so donating is a top-up rather than a purchase.
+/// which decays 1% per game day (the daily merchant recalculation), so donating is a
+/// top-up rather than a purchase.
 pub const REPUTATION_PER_GOLD: f64 = 0.0003;
 
 /// The gate byte at which the reply becomes "thank you very much for the generous

@@ -1,26 +1,33 @@
 # mod-church-details
 
 Fills the church window's empty starting page (selected page `-1`, the one the window
-opens on) with what a **feeding the poor** donation to that town is worth, the way
-`mod-tavern-details`, `mod-shipyard-details`, `mod-town-hall-details` and
-`mod-trading-office-details` fill theirs.
+opens on) with what the church's three actions in that town are worth: **feeding the
+poor**, **donating jewellery** and **funding the extension**.
 
 Install: put `church_details.dll` into the `mods` folder (requires the modloader).
+
+![The church page: feeding the poor, jewellery donations, the extension, and how reputation adds up](church.jpg)
 
 ## Page contents
 
 | row | what it says |
 |-|-|
-| Citizens, Poor satisfaction | the two town figures the thresholds are made of, so the numbers below are not magic - and both are things you can change |
-| "Generous donation" | the market value a gift must reach for the second reply. Reputation only |
-| "Beggars will come" | the market value for the third reply, and **how many beggars the influx would actually add** - in workers, since four beggars make one hire |
 | Beggars | the pool now, and the equilibrium it drifts toward |
-| 1 reputation costs | what a point of reputation costs in goods, since the credit is linear and has no threshold |
+| Required value increases with the poor's satisfaction: | heading for the two replies below; the values also scale with the town's size (see the arithmetic) |
+| "Generous donation" | the market value a gift must reach for the second reply. Reputation only |
+| "Beggars will come" | the market value for the third reply, and **how many beggars the influx would actually add** - in hires, since four beggars make one - and how long they stay |
+| Decoration | the 0..5 level the interior renders, and the jewellery money at which it saturates; gold past that buys reputation only |
+| Collected | jewellery money against its cap; it decays 100 a day, so the decoration slides back unless topped up |
+| Stage | extension stages built, out of three |
+| Funding | the fund against the current stage's cost and what is still to go - or that the church is not accepting, is funded and waiting on materials, or is fully extended |
+| Materials | the three wares the stage consumes, held against needed; they come from the town's own stock, so a funded extension stalls in a town short of bricks |
+| All three actions grant ... | a closing paragraph: the goods value of one reputation point (the credit is linear and has no threshold), what your town reputation is made of and which of those terms are local, and which of them decay |
 
 The influx row says what you would really get, not just "beggars":
 
-- **`+72 beggars = 18 workers`** - the normal case. The jump is
-  `sqrt(citizens) / 6 + target / 2`.
+- **`+72, 18 hires, stays`** - the normal case. The jump is
+  `sqrt(citizens) / 6 + target / 2`; when it overshoots the pool's equilibrium the surplus
+  drains back, and the note says for how long instead (`~12d`).
 - **`no beggars - pool already full`** - once the town holds more than 50 beggars the jump
   is capped to keep them under a quarter of the population, and a town already at that
   quarter gets nothing. Below 50 the influx is uncapped, which is why a drained town is
@@ -63,7 +70,7 @@ root, so the divisor floors at 8 - **a town whose poor are miserable is by far t
 to impress**, and the cost scales with town size.
 
 Reputation is separate and linear: `value * 0.0003`, credited to the merchant's *social*
-term, which decays 1% per update. So donating is a top-up rather than a purchase, and there
+term, which decays 1% per day. So donating is a top-up rather than a purchase, and there
 is no bonus for making one large gift instead of several small ones - the bands only change
 the reply and the beggars.
 

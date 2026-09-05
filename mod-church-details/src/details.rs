@@ -5,6 +5,8 @@
 
 use std::ffi::CStr;
 
+use p3_api::ui::rich_text::{draw_rich_text, font_escape, CHURCH_WINDOW_LAYOUT_OFFSET};
+
 use p3_api::{
     data::{class48::Class48Ptr, ddraw_set_constant_color, ddraw_set_text_mode, screen_rectangle::Rect, ui_render_text_at},
     game_world::GAME_WORLD_PTR,
@@ -38,11 +40,13 @@ const VALUE_X: i32 = 250;
 const NOTE_X: i32 = 270;
 
 static HEADING: &CStr = c"Feeding the poor";
-static CITIZENS: &CStr = c"Citizens";
-static POOR_MOOD: &CStr = c"Poor satisfaction";
+static REQUIRED: &CStr = c"Required value increases with the poor's satisfaction:";
 static GENEROUS: &CStr = c"\"Generous donation\"";
 static INFLUX: &CStr = c"\"Beggars will come\"";
-static PER_POINT: &CStr = c"1 reputation costs";
+static REPUTATION_SUM_A: &CStr = c"Your town reputation is a sum of local terms - buildings, tenants,";
+static REPUTATION_SUM_B: &CStr = c"workers, outrigger, social, trading, spouse (hometown only) -";
+static REPUTATION_SUM_C: &CStr = c"plus fleet size and wealth everywhere.";
+static REPUTATION_DECAY: &CStr = c"Social and trading reputation decay 1%/day; the others don't.";
 static BEGGARS_NOW: &CStr = c"Beggars";
 static JEWELLERY: &CStr = c"Donations (jewellery)";
 static DECORATION: &CStr = c"Decoration";
@@ -77,10 +81,11 @@ pub(crate) unsafe fn draw_page(window: UIChurchWindowPtr) {
     font::ddraw_set_font(font::get_normal_font());
 
     let x = window.get_x();
+    let layout = window.address + CHURCH_WINDOW_LAYOUT_OFFSET;
     let mut y = window.get_y() + FIRST_ROW_Y;
     let last_y = window.get_y() + window.get_height() - ROW_HEIGHT;
 
-    draw_left(x + LABEL_X, y, HEADING.to_bytes());
+    heading(x, y, HEADING);
     y += ROW_HEIGHT + GAP;
 
     let town_index = window.get_town_index();
@@ -93,27 +98,22 @@ pub(crate) unsafe fn draw_page(window: UIChurchWindowPtr) {
     let poor = town.get_poor_satisfaction();
     let divisor = donation_divisor(citizens, poor);
 
-    // What the thresholds are made of, so the numbers below are not magic. Both drive the
-    // divisor, and both are things the player can change.
-    y = row(x, y, last_y, CITIZENS, &format!("{citizens}"), "");
-    y = row(x, y, last_y, POOR_MOOD, &format!("{poor}"), "");
-    y += GAP;
-
-    // The two outcomes. The value is market value at THIS town's prices, which is the same
-    // routine the donation dialog uses to price what you hand over.
+    // Where the pool stands against its own equilibrium, first, so the influx figure below
+    // has something to be read against.
     let beggars = town.get_beggars();
     let target = beggar_target(citizens, town.get_beggar_satisfaction());
+    y = row(x, y, last_y, BEGGARS_NOW, &format!("{beggars}"), &format!("target {target}"));
+    y += GAP;
+
+    // The two outcomes, under one heading. The value is market value at THIS town's prices,
+    // which is the same routine the donation dialog uses to price what you hand over; the
+    // divisor behind it is the town's size and its poor's satisfaction.
+    draw_left(x + LABEL_X, y, REQUIRED.to_bytes());
+    y += ROW_HEIGHT;
     let blocked = town.get_flags() & TOWN_FLAG_NO_BEGGAR_GROWTH != 0;
     let influx = if blocked { 0 } else { beggar_influx(citizens, beggars, target) };
 
-    y = row(
-        x,
-        y,
-        last_y,
-        GENEROUS,
-        &format!("{} gold", GATE_GENEROUS * divisor),
-        "reputation only",
-    );
+    y = row_gold(layout, x, y, last_y, GENEROUS, GATE_GENEROUS * divisor, "reputation only");
     // Spell out what the influx is actually worth here rather than promising "beggars":
     // the jump is capped once the pool passes a quarter of the population, and a town
     // flagged 0x8 gets nothing at all.
@@ -129,50 +129,34 @@ pub(crate) unsafe fn draw_page(window: UIChurchWindowPtr) {
             None => format!("+{influx}, {} hires, stays", influx / 4),
         }
     };
-    y = row(
-        x,
-        y,
-        last_y,
-        INFLUX,
-        &format!("{} gold", GATE_BEGGAR_INFLUX * divisor),
-        &influx_note,
-    );
-    y += GAP;
-
-    // Where the pool stands against its own equilibrium, so the influx figure above has
-    // something to be read against.
-    y = row(x, y, last_y, BEGGARS_NOW, &format!("{beggars}"), &format!("target {target}, donation does not raise it"));
-
+    y = row_gold(layout, x, y, last_y, INFLUX, GATE_BEGGAR_INFLUX * divisor, &influx_note);
     y += GAP;
 
     // The other two things the church takes money for. Both credit the same reputation as
     // feeding the poor; what differs is the cap, the decay and what the gold buys.
     if let Some(church) = ChurchPtr::of_town(town_index as u8) {
         let scale = church_scale();
-        y = row(x, y, last_y, JEWELLERY, "", "");
+        y = heading_row(x, y, last_y, JEWELLERY);
         // The level saturates well below the cap, so both numbers are worth showing: past
         // the "full at" figure the gold still counts for reputation and nothing else.
         let step = DECORATION_STEP_PER_SCALE * scale;
-        y = row(
-            x,
-            y,
-            last_y,
-            DECORATION,
-            &format!("{} / {DECORATION_MAX}", church.decoration_level()),
-            &format!("full at {} gold", (2 * DECORATION_MAX - 1) * step / 2),
-        );
+        let row_y = y;
+        y = row(x, y, last_y, DECORATION, &format!("{} / {DECORATION_MAX}", church.decoration_level()), "");
+        if row_y <= last_y {
+            draw_rich_left(layout, x + NOTE_X, row_y, &format!("full at {}\\C", (2 * DECORATION_MAX - 1) * step / 2));
+        }
         y = row(
             x,
             y,
             last_y,
             COLLECTED,
             &format!("{} / {}", church.get_jewellery_money(), JEWELLERY_CAP_PER_SCALE * scale),
-            &format!("decays {JEWELLERY_DECAY_PER_DAY}/day, gold past the cap is lost"),
+            &format!("decays {JEWELLERY_DECAY_PER_DAY}/day"),
         );
         y += GAP;
 
         let stage = church.get_extension_stage();
-        y = row(x, y, last_y, EXTENSION, "", "");
+        y = heading_row(x, y, last_y, EXTENSION);
         y = row(x, y, last_y, STAGE, &format!("{stage} / {EXTENSION_STAGES}"), "");
         match extension_cost(stage) {
             None => {
@@ -198,16 +182,97 @@ pub(crate) unsafe fn draw_page(window: UIChurchWindowPtr) {
                         format!("{ware:?} {}/{}", held[i], per_stage[stage as usize])
                     })
                     .collect();
-                y = row(x, y, last_y, MATERIALS, "", &needed.join("  "));
+                // One ware per line, under the label.
+                for (i, need) in needed.iter().enumerate() {
+                    let label = if i == 0 { MATERIALS } else { c"" };
+                    y = row(x, y, last_y, label, "", need);
+                }
             }
         }
         y += GAP;
     }
 
     // Reputation is linear and has no threshold, and all three donations credit it at the
-    // same rate - so it belongs once, at the bottom.
+    // same rate - so it is explained once, at the bottom, as prose.
     let gold_per_point = (1.0 / REPUTATION_PER_GOLD * church_scale() as f64).round() as i32;
-    row(x, y, last_y, PER_POINT, &format!("{gold_per_point} gold"), "social, decays 1%/update");
+    if y <= last_y {
+        draw_rich_left(
+            layout,
+            x + LABEL_X,
+            y,
+            &format!("All three actions grant +1 social reputation per {gold_per_point}\\C."),
+        );
+    }
+    y += ROW_HEIGHT;
+    for line in [REPUTATION_SUM_A, REPUTATION_SUM_B, REPUTATION_SUM_C, REPUTATION_DECAY] {
+        y = text_row(x, y, last_y, line);
+    }
+}
+
+/// A line of prose starting at the label column; advances like [row].
+unsafe fn text_row(x: i32, y: i32, last_y: i32, text: &CStr) -> i32 {
+    if y > last_y {
+        return y;
+    }
+    draw_left(x + LABEL_X, y, text.to_bytes());
+    y + ROW_HEIGHT
+}
+
+/// [row] with a gold value drawn as `<n>` plus the game's coin symbol.
+unsafe fn row_gold(layout: u32, x: i32, y: i32, last_y: i32, label: &CStr, gold: i32, note: &str) -> i32 {
+    if y > last_y {
+        return y;
+    }
+    draw_left(x + LABEL_X, y, label.to_bytes());
+    draw_rich_right(layout, x + VALUE_X, y, &format!("{gold}\\C"));
+    if !note.is_empty() {
+        draw_left(x + NOTE_X, y, note.as_bytes());
+    }
+    y + ROW_HEIGHT
+}
+
+/// Text with markup - the coin symbol is the escape `\C`, not a glyph - through the
+/// framework's rich-text pass, right-aligned: `\r` anchors the line's right edge at `x`,
+/// like the page's plain values. That pass ignores the ddraw font and would default to the
+/// heading face, so the line selects the body font first; it also sets its own colour and
+/// text mode, so the page's state is restored after it.
+unsafe fn draw_rich_right(layout: u32, x: i32, y: i32, text: &str) {
+    draw_rich(layout, x, y, &format!("{}\\r{text}", font_escape(font::NORMAL_FONT_INDEX)));
+}
+
+/// The same, left-aligned from `x`.
+unsafe fn draw_rich_left(layout: u32, x: i32, y: i32, text: &str) {
+    draw_rich(layout, x, y, &format!("{}\\l{text}", font_escape(font::NORMAL_FONT_INDEX)));
+}
+
+/// The rich-text pass wraps at `width`; the page's content spans the window from the label
+/// column to the right margin, and no line on it is wider than this.
+const RICH_WRAP_WIDTH: i32 = 460;
+
+unsafe fn draw_rich(layout: u32, x: i32, y: i32, text: &str) {
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(0);
+    draw_rich_text(layout, &bytes, x, y, RICH_WRAP_WIDTH, ROW_HEIGHT, BLACK);
+    ddraw_set_constant_color(BLACK);
+    ddraw_set_text_mode(TEXT_MODE_RIGHT);
+    font::ddraw_set_font(font::get_normal_font());
+}
+
+/// A section heading in the game's heading face (the Black weight of the body font), then
+/// back to the body font for the rows under it.
+unsafe fn heading(x: i32, y: i32, label: &CStr) {
+    font::ddraw_set_font(font::get_header_font());
+    draw_left(x + LABEL_X, y, label.to_bytes());
+    font::ddraw_set_font(font::get_normal_font());
+}
+
+/// [heading] as a row: advances like [row], or nothing past the window's bottom edge.
+unsafe fn heading_row(x: i32, y: i32, last_y: i32, label: &CStr) -> i32 {
+    if y > last_y {
+        return y;
+    }
+    heading(x, y, label);
+    y + ROW_HEIGHT
 }
 
 /// One label/value/note row, or nothing once the window's bottom edge is reached.
