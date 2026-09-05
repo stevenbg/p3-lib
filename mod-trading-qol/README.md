@@ -1,8 +1,9 @@
 # mod-trading-qol
 
 Hotkeys for configuring a trading office administrator, and for editing a ship's trade
-route, from live game data. All prices are computed from the game's price curves - no
-configuration files.
+route, from live game data, plus a column of checkboxes on the administrator view that
+copies chosen orders to your other offices. All prices are computed from the game's price
+curves - no configuration files.
 
 Install: put `trading_qol.dll` into the `mods` folder (requires the modloader; `hotkey_registry.dll` from `mod-hotkey-registry` for the hotkeys). Editing
 routes also needs `fix_uncompressed_trade_route_loading.dll`, because generated route
@@ -36,6 +37,7 @@ because it opened last.
 | Alt + F1 | Provision the building materials, enough for any building or ship (cloth 10, hemp 8, pitch 50, bricks 80, timber 50, iron goods 50): raise the amounts to those - never lowering - and lock the quantities, like Ctrl+F1. |
 | Ctrl + Q W E R T Y | Set the BUY prices to that price level (see below): in the route window's goods dialog ("Automatic maritime trading"), every buy order of the stop being edited; otherwise every buy order of the administrator view |
 | Alt + Q W E R T Y | The same for SELL prices |
+| Q W E R T Y (in a price box) | With a price box selected for typing - click it, in the administrator view or in the goods dialog - the plain key sets **that one ware's** price to the level, the buy price for a buy order and the sell price for a sell. The game commits it exactly as it would typed digits: at once in the office view, and when you leave the row or close the dialog in the goods dialog. A ware without a buy or sell order gets a popup instead. The other keys still type into the box as usual |
 | F11 | Dump thresholds, base prices, all price levels and the weekly citizen/business consumptions to the log and to `<TownName>.csv` in the game directory |
 | F1 (nothing open) | Rebuild the selected ship's route as a 5stop supply route. The ship's current route provides the towns - its first stop becomes the home town, the remaining unique towns in order the targets (a ship without a route uses the merchant's home town and targets the open town view): load a week of every target's demand at the home office, then per target sell it there and reset that office's stock, and finally haul everything home. Targets without a player office get a combined sell-and-buy stop instead, since office transfers would be wiped there: sells as usual, and buys at the E price for everything except the no-buy wares and what the home town produces itself. The previous route is saved to `_backup.rou` first |
 | F2 | The same, but with the 6stop office swap per target |
@@ -68,7 +70,7 @@ arrows do, which starts a new Undo session: Undo covers changes made since - the
 as after a stop switch (the game resets its Undo baseline on every stop display).
 
 Directions and amounts are never changed by the price keys; F1 is the only key that
-creates orders.
+creates orders, and the Set button only copies existing ones.
 
 The route keys take both the home town (its first stop) and the targets (the rest) from
 the ship's own route; Shift and F4 use the town whose view is open, with the merchant's
@@ -99,6 +101,25 @@ sort together at the top of any name-sorted ship list, and costs no town: one da
 plus ten towns is exactly the 31 characters available. The name is also what the
 thawing-port feature below reads to decide which ships serve a town, so renaming a route
 ship by hand takes it out of that.
+
+## Copying orders to your other offices: the Set column
+
+The administrator view gets a column of checkboxes left of the ware names, and a **Set**
+button in the bottom-left corner with the hint "qty & price across offices". Tick the wares
+whose orders you want everywhere, press Set, and for each ticked ware the **amount and the
+price** are copied from this office to every other trading office of yours **whose order for
+that ware runs the same way** - a buy stays a buy, a sell a sell. An office with no order for
+the ware, or one the other way round, is left alone, and so is a ticked ware that has no
+order here; the lock checkbox is not copied. The popup reports how many orders were set in
+how many offices and how many were skipped.
+
+The checkboxes and the button are the game's own widgets - the same round button and
+checkmark as the lock column - and they show only when the view has something to copy: on
+the administrator page of an office that employs an administrator. The selection is
+forgotten when the window closes, so each office starts blank.
+
+`mod-trading-office-prices-synchronization` does a blanket version of this (every locked
+ware, to every office, whenever the window closes); the two can run side by side.
 
 ## Crew rescue: stalled routes hire their own sailors
 
@@ -294,7 +315,7 @@ ticker, the top-left boxes where "Game speed" messages appear. Everything is als
 logged with more detail via OutputDebugString.
 
 (The letter-popup town suffix - "Personal letter: Patrol - Stockholm" - lives in
-mod-tavern-details.)
+mod-ui-tweaks.)
 
 ## Known limitations
 
