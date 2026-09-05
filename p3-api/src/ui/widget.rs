@@ -57,6 +57,21 @@ pub unsafe fn size(widget: u32) -> (i32, i32) {
     (out[0], out[1])
 }
 
+/// `thiscall(width, height, depth) -> bool`, `ret 0xC` (base `0x004024B0`): stores the three
+/// into `+0x2C`, `+0x30`, `+0x34`. The UI startup routine sizes every building window
+/// through it with hard-coded `425 x 510` (`0x00426D98`); nothing resizes them afterwards.
+pub const SLOT_SET_SIZE: usize = 0x4C;
+
+/// Depth, the third value the size setter stores.
+const FIELD_DEPTH: u32 = 0x34;
+
+/// Resize a widget, keeping its depth.
+pub unsafe fn set_size(widget: u32, width: i32, height: i32) {
+    let depth = *((widget + FIELD_DEPTH) as *const i32);
+    let set: extern "thiscall" fn(u32, i32, i32, i32) -> u8 = std::mem::transmute(slot(widget, SLOT_SET_SIZE));
+    set(widget, width, height, depth);
+}
+
 pub unsafe fn show(widget: u32, visible: bool) {
     let show: extern "thiscall" fn(u32, u32) -> u8 = std::mem::transmute(slot(widget, SLOT_SHOW));
     show(widget, visible as u32);

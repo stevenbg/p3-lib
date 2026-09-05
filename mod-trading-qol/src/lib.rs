@@ -6,3 +6,4 @@ pub(crate) mod routes;
 pub(crate) mod sync;
 pub(crate) mod thaw;
 pub(crate) mod prices;
+pub(crate) mod wide_office;

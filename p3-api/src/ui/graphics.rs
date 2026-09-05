@@ -69,13 +69,76 @@ pub unsafe fn draw_graphic_frame(id: u32, frame: u32, x: i32, y: i32) -> bool {
         return false;
     };
 
-    let select: extern "cdecl" fn(u32) = mem::transmute(0x004BB9C0);
-    select(handle);
-    let set_color: extern "cdecl" fn(u32) = mem::transmute(0x004BB870);
-    set_color(0xffff_ffff);
-    let blit: extern "cdecl" fn(i32, i32, i32, i32, i32, i32) = mem::transmute(0x004BB330);
+    select_texture(handle);
+    set_blit_color(OPAQUE_WHITE);
     blit(source_x, source_y, x, y, width, height);
     true
+}
+
+/// The constant colour that leaves a blit unmodulated.
+pub const OPAQUE_WHITE: u32 = 0xFFFF_FFFF;
+
+/// Select a texture by its renderer handle (`0x004BB9C0`), the record's `+0x4`.
+pub unsafe fn select_texture(handle: u32) {
+    let select: extern "cdecl" fn(u32) = mem::transmute(0x004BB9C0);
+    select(handle);
+}
+
+/// The constant colour the next blits are modulated by (`0x004BB870`); the same setter the
+/// text drawing uses, so text drawn afterwards has to set its colour again.
+pub unsafe fn set_blit_color(color: u32) {
+    let set_color: extern "cdecl" fn(u32) = mem::transmute(0x004BB870);
+    set_color(color);
+}
+
+/// Copy `width x height` pixels from `source_x, source_y` of the selected texture to
+/// `x, y` (`0x004BB330`), modulated by the constant colour. The copy is one to one; a
+/// source rectangle larger than the texture is not stretched.
+pub unsafe fn blit(source_x: i32, source_y: i32, x: i32, y: i32, width: i32, height: i32) {
+    let blit: extern "cdecl" fn(i32, i32, i32, i32, i32, i32) = mem::transmute(0x004BB330);
+    blit(source_x, source_y, x, y, width, height);
+}
+
+/// Blit `source_width x source_height` pixels from `source_x, source_y` of the selected
+/// texture into the `width x height` rectangle at `x, y`, scaled (`sgl_StretchBitmapRect`,
+/// thunk `0x004BBA80`, modulated by the constant colour like [blit]). The argument order is
+/// the game's own: the minimap builder at `0x004B1463` copies a whole measured texture
+/// into a memory texture of its own size with `(0, 0, 0, 0, tex_w, tex_h, dst_w, dst_h)`,
+/// and `0x004B27B5` stretches from `(0, 0)` to a destination rectangle.
+pub unsafe fn stretch_blit(source_x: i32, source_y: i32, x: i32, y: i32, source_width: i32, source_height: i32, width: i32, height: i32) {
+    let stretch: extern "cdecl" fn(i32, i32, i32, i32, i32, i32, i32, i32) = mem::transmute(0x004BBA80);
+    stretch(source_x, source_y, x, y, source_width, source_height, width, height);
+}
+
+/// [blit] a rectangle that may be larger than the selected texture, repeating the texture
+/// instead of reading past it: the source wraps at `texture_width` x `texture_height`. A
+/// plain blit with a source rectangle beyond the texture reads off the end of its buffer
+/// and crashes in `ddraw_dll`.
+pub unsafe fn blit_tiled(texture_width: i32, texture_height: i32, source_x: i32, source_y: i32, x: i32, y: i32, width: i32, height: i32) {
+    if texture_width <= 0 || texture_height <= 0 {
+        return;
+    }
+    let mut drawn_y = 0;
+    while drawn_y < height {
+        let src_y = (source_y + drawn_y) % texture_height;
+        let rows = (texture_height - src_y).min(height - drawn_y);
+        let mut drawn_x = 0;
+        while drawn_x < width {
+            let src_x = (source_x + drawn_x) % texture_width;
+            let columns = (texture_width - src_x).min(width - drawn_x);
+            blit(src_x, src_y, x + drawn_x, y + drawn_y, columns, rows);
+            drawn_x += columns;
+        }
+        drawn_y += rows;
+    }
+}
+
+/// Width and height of a texture by handle (`0x004BBB20`).
+pub unsafe fn texture_size(handle: u32) -> (i32, i32) {
+    let mut size = [0i32; 2];
+    let measure: extern "cdecl" fn(u32, *mut i32) = mem::transmute(0x004BBB20);
+    measure(handle, size.as_mut_ptr());
+    (size[0], size[1])
 }
 
 /// The size of a graphic's frame, for laying text out around it - the icons are not one
@@ -92,6 +155,12 @@ unsafe fn graphic_frame(id: u32, frame: u32) -> Option<(u32, i32, i32, i32, i32)
     if graphic == 0 {
         return None;
     }
+    record_frame(graphic, frame)
+}
+
+/// [graphic_frame] for a graphic record already in hand - the records the windows cache in
+/// their own fields. Returns `(handle, source_x, source_y, width, height)`.
+pub unsafe fn record_frame(graphic: u32, frame: u32) -> Option<(u32, i32, i32, i32, i32)> {
     let frames: i32 = *((graphic + 0x14) as *const i32);
     let handle: u32 = *((graphic + 0x4) as *const u32);
     let rects: u32 = *((graphic + 0xc) as *const u32);
