@@ -10,6 +10,7 @@
 use crate::ui::{
     rich_text::{CHURCH_WINDOW_LAYOUT_OFFSET, TAVERN_WINDOW_LAYOUT_OFFSET, TOWN_HALL_WINDOW_LAYOUT_OFFSET},
     ui_church_window::UIChurchWindowPtr,
+    ui_shipyard_window::UIShipyardWindowPtr,
     ui_tavern_window::UITavernWindowPtr,
     ui_town_hall_window::UITownHallWindowPtr,
     ui_trading_office_window::UITradingOfficeWindowPtr,
@@ -75,3 +76,4 @@ page_window!(UIChurchWindowPtr, UIChurchWindowPtr::VTABLE_OFFSET, Some(CHURCH_WI
 page_window!(UITavernWindowPtr, UITavernWindowPtr::VTABLE_OFFSET, Some(TAVERN_WINDOW_LAYOUT_OFFSET));
 page_window!(UITradingOfficeWindowPtr, UITradingOfficeWindowPtr::VTABLE_OFFSET, None);
 page_window!(UITownHallWindowPtr, UITownHallWindowPtr::VTABLE_OFFSET, Some(TOWN_HALL_WINDOW_LAYOUT_OFFSET));
+page_window!(UIShipyardWindowPtr, UIShipyardWindowPtr::VTABLE_OFFSET, None);

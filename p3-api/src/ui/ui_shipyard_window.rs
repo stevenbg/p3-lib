@@ -4,7 +4,7 @@ use crate::data::p3_ptr::P3Pointer;
 
 pub const STATIC_UI_SHIPYARD_WINDOW_PTR_ADDRESS: *const u32 = 0x006E55C0 as _;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct UIShipyardWindowPtr {
     pub address: u32,
 }
@@ -16,6 +16,11 @@ impl Default for UIShipyardWindowPtr {
 }
 
 impl UIShipyardWindowPtr {
+    /// Vtable `0x0067A798`, module-relative: draw `+0x9C` = `0x005F42B0`, update `+0xF4` =
+    /// `0x005F4220`, close `+0x118` = `0x005F40B0` (which writes page `-1`), open `+0x120` =
+    /// `0x005F3AD0`.
+    pub const VTABLE_OFFSET: u32 = 0x27A798;
+
     pub fn new() -> Self {
         Self {
             address: unsafe { *STATIC_UI_SHIPYARD_WINDOW_PTR_ADDRESS },

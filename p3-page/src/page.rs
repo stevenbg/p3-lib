@@ -231,7 +231,12 @@ impl Page {
 /// Undo the clipping the windows set up for their own pages, so text drawn anywhere on the
 /// window shows. Once per window open is enough.
 pub unsafe fn prepare_drawing_state() {
+    prepare_drawing_state_with_gradient(0);
+}
+
+/// [prepare_drawing_state] with the gradient left at `gradient_y` instead of 0.
+pub unsafe fn prepare_drawing_state_with_gradient(gradient_y: u16) {
     let class48 = Class48Ptr::new();
     class48.set_ignore_below_gradient(0);
-    class48.set_gradient_y(0);
+    class48.set_gradient_y(gradient_y);
 }

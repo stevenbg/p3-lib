@@ -11,4 +11,4 @@ name="shipyard_details"
 log = { workspace = true }
 win_dbg_logger = { workspace = true }
 p3-api = { path = "../p3-api" }
-hooklet = { workspace = true }
+p3-page = { path = "../p3-page" }
