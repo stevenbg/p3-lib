@@ -8,14 +8,12 @@ use p3_api::{
     game_world::GAME_WORLD_PTR,
     ui::ui_shipyard_window::UIShipyardWindowPtr,
 };
-use p3_page::{page::prepare_drawing_state_with_gradient, Cell, Column, Page, Table};
+use p3_page::{Cell, Column, Page, Table};
 
 /// The page starts below the title banner and the window's own art.
 const FIRST_ROW_Y: i32 = 200;
 /// The window's own row pitch.
 const ROW_HEIGHT: i32 = 20;
-/// The Class48 gradient this window's page is drawn with.
-const GRADIENT_Y: u16 = 200;
 /// Experience is stored scaled by this; the page shows it in levels.
 const EXPERIENCE_SCALE: f32 = 2800.0;
 /// The highest quality level a ship type reaches.
@@ -44,9 +42,9 @@ pub static HULK: &CStr = c"Hulk";
 pub static QUALITY_LEVEL: &CStr = c"Quality Level";
 pub static REQUIRED_XP: &CStr = c"Required XP";
 
-/// The drawing state this page is verified with, set on open and again before each draw.
+/// The drawing state every details page uses, set on open and again before each draw.
 pub(crate) unsafe fn prepare_drawing_state() {
-    prepare_drawing_state_with_gradient(GRADIENT_Y);
+    p3_page::page::prepare_drawing_state();
 }
 
 fn page(window: &UIShipyardWindowPtr) -> Page {

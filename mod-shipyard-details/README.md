@@ -26,5 +26,5 @@ followed by an unsigned compare that sends page `-1` past every case. `p3-page`'
 and hooks the window's open method.
 
 The page is two `p3-page` tables in the window's 20 px row pitch, under a "Details" title
-banner drawn with the game's own title routine. The Class48 drawing state is set with the
-gradient at 200 on open and again before each draw.
+banner drawn with the game's own title routine. The Class48 drawing state is the one every
+details page uses, set on open and again before each draw.

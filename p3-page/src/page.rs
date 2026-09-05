@@ -228,13 +228,20 @@ impl Page {
     }
 }
 
+/// The pages draw over the building's animation through a translucent layer that pales the
+/// animation from this y downwards; above it the animation keeps its colours, and text
+/// there is hard to read. 0 pales the whole window. A page whose text starts lower could
+/// raise it and keep more of the animation, but every details page uses this value so the
+/// buildings look alike.
+pub const DEFAULT_GRADIENT_Y: u16 = 0;
+
 /// Undo the clipping the windows set up for their own pages, so text drawn anywhere on the
-/// window shows. Once per window open is enough.
+/// window shows, with the gradient at [DEFAULT_GRADIENT_Y]. Once per window open is enough.
 pub unsafe fn prepare_drawing_state() {
-    prepare_drawing_state_with_gradient(0);
+    prepare_drawing_state_with_gradient(DEFAULT_GRADIENT_Y);
 }
 
-/// [prepare_drawing_state] with the gradient left at `gradient_y` instead of 0.
+/// [prepare_drawing_state] with the gradient at `gradient_y` instead of the default.
 pub unsafe fn prepare_drawing_state_with_gradient(gradient_y: u16) {
     let class48 = Class48Ptr::new();
     class48.set_ignore_below_gradient(0);
