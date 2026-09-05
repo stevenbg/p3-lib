@@ -228,11 +228,12 @@ impl Page {
     }
 }
 
-/// The pages draw over the building's animation through a translucent layer that pales the
-/// animation from this y downwards; above it the animation keeps its colours, and text
-/// there is hard to read. 0 pales the whole window. A page whose text starts lower could
-/// raise it and keep more of the animation, but every details page uses this value so the
-/// buildings look alike.
+/// The y, relative to the window, from which the game's background pass veils the building
+/// animation in flat white at alpha 160, with a 160 px ramp fading in above it
+/// (`p3_api::data::class48::Class48Ptr::set_gradient_y`). Above the ramp the animation keeps
+/// its colours and text is hard to read, so 0 veils the whole window. A page whose text
+/// starts lower could raise it and keep more of the animation, but every details page uses
+/// this value so the buildings look alike.
 pub const DEFAULT_GRADIENT_Y: u16 = 0;
 
 /// Undo the clipping the windows set up for their own pages, so text drawn anywhere on the

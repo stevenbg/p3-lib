@@ -5,6 +5,8 @@ opens on) with the yard's figures the game shows nowhere.
 
 Install: put `shipyard_details.dll` into the `mods` folder (requires the modloader).
 
+![The shipyard page: the yard's staff, markup and experience, and the quality level and next required XP per ship type](shipyard.jpg)
+
 ## Page contents
 
 | row | what it says |

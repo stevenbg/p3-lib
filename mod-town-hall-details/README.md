@@ -10,6 +10,8 @@ Install: put `town_hall_details.dll` into the `mods` folder (requires the modloa
 
 The page the window opens on, titled "Details": one row per ware, for the whole Hanse.
 
+![The Details page: every ware's Hanse-wide stock, consumption and days of supply, scarcest first](details.jpg)
+
 |Column|What|
 |-|-|
 |Goods|the ware|
@@ -30,7 +32,9 @@ Rows are sorted by days, scarcest first, and coloured:
 ## The alderman's office page
 
 Page 7 is the game's own alderman's office. While the player has no alderman mission
-running and an offer is selected, the mod adds under the game's text:
+running and an offer is selected, the mod adds above the game's text:
+
+![The alderman's office with a found-a-settlement offer: the town and what it would produce](production.jpg)
 
 - **Rescheduling in** - game ticks until the offer's scheduled task fires again (256 ticks
   to a day);
