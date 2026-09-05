@@ -6,7 +6,12 @@ use std::mem;
 
 use log::info;
 use num_traits::FromPrimitive;
-use p3_api::{data::enums::WareId, game_world::GAME_WORLD_PTR, town::get_town_name};
+use p3_api::{
+    data::enums::WareId,
+    game_world::GAME_WORLD_PTR,
+    town::get_town_name,
+    ui::number_widget::{self, NumberWidget},
+};
 use p3_rou::builder;
 
 use crate::prices::{buy_price, sell_price, PriceLevel};
@@ -31,6 +36,18 @@ pub(crate) const DIALOG_POPULATE_CALL_OFFSETS: [u32; 3] = [0x75E3, 0x763A, 0x8C4
 /// The dialog's close, vtable slot +0x118 of 0x0066A7F0 (module-relative pointer
 /// location, as hook_function_pointer takes it).
 pub(crate) const DIALOG_CLOSE_POINTER_OFFSET: u32 = 0x26A7F0 + 0x118;
+/// The dialog's number boxes: 40 of them at `+0x758` (`__ehvec_ctor` in the constructor,
+/// `0x004030D7`), amounts for wares 0..19 first, then the prices. They are indexed by
+/// **ware**, not by row: the rows follow the stop's own instruction order, so a reordered
+/// list only moves a ware's boxes to another row. The commit helper (`0x00405461`) maps its
+/// pending ROW (`+0x4ADC`) through the record's `order[]` to the ware, then reads that ware's
+/// amount box value (`+0x188`, -1 = MAX) and the price box's **text** (`atoi`), negating the
+/// price for a buy - so the box setter, which rewrites the text, feeds it exactly like typing.
+const DIALOG_PRICE_BOXES_OFFSET: u32 = 0x2698;
+/// Per-ware order type (i32 x 20): 0 unload, 1 sell, 2 load, 3 buy, 4 none.
+const DIALOG_MODE_ARRAY_OFFSET: u32 = 0x4ae0;
+const MODE_SELL: i32 = 1;
+const MODE_BUY: i32 = 3;
 
 /// The goods dialog and the pool index of the stop it displays, if it is open.
 pub(crate) unsafe fn goods_dialog_stop() -> Option<(u32, u32)> {
@@ -43,6 +60,43 @@ pub(crate) unsafe fn goods_dialog_stop() -> Option<(u32, u32)> {
         return None;
     }
     Some((dialog, stop_index as u32))
+}
+
+/// A plain Q..Y key typed into a focused price box of the dialog: set that ware's price to
+/// the level - the buy price for a buy order, the sell price for a sell - by writing the box's
+/// value. The dialog commits the box's text with its pending edit (leaving the row, closing),
+/// exactly as if the digits had been typed; the box shows the price unsigned in both directions.
+/// Returns true when the key was taken; another box or another key falls through.
+pub(crate) unsafe fn on_price_widget_key(widget_address: u32, vk: u32) -> bool {
+    let Some(level) = crate::ffi::level_of(vk) else {
+        return false;
+    };
+    let Some((dialog, _)) = goods_dialog_stop() else {
+        return false;
+    };
+    let Some(offset) = widget_address.checked_sub(dialog + DIALOG_PRICE_BOXES_OFFSET) else {
+        return false;
+    };
+    if offset % number_widget::OBJECT_SIZE != 0 {
+        return false;
+    }
+    let ware_index = (offset / number_widget::OBJECT_SIZE) as u16;
+    if !crate::ffi::TRADE_WARES.contains(&ware_index) {
+        return false;
+    }
+    let ware_id = WareId::from_u16(ware_index).unwrap();
+    let mode = *((dialog + DIALOG_MODE_ARRAY_OFFSET + ware_index as u32 * 4) as *const i32);
+    let (price, what) = match mode {
+        MODE_BUY => (buy_price(ware_index, level), "buy"),
+        MODE_SELL => (sell_price(ware_index, level), "sell"),
+        _ => {
+            crate::ffi::notify(&format!("{ware_id:?}: not a buy or sell order"));
+            return true;
+        }
+    };
+    NumberWidget::new(widget_address).set_value(price);
+    info!("dialog price box {level:?}: {ware_id:?} {what} price {price}");
+    true
 }
 
 /// Repopulate the goods dialog from its stop record, the way its own arrows do. The

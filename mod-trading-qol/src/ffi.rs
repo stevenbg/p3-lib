@@ -356,11 +356,12 @@ unsafe extern "thiscall" fn office_window_draw_hook(window_address: u32, context
 }
 
 /// The number box class's key handler (vtable `+0x1C`, `0x0045C300`): `thiscall(vk, repeat,
-/// flags)`, reached only for the focused box. A level key on an office price box is ours and
-/// never reaches the game's digit filter; everything else passes through.
+/// flags)`, reached only for the focused box. A level key on a price box of the office window
+/// or of the goods dialog is ours and never reaches the game's digit filter; everything else
+/// passes through.
 #[no_mangle]
 unsafe extern "thiscall" fn number_widget_key_hook(widget_address: u32, vk: u32, repeat: u32, flags: u32) {
-    if crate::office::on_price_widget_key(widget_address, vk) {
+    if crate::office::on_price_widget_key(widget_address, vk) || crate::goods_dialog::on_price_widget_key(widget_address, vk) {
         return;
     }
     let orig: extern "thiscall" fn(u32, u32, u32, u32) = mem::transmute((*NUMBER_KEY_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
