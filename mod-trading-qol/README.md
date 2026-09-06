@@ -121,6 +121,34 @@ forgotten when the window closes, so each office starts blank.
 `mod-trading-office-prices-synchronization` does a blanket version of this (every locked
 ware, to every office, whenever the window closes); the two can run side by side.
 
+## The administrator page: price and lock at the edge, no min/max
+
+On the administrator page the price `-`, box and `+` sit against the window's right edge
+(3 px in, the close button's margin) instead of 25 px in, the lock checkbox sits right
+next to the price `-`, and the "min" / "max" labels are gone; the arrows already say which
+way each order goes. The amount widgets and the arrows stay where the game puts them, which
+leaves 53 px free between the amount `+` and the lock: the room for a column of the mod's
+own.
+
+The open method lays each row out from the right edge inwards (`0x005D8E9F`..
+`0x005D8EF3`), each widget its width plus a fixed gap from the previous, so three
+immediates do it: the `-0x19` right-margin displacement at `0x005D8EAC` becomes `-3`, the
+lock-to-price gap (`sub eax,0x1F` at `0x005D8EC7`) becomes 3, and the amount-to-lock gap
+(`sub eax,0x3` at `0x005D8ED0`) takes up the rest, 53. The labels go through one text-render call at `0x005DAEAD` (the two
+branches before it only pick "max" or "min" and the position, 3 px left of the price `-`),
+which is replaced with `nop`s while its caller-cleaned arguments stay; the strings are
+shared with the goods dialog, which keeps its own. Every site is checked against the
+expected bytes before it is written.
+
+## The locked-amount boxes
+
+In that freed stretch, every ware row gets a number box of the mod's own - built from the
+game's box class exactly as the office builds its amount and price boxes (`[TextBox1]` of
+`BuildingParchment.ini`, its helper object, mode 0, black text, 0..9999), so it looks the
+same, draws itself and takes the keyboard when clicked. It is shown with the administrator
+page and hidden with it. For now the boxes only take input: the value is not yet stored
+with the save or enforced against the auto-trade ships.
+
 ## Right-click on the Options button: the mod's window
 
 A right-click on the Options button - the cogs under the minimap, whose left-click opens

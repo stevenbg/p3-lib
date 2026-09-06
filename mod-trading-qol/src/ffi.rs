@@ -284,6 +284,11 @@ pub unsafe extern "C" fn start() -> u32 {
         error!("failed to hook the main scene's right-button-up slot (step {step})");
         return 9;
     }
+    // The price column at the right edge, without the min/max labels.
+    if let Err(what) = crate::office_layout::install() {
+        error!("failed to re-lay the administrator page ({what})");
+        return 10;
+    }
     // Plain Q..Y typed into a focused price box reprice that one ware.
     match hook_function_pointer(NUMBER_WIDGET_KEY_POINTER_OFFSET, number_widget_key_hook as usize as u32) {
         Ok(hook) => NUMBER_KEY_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),
@@ -334,6 +339,7 @@ unsafe extern "thiscall" fn office_window_open_hook(window_address: u32) {
     register_group(OWNER_OFFICE, &OFFICE_KEYS, &OFFICE_HANDLES, office_hotkeys);
     // After the game's open, so our widgets register behind its children and draw on top.
     crate::sync::on_open(&window);
+    crate::locked_amounts::on_open(&window);
 }
 
 #[no_mangle]
@@ -342,6 +348,7 @@ unsafe extern "thiscall" fn office_window_close_hook(window_address: u32) {
     orig(window_address);
     unregister_group(&OFFICE_HANDLES);
     crate::sync::on_close();
+    crate::locked_amounts::on_close();
 }
 
 /// The scene container's per-frame update of the window (vtable `+0xF4`, `0x005D9500`).
@@ -350,6 +357,7 @@ unsafe extern "thiscall" fn office_window_update_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*UPDATE_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     orig(window_address);
     crate::sync::on_update(&UITradingOfficeWindowPtr { address: window_address });
+    crate::locked_amounts::on_update(&UITradingOfficeWindowPtr { address: window_address });
 }
 
 /// The window's draw (vtable `+0x9C`, `0x005D95A0`): `thiscall(context, x, y, z)`, `ret 0x10`.

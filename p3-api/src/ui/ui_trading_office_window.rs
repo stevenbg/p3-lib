@@ -34,7 +34,39 @@ pub const CORNER_BUTTON_MARGIN: i32 = 3;
 /// (stride [`super::number_widget::OBJECT_SIZE`]) in row order: the amounts (in-game units,
 /// populated only by the open method) and the prices.
 pub const AMOUNT_WIDGETS_OFFSET: u32 = 0x9840;
+/// The twenty amount `+` buttons (`0xE8` each), the widget left of the room between the
+/// amount and price groups.
+pub const AMOUNT_PLUS_BUTTONS_OFFSET: u32 = 0x195C;
+pub const BUTTON_SIZE: u32 = 0xE8;
 pub const PRICE_WIDGETS_OFFSET: u32 = 0xBA00;
+
+/// The open method lays each row out from the right edge inwards (`0x005D8E9F`..
+/// `0x005D8EF3`): the price `+` button's right edge is `width - 25` - the `-0x19` of the
+/// `lea eax,[ecx+edx*1-0x19]` at `0x005D8EA9`, whose displacement byte is this site - and
+/// every other row widget is placed leftwards from it by its width and a fixed gap.
+pub const ROW_RIGHT_MARGIN_SITE: u32 = 0x005D8EAC;
+pub const ROW_RIGHT_MARGIN_ORIGINAL: u8 = 0xE7;
+/// The gap between the lock button and the price `-` button: the `sub eax,0x1F` at
+/// `0x005D8EC7`, its immediate byte at this site. Moving the price group without moving
+/// the lock and amount widgets means widening this by the same amount.
+pub const ROW_LOCK_GAP_SITE: u32 = 0x005D8EC9;
+pub const ROW_LOCK_GAP_ORIGINAL: u8 = 0x1F;
+/// The gap between the amount `+` button and the lock button: the `sub eax,0x3` at
+/// `0x005D8ED0`, its immediate byte at this site. The two gaps together are the room
+/// between the amount and price groups; shifting the lock button is moving room from one
+/// to the other.
+pub const ROW_AMOUNT_GAP_SITE: u32 = 0x005D8ED2;
+pub const ROW_AMOUNT_GAP_ORIGINAL: u8 = 0x03;
+/// The administrator page's "max" / "min" label, drawn per row by the page draw
+/// (`0x005DAC80`): the buy-arrow-visible branch pushes `[0x0069B31C]` ("max"), the
+/// sell-arrow branch `[0x0069B320]` ("min"), each with the row's y and then the price `-`
+/// button's x (its `+0x6C` getter) minus 3, and both fall into one cdecl
+/// `call 0x004BB3E0` (render text) at this site, followed by `add esp,0xC`. Silencing the
+/// label means replacing that call, not the pushes: the string slots are shared with the
+/// auto-trade goods dialog (`0x00404A3E`, `0x00404A52`), and the pushes are the call's
+/// arguments, cleaned by the caller.
+pub const LABEL_RENDER_CALL_SITE: u32 = 0x005DAEAD;
+pub const LABEL_RENDER_CALL_ORIGINAL: [u8; 5] = [0xe8, 0x2e, 0x05, 0xee, 0xff];
 
 #[derive(Clone, Debug, Copy)]
 pub struct UITradingOfficeWindowPtr {

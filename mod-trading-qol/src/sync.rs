@@ -112,7 +112,7 @@ pub(crate) unsafe fn on_open(window: &UITradingOfficeWindowPtr) {
 /// Whether the office shown has an administrator - without one the administrator page
 /// shows only the "employ an administrator" notice, and so should we. The index is out of
 /// range while nobody is employed, the game's own test.
-unsafe fn administrator_employed(window: &UITradingOfficeWindowPtr) -> bool {
+pub(crate) unsafe fn administrator_employed(window: &UITradingOfficeWindowPtr) -> bool {
     let merchant_index = OPERATIONS_PTR.get_player_merchant_index();
     match GAME_WORLD_PTR.get_office_in_of(window.get_town_index() as _, merchant_index as _) {
         Some(office) => office.get_administrator_index() < p3_api::ships::ShipsPtr::new().get_auto_traders_size(),
