@@ -29,6 +29,15 @@ pub const LOCK_CHECKMARK_INI: &[u8] = b"./scripts/BuildingParchment.ini\0";
 pub const LOCK_CHECKMARK_ID: u32 = 12;
 pub const LOCK_CHECKMARK_X_OFFSET: i32 = -4;
 
+/// The list scrollbar's arrow buttons' resting looks, in `parchment.ini`
+/// (`[P2Scrollbar0]`: `UpButtonID=0` -> `[Button0]` `Neutral=1`, `DownButtonID=1` ->
+/// `[Button1]` `Neutral=2`): `[ANIM1]` is TexID 16010 frame 0, 19 x 28 (`p_scrollbalkenOben.tga`,
+/// three frames side by side: neutral, hover, pressed); `[ANIM2]` is TexID 16011 frame 0,
+/// 19 x 30 (`p_scrollbalkenUnten.tga`). A round red button face with a small triangle.
+pub const SCROLL_ARROW_INI: &[u8] = b"./scripts/parchment.ini\0";
+pub const SCROLL_UP_ARROW_ID: u32 = 1;
+pub const SCROLL_DOWN_ARROW_ID: u32 = 2;
+
 /// Our fields, past the game's object.
 const FIELD_ATTACHED: u32 = 0xD8;
 const BUFFER_SIZE: usize = 0xE0;
