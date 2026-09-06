@@ -11,7 +11,6 @@ name = "trading_qol"
 log = { workspace = true }
 win_dbg_logger = { workspace = true }
 p3-api = { path = "../p3-api" }
-p3-ui = { path = "../p3-ui" }
 p3-rou = { path = "../p3-rou" }
 hooklet = { workspace = true }
 num-traits = { workspace = true }

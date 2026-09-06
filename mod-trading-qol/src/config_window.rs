@@ -1,5 +1,7 @@
-//! F9: a window of our own with a game scrollbar - the first consumer of
-//! `p3_api::ui::custom_window` and `scroll_list`, kept as the living example.
+//! The mod's own window, opened by a right-click on the Options button
+//! ([crate::options_button]): where the mod's configuration will live. Built on
+//! `p3_api::ui::custom_window` with a game scrollbar from `scroll_list`, and until it has
+//! settings to show it lists placeholder rows - the living example of both.
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use log::{error, info};
@@ -24,8 +26,9 @@ const LIST_Y: i32 = 50;
 /// Right edge of the list area (where the bar sits), from the window's right edge.
 const BAR_MARGIN: i32 = 40;
 const TEXT_COLOR: u32 = 0xff00_0000;
+const TITLE: &[u8] = b"Trading QoL";
 
-/// The window's object address once built; 0 before the first press.
+/// The window's object address once built; 0 before the first open.
 static WINDOW: AtomicU32 = AtomicU32::new(0);
 
 struct Rows {
@@ -50,11 +53,11 @@ impl WindowContent for Rows {
     }
 
     fn on_close(&mut self, _window: &GameWindow) {
-        info!("scroll window: closed");
-        unsafe { crate::probes::notify("scroll window closed") };
+        info!("config window: closed");
     }
 }
 
+/// Open the window, or close it when it is open.
 pub(crate) unsafe fn toggle() {
     let window = match WINDOW.load(Ordering::SeqCst) {
         0 => {
@@ -67,18 +70,17 @@ pub(crate) unsafe fn toggle() {
     if window.is_open() {
         window.close();
     } else if window.open() {
-        info!("scroll window: opened at {},{} {}x{}", window.x(), window.y(), window.width(), window.height());
-        crate::probes::notify("scroll window opened");
+        info!("config window: opened at {},{} {}x{}", window.x(), window.y(), window.width(), window.height());
     } else {
-        error!("scroll window: no scene root to join");
-        crate::probes::notify("scroll window: no scene root");
+        error!("config window: no scene root to join");
+        crate::ffi::notify("Trading QoL: no scene to open the window in");
     }
 }
 
 unsafe fn build() -> GameWindow {
     let list = ScrollList::new();
     let window = GameWindow::new(WINDOW_X, WINDOW_Y, WINDOW_W, WINDOW_H, Box::new(Rows { list }));
-    window.set_title(b"Scroll window");
+    window.set_title(TITLE);
     // The list area: text on the left, bar against its right edge; the wheel works anywhere
     // inside it.
     let top = window.y() + LIST_Y;
@@ -91,6 +93,6 @@ unsafe fn build() -> GameWindow {
     list.set_area(area, ROW_HEIGHT);
     list.set_count(ROW_COUNT);
     window.add_widget(Box::new(list));
-    info!("scroll window: built {:#x}, list {:#x}", window.address, list.address);
+    info!("config window: built {:#x}, list {:#x}", window.address, list.address);
     window
 }

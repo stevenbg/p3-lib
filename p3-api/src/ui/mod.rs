@@ -19,6 +19,7 @@ pub mod ui_church_window;
 pub mod ui_event_window;
 pub mod ui_notifications;
 pub mod ui_local_map_window;
+pub mod ui_main_scene;
 pub mod ui_scrollmap_window;
 pub mod ui_ship_panel;
 pub mod ui_shipyard_window;

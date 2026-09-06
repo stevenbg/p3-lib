@@ -279,9 +279,9 @@ pub unsafe extern "C" fn start() -> u32 {
             return 8;
         }
     }
-    // The wider office window needs the shared backdrop behind it hooked (see p3_ui::enlarge).
-    if let Err(step) = crate::wide_office::install() {
-        error!("failed to install the backdrop hooks for the wider office window (step {step})");
+    // A right-click on the Options button opens the mod's own window.
+    if let Err(step) = crate::options_button::install() {
+        error!("failed to hook the main scene's right-button-up slot (step {step})");
         return 9;
     }
     // Plain Q..Y typed into a focused price box reprice that one ware.
@@ -330,9 +330,7 @@ pub unsafe extern "C" fn start() -> u32 {
 unsafe extern "thiscall" fn office_window_open_hook(window_address: u32) {
     let orig: extern "thiscall" fn(u32) = mem::transmute((*OPEN_HOOK_PTR.load(Ordering::SeqCst)).old_absolute);
     let window = UITradingOfficeWindowPtr { address: window_address };
-    crate::wide_office::before_open(&window);
     orig(window_address);
-    crate::wide_office::after_open();
     register_group(OWNER_OFFICE, &OFFICE_KEYS, &OFFICE_HANDLES, office_hotkeys);
     // After the game's open, so our widgets register behind its children and draw on top.
     crate::sync::on_open(&window);
@@ -344,7 +342,6 @@ unsafe extern "thiscall" fn office_window_close_hook(window_address: u32) {
     orig(window_address);
     unregister_group(&OFFICE_HANDLES);
     crate::sync::on_close();
-    crate::wide_office::on_close();
 }
 
 /// The scene container's per-frame update of the window (vtable `+0xF4`, `0x005D9500`).

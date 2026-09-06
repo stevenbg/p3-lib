@@ -121,16 +121,22 @@ forgotten when the window closes, so each office starts blank.
 `mod-trading-office-prices-synchronization` does a blanket version of this (every locked
 ware, to every office, whenever the window closes); the two can run side by side.
 
-## A bigger office window
+## Right-click on the Options button: the mod's window
 
-The trading office window opens at 490 x 560 instead of the game's 425 x 510, which makes
-room on the administrator page for another column and more rows. The window itself lays
-its widgets out from its size, so the right-hand columns move outwards and the space opens
-between the arrows and the amounts. The building picture, the whitening veil and the wooden
-frame behind the window belong to a backdrop the game does not scale; `p3-ui`'s `enlarge`
-grows it while the office is open, paints the picture scaled to the new size, veils it the
-way the game does and redraws the frame, and gives the backdrop back to the other buildings
-when the window closes. The sizes are the two constants in `src/wide_office.rs`.
+A right-click on the Options button - the cogs under the minimap, whose left-click opens
+the game menu - opens (and closes again) a window of the mod's own, the place its
+configuration will live. Until it has settings to show it lists placeholder rows behind a
+game scrollbar. The right-click is not passed on to the game, so it does not also close the
+topmost window the way a right-click elsewhere does.
+
+The game routes a right-button release to the pressed and the focused child of the main
+scene (`[0x006CBB40]`, the container that owns the side panel), never to the child under
+the cursor, so the button itself never sees it. The capture is a hook on the scene's
+right-button-up slot (vtable `0x0066C8A0 + 0x148`, `0x004298F0`, called with the cursor in
+game coordinates) that tests the release against the button's rectangle (the `CViperButton`
+at `scene + 0x16F0`, the one the scene's update polls at `0x00423A73` to open the menu). The
+slot is verified to hold `0x004298F0` before it is written. The window is
+`p3-api`'s `custom_window` with a `scroll_list` bar (`src/config_window.rs`).
 
 ## Crew rescue: stalled routes hire their own sailors
 

@@ -99,7 +99,6 @@ unsafe extern "C" fn probe_hotkeys(vk: u32, mods: u32) -> u32 {
         (DEBUG_PROBE1_KEY, MOD_ALT) => debug_probe_administrators(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_SHIFT => install_op_logger(),
         (DEBUG_PROBE1_KEY, m) if m == MOD_CTRL | MOD_ALT => debug_probe_d3d9_list(),
-        (DEBUG_PROBE1_KEY, 0) => crate::scroll_window::toggle(),
         (DEBUG_PROBE2_KEY, MOD_CTRL) => debug_probe_dialog_modes(),
         (DEBUG_PROBE2_KEY, MOD_SHIFT) => debug_probe_ice(),
         (DEBUG_PROBE2_KEY, MOD_ALT) => retire_probe_inspect(),
