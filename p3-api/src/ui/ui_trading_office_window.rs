@@ -38,6 +38,10 @@ pub const AMOUNT_WIDGETS_OFFSET: u32 = 0x9840;
 /// amount and price groups.
 pub const AMOUNT_PLUS_BUTTONS_OFFSET: u32 = 0x195C;
 pub const BUTTON_SIZE: u32 = 0xE8;
+/// One lock checkmark image (`C2DAnimation`) per row at [LOCK_CHECKMARKS_OFFSET]; shown
+/// while the ware is locked - set from the office's lock bitmap on entering the page, and
+/// toggled by the click handler (`0x005DD434`) that enqueues operation `0x66`.
+pub const IMAGE_SIZE: u32 = 0xD8;
 pub const PRICE_WIDGETS_OFFSET: u32 = 0xBA00;
 
 /// The open method lays each row out from the right edge inwards (`0x005D8E9F`..

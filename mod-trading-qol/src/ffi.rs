@@ -348,7 +348,7 @@ unsafe extern "thiscall" fn office_window_close_hook(window_address: u32) {
     orig(window_address);
     unregister_group(&OFFICE_HANDLES);
     crate::sync::on_close();
-    crate::locked_amounts::on_close();
+    crate::locked_amounts::on_close(&UITradingOfficeWindowPtr { address: window_address });
 }
 
 /// The scene container's per-frame update of the window (vtable `+0xF4`, `0x005D9500`).

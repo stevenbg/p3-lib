@@ -146,8 +146,13 @@ In that freed stretch, every ware row gets a number box of the mod's own - built
 game's box class exactly as the office builds its amount and price boxes (`[TextBox1]` of
 `BuildingParchment.ini`, its helper object, mode 0, black text, 0..9999), so it looks the
 same, draws itself and takes the keyboard when clicked. It is shown with the administrator
-page and hidden with it. For now the boxes only take input: the value is not yet stored
-with the save or enforced against the auto-trade ships.
+page and hidden with it. The amounts are kept per town (a merchant has one office per
+town) in raw units, the office's own: the boxes are filled from that store when the window
+opens and written back when it closes, so they survive switching offices within a session.
+Ticking a row's lock checkbox while its locked amount is 0 starts the box at the row's stock
+amount - the whole minimum store, which is what the lock alone protects - so the common case
+needs no typing; a box already holding a number is left alone. They are not yet saved with
+the game or enforced against the auto-trade ships.
 
 ## Right-click on the Options button: the mod's window
 
