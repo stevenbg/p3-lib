@@ -11,8 +11,10 @@ use std::ffi::CStr;
 const FIRST_ROW_Y: i32 = 60;
 /// Wider than the other details pages, matching the game's own tables on this window.
 const ROW_HEIGHT: i32 = 20;
-/// Four right-aligned columns; the width bounds the rich-text cells' wrapping.
-const COLUMNS: [Column; 4] = [Column::right(90, 90), Column::right(180, 90), Column::right(270, 90), Column::right(360, 90)];
+/// Four right-aligned columns; the width bounds the rich-text cells' wrapping. The two
+/// amount columns carry a symbol to the right of their edge, so the days column sits 60 px
+/// past the consumption edge, not a full column.
+const COLUMNS: [Column; 4] = [Column::right(90, 90), Column::right(180, 90), Column::right(270, 90), Column::right(330, 60)];
 
 /// Nobody consumes the ware.
 const GREY: u32 = 0xFFD3_D3D3;
@@ -21,7 +23,7 @@ const GREEN: u32 = 0xFF7C_FC00;
 /// Spices are imported, never produced.
 const DARK_RED: u32 = 0xFF66_0000;
 
-pub static TITLE: &CStr = c"Details";
+pub static TITLE: &CStr = c"Hanseatic data";
 pub static GOODS: &CStr = c"Goods";
 pub static STOCK: &CStr = c"Stock";
 pub static CONSUMPTION: &CStr = c"Consumption";
