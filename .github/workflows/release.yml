@@ -10,25 +10,42 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - run: rustup target add i686-pc-windows-msvc
-    - run: rustup target add i686-pc-windows-msvc
     - run: cargo build --release
     - run: |
         mkdir mods
+        mv target/i686-pc-windows-msvc/release/battle_always_flee.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/church_details.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/crash_reporter.dll ./mods/
         mv target/i686-pc-windows-msvc/release/debug_navpoint_matrix.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_bath_house_bribe_blunders.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_captain_retire_hang.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_captain_skill_cap_gate.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_church_anim_crash.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_damage_to_offside_ship_artillery.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_feeding_the_poor_wine_price.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_harbor_fill_oob.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_invulnerable_ship_artillery_slots.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_market_hall_production_town.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_multiplayer_locks.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_new_settlement_ware_production.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_patrol_letter_crash.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_siege_beggar_satisfaction_bonus.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/fix_texture_cache_thrash.dll ./mods/
         mv target/i686-pc-windows-msvc/release/fix_uncompressed_trade_route_loading.dll ./mods/
         mv target/i686-pc-windows-msvc/release/high_res.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/high_res_1664x936.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/hotkey_registry.dll ./mods/
         mv target/i686-pc-windows-msvc/release/increase_alderman_found_settlement_mission_limit.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/new_settlement_more_production.dll ./mods/
         mv target/i686-pc-windows-msvc/release/scrollmap_render_all_ships.dll ./mods/
         mv target/i686-pc-windows-msvc/release/shipyard_details.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/tavern_details.dll ./mods/
         mv target/i686-pc-windows-msvc/release/tavern_show_all_sailors.dll ./mods/
         mv target/i686-pc-windows-msvc/release/town_hall_details.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/trading_office_details.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/trading_office_prices_synchronization.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/trading_qol.dll ./mods/
+        mv target/i686-pc-windows-msvc/release/ui_tweaks.dll ./mods/
         mkdir files
         mv target/i686-pc-windows-msvc/release/aimcli.exe ./files
         mv target/i686-pc-windows-msvc/release/cprcli.exe ./files

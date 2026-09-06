@@ -28,8 +28,6 @@ members = [
     "mod-fix-uncompressed-trade-route-loading",
     "mod-hotkey-registry",
     "mod-high-res",
-    "mod-high-res-1536x864",
-    "mod-high-res-1600x900",
     "mod-high-res-1664x936",
     "mod-increase-alderman-found-settlement-mission-limit",
     "mod-new-settlement-more-production",
