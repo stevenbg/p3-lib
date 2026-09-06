@@ -94,23 +94,6 @@ owner to `0xFF`, and the scan walks merchant ship chains, so an ownerless ship i
 nobody's chain. Their growth is the ungated hideout `+50/+50` award at `0x00514C93`,
 which applies the same caps.
 
-## Logging (temporary)
-
-`_captain_skill_gate.log` in the game folder, appended and never truncated, plus `warn!`
-to DebugView. It exists to answer "is the fix working" and comes out once that is
-settled, along with the observation hook:
-
-- **every creation clamp**: which skills were cut, from what to what, that slot's caps.
-- **every skill change on a human-owned captain**: before -> after with the caps and the
-  rolled gains, so gains past the old freeze point and one-time prunes of legacy records
-  are both visible.
-- **queue pressure**: the pending-operation count with each gain, and a peak in the
-  periodic summary, to replace the arithmetic above with measurement.
-
-The third hook, on the gain handler's call site (`0x00535973`), is **observation only** -
-it calls through and changes nothing, and is kept separate from the two patches so it can
-be deleted without touching them.
-
 ## Verification
 
 F9 in `mod-crash-reporter` is the captain census: it prints every
@@ -129,6 +112,3 @@ Pick the save carefully: the scan returns immediately once its round counter pas
 open-ended 1300 game or campaign1. Runs are 10 days apart and each captain group is
 eligible about four times a year, so a visible result needs a year or two of game time
 between presses.
-
-Background: `.claude/notes/todo/captain-navigation-cap-bug.md` and
-`.claude/notes/done/captain-experience.md`.
