@@ -103,6 +103,26 @@ put anything into. A ticker message reports what moved (`Hansa stripped in Lübe
 The operations are executed rather than queued: a fully loaded ship is more than thirty
 of them, which is most of the pending queue's 52 slots.
 
+## CTRL+R books a repair
+
+With a player ship selected and **lying in port** (status `0` - a ship still entering the
+harbour or already casting off is not a candidate, which is also what the shipyard window
+itself lists), the key orders the repair the shipyard's button orders: operation `0x03`,
+whose handler `0x0052ACD0` charges the price immediately, books it to the merchant and puts
+the ship into status `4`, from where the next ships tick moves it into the yard's repair
+chain.
+
+**A convoy repairs as a whole.** The handler sums the cost over every member of the convoy
+the ordered ship belongs to, so the order is placed on the convoy's lead ship
+(`convoy+0x10`), exactly as the game's own convoy route stop does (`0x00503266`,
+`0x0050336B`) - whichever member is selected.
+
+Nothing is pre-checked beyond ownership and being docked: an undamaged hull or a short
+purse is answered by the game's own letter. A ticker message reports the order and the hull
+as the shipyard shows it (`Hansa: repair ordered in Lübeck - hull at 62%`, or `... for the
+whole convoy - lead ship Anna at 62%`), or why nothing happened (`not docked - at sea`).
+The key is consumed only when a player ship is selected; otherwise the game still sees it.
+
 ## Pirate attacks no longer interrupt fast forward
 
 When a notorious pirate robs someone else's ship the game announces
