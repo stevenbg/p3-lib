@@ -172,6 +172,24 @@ impl GameWorldPtr {
         MerchantPtr::new(base_address + index as u32 * MERCHANT_SIZE)
     }
 
+    /// May `merchant_id` enter `town_index`? The scrollmap's own double-click test
+    /// (`0x0044A128`..`0x0044A1A6`): one of the merchant's ships names the town in its
+    /// `+0x39` and is not in raider status [crate::ship::ShipPtr::STATUS_RAIDER], or he has
+    /// an office there. The ship walk is the merchant's own chain - head `merchant+0xE`,
+    /// next `ship+0x4` - capped by the ship count.
+    pub unsafe fn can_merchant_enter_town(&self, merchant_id: u16, town_index: u8) -> bool {
+        let ships = crate::ships::ShipsPtr::new();
+        let mut index = self.get_merchant(merchant_id).get_first_ship_index();
+        for _ in 0..ships.get_ships_size() {
+            let Some(ship) = ships.get_ship(index) else { break };
+            if ship.get_status() != crate::ship::ShipPtr::STATUS_RAIDER && ship.get_last_town_index() == Some(town_index) {
+                return true;
+            }
+            index = ship.get_next_ship_index_of_merchant();
+        }
+        self.get_office_in_of(town_index, merchant_id).is_some()
+    }
+
     pub unsafe fn get_office_index(&self, town_index: u8, merchant_id: u16) -> Option<u16> {
         let offices_count = self.get_offices_count();
         let town = self.get_town(town_index);

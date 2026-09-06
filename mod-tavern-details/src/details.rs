@@ -288,24 +288,14 @@ unsafe fn draw_crew(page: &Page, heading: &CStr, towns: &[u8], all_towns: bool) 
     y
 }
 
-/// The towns the player may legally enter, which is where he can hire: the ones he has
-/// a trading office in, plus the ones one of his ships is in port at. With `all_towns`,
-/// every town instead, enterable or not.
+/// The towns the player may legally enter, which is where he can hire: the scrollmap's own
+/// double-click test ([p3_api::game_world::GameWorldPtr::can_merchant_enter_town]) - a ship
+/// of his in the town, or a trading office. With `all_towns`, every town instead,
+/// enterable or not.
 unsafe fn enterable_towns(all_towns: bool) -> Vec<u8> {
     let player_merchant = OPERATIONS_PTR.get_player_merchant_index() as u16;
-    // Only the filtered view needs the ship set, so the all-towns view skips the walk.
-    let ship_towns = if all_towns {
-        [false; 0x100]
-    } else {
-        towns_with_player_ships(&ShipsPtr::new(), player_merchant)
-    };
-
     (0..GAME_WORLD_PTR.get_towns_count().min(0xff) as u8)
-        .filter(|&town_index| {
-            // The office chain of one town is a handful of records; the ship set is
-            // already built, so the cheap test goes first.
-            all_towns || ship_towns[town_index as usize] || GAME_WORLD_PTR.get_office_in_of(town_index, player_merchant).is_some()
-        })
+        .filter(|&town_index| all_towns || GAME_WORLD_PTR.can_merchant_enter_town(player_merchant, town_index))
         .collect()
 }
 
@@ -324,31 +314,4 @@ unsafe fn hireable_auto_traders(ships: &ShipsPtr, town_index: u8) -> Vec<(bool, 
         index = trader.get_next_index();
     }
     waiting
-}
-
-/// The towns the player's ships are in, indexed by town.
-///
-/// Walks the player's OWN ship chain - the merchant record's `+0xE` is its head and
-/// every ship's `+0x4` the next link - so the cost is his ship count, not the world's.
-/// This is the game's own iteration: the per-merchant ship census at `0x004F0AB1`
-/// fetches the merchant record, takes `+0xE`, and follows `+0x4` while the index stays
-/// below the ship count.
-///
-/// `is_in_port` is the game's own "at a town rather than at sea" test, which covers a
-/// ship still entering the harbour - the town is enterable and its tavern reachable
-/// from that moment on - and `+0x39` names that town.
-unsafe fn towns_with_player_ships(ships: &ShipsPtr, player_merchant: u16) -> [bool; 0x100] {
-    let mut towns = [false; 0x100];
-    let mut index = GAME_WORLD_PTR.get_merchant(player_merchant).get_first_ship_index();
-    // The chain ends on an out-of-range index; the ship count also caps the walk.
-    for _ in 0..ships.get_ships_size() {
-        let Some(ship) = ships.get_ship(index) else { break };
-        if ship.is_in_port() {
-            if let Some(town_index) = ship.get_last_town_index() {
-                towns[town_index as usize] = true;
-            }
-        }
-        index = ship.get_next_ship_index_of_merchant();
-    }
-    towns
 }

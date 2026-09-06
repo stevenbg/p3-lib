@@ -225,6 +225,11 @@ impl ShipPtr {
     /// `0x00519C40`, which is the executable's only test of the crew word against 20.
     pub const CONVOY_LEADER_MIN_CREW: u16 = 20;
 
+    /// The raider status the ships tick dispatches at `0x00507CB0` alongside `0x12` (the AI
+    /// pirate's), and the one status the scrollmap's enter-town test skips when it looks
+    /// for a ship of the player's in a town (`0x0044A14F`).
+    pub const STATUS_RAIDER: u16 = 0x11;
+
     /// May this ship lead a convoy? The game's own predicate `0x00519C40`, a
     /// `thiscall(ship) -> bool` that reads the record and nothing else:
     ///

@@ -58,7 +58,7 @@ use p3_api::{
         ui_notifications::UINotificationsPtr,
     },
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DIVIDE, VK_MULTIPLY};
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DIVIDE, VK_HOME, VK_MULTIPLY, VK_NEXT, VK_PRIOR};
 
 /// The frame clock updater's delta computation: `sub eax,edx; pop edi; add ecx,eax`
 /// (eax = this frame's real elapsed ms, ecx = the accumulating game clock) - 5 bytes,
@@ -152,6 +152,9 @@ pub unsafe extern "C" fn start() -> u32 {
             api.register(OWNER, b'X' as u32, MOD_CTRL, crate::strip::strip_ship_hotkey);
             api.register(OWNER, b'R' as u32, MOD_CTRL, crate::repair::repair_ship_hotkey);
             api.register(OWNER, b'N' as u32, MOD_CTRL, crate::route_skip::skip_route_stop_hotkey);
+            api.register(OWNER, VK_PRIOR.0 as u32, 0, crate::town_cycle::cycle_town_hotkey);
+            api.register(OWNER, VK_NEXT.0 as u32, 0, crate::town_cycle::cycle_town_hotkey);
+            api.register(OWNER, VK_HOME.0 as u32, 0, crate::town_cycle::go_home_hotkey);
         }
         Err(reason) => warn!("hotkeys registry unavailable ({reason}) - the speed keys are inert"),
     }

@@ -58,6 +58,48 @@ impl UILocalMapWindowPtr {
             None
         }
     }
+
+    /// Is the scene on screen? The loaded map stays in the object when the player leaves
+    /// for the world map - only the window is hidden (`+0xCC(0)` at `0x0042D64D`,
+    /// `0x0046D5E7`) and shown again on entering (`+0xCC(1)` at `0x0044A1E4`) - so the map
+    /// id alone does not say whether the player is looking at the town.
+    pub unsafe fn is_shown(&self) -> bool {
+        crate::ui::widget::is_visible(self.address)
+    }
+
+    /// Load a town into the scene - what the scrollmap does when the player double-clicks
+    /// a town he may enter (`0x0044A1B7`), and what the ship overview does to jump to a
+    /// ship's town (`0x00476B2E`). `thiscall(this, town, reload, announce, keep_panel,
+    /// centre)`, `ret 0x14`, [Self::ENTER_TOWN_ADDRESS]:
+    ///
+    /// - the same town with `reload` = 0 only recentres the view on the town's map
+    ///   position (`0x0058A5C7`..`0x0058A666`); any other town, or `reload` != 0, releases
+    ///   the loaded map (`0x00589130`), stores the id at `+0xC324` (`0x0058A733`) and loads
+    ///   the new one (`0x0058EB30`), so it works from inside another town as well as from
+    ///   the world map;
+    /// - `announce` != 0 tells the notification manager `[0x006CBB40]` about the town
+    ///   (`0x0042CD90`) and runs `0x0058F4E0(1)`; `keep_panel` = 0 additionally calls its
+    ///   `0x0042A6C0`. The scrollmap passes `(town, 0, 1, 1, 1)` and then hides itself
+    ///   (`+0xCC(0)`); the ship overview passes `(town, 0, 0, flag, 1)`.
+    ///
+    /// The session start enters the home town with `(town, 1, 0, 1, 1)` (`0x004339A1`) -
+    /// `reload` set because the scene is coming from the world map, where the map kept in
+    /// the object is not the one on screen.
+    ///
+    /// `keep_panel` and `centre` are passed as 1. The wrapper does not check whether the
+    /// player may enter the town - see
+    /// [crate::game_world::GameWorldPtr::can_merchant_enter_town] - and it does not close
+    /// windows open in the current town or swap the scenes.
+    pub unsafe fn enter_town(&self, town_index: u8, reload: bool, announce: bool) {
+        let enter: extern "thiscall" fn(this: u32, town: u32, reload: u32, announce: u32, keep_panel: u32, centre: u32) =
+            std::mem::transmute(Self::ENTER_TOWN_ADDRESS);
+        enter(self.address, town_index as u32, reload as u32, announce as u32, 1, 1);
+    }
+}
+
+impl UILocalMapWindowPtr {
+    /// See [Self::enter_town].
+    pub const ENTER_TOWN_ADDRESS: u32 = 0x0058A4F0;
 }
 
 impl P3Pointer for UILocalMapWindowPtr {

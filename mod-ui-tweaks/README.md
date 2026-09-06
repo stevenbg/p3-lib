@@ -123,6 +123,37 @@ as the shipyard shows it (`Hansa: repair ordered in Lübeck - hull at 62%`, or `
 whole convoy - lead ship Anna at 62%`), or why nothing happened (`not docked - at sea`).
 The key is consumed only when a player ship is selected; otherwise the game still sees it.
 
+## PAGE UP / PAGE DOWN walk the towns you can enter, HOME goes home
+
+Inside a town, **PAGE DOWN** takes you to the next town you may enter and **PAGE UP** to
+the previous one, in the game's town order and wrapping around. **HOME** enters your home
+town, from inside a town or from the world map. Building windows open in the town are
+closed first, the way any opening window closes the others (`0x00462280`).
+
+From the world map the scene has to be swapped as well, and the mod does it the way the
+game enters the home town at the start of a session (`0x004339A1`..`0x00433A52`): the
+loader is told to reload (the map kept in the hidden scene is not the one on screen), the
+world map is centred on the town for the way back (`0x0044F490` with the town's position
+from the table at `0x006DDBA0`), the scrollmap is hidden and disabled, the local map shown
+and enabled (`+0xCC`, `+0x34`).
+
+"May enter" is the scrollmap's own double-click test (`0x0044A128`..`0x0044A1A6`): one of
+your ships names the town (`ship+0x39`) and is not in raider status `0x11`, or you have an
+office there. The switch is the loader the scrollmap and the ship overview use,
+`0x0058A4F0` on the local-map scene, called with the scrollmap's arguments
+`(town, 0, 1, 1, 1)`; a different town releases the loaded map and loads the new one, so it
+works from inside a town as well as from the world map. A ticker message names the move
+(`Lübeck -> Rostock (3 of 7 towns)`).
+
+PAGE UP and PAGE DOWN are consumed only while the town view is **on screen**, and none of
+the three keys while you are **in a sea battle** - the same refusal the game's own
+home-town entry makes. Neither follows from the loaded map id: it keeps naming the last
+town after you have left for the world map (only the scene is hidden, `+0xCC(0)`), and a
+town attacked from the sea fights on the town's own map. So the tests are the scene's
+visibility and the battle pool's player slot (`[0x006E59CC]`, `0xFF` when you are in no
+fight). In battle the game still sees the keys, and PAGE UP / PAGE DOWN also on the world
+map.
+
 ## Pirate attacks no longer interrupt fast forward
 
 When a notorious pirate robs someone else's ship the game announces

@@ -89,3 +89,16 @@ impl P3Pointer for WindowManagerPtr {
         self.address
     }
 }
+
+/// `0x00462280(force) -> bool`, cdecl: close every window on the open-window list
+/// (`0x006CC3B4` - the building windows and dialogs), asking each through its `+0x11C`
+/// veto unless `force` is set, then its `+0x118`. Returns whether all of them closed; a
+/// veto also plays the refusal sound. This is what any window does before it opens
+/// (`0x00462280(0)`), and what ESC and a right-click do one window at a time.
+pub unsafe fn close_open_windows(force: bool) -> bool {
+    let close: extern "cdecl" fn(force: u32) -> bool = std::mem::transmute(CLOSE_OPEN_WINDOWS_ADDRESS);
+    close(force as u32)
+}
+
+/// See [close_open_windows].
+pub const CLOSE_OPEN_WINDOWS_ADDRESS: u32 = 0x00462280;

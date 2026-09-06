@@ -80,6 +80,17 @@ pub unsafe fn show(widget: u32, visible: bool) {
     show(widget, visible as u32);
 }
 
+/// `thiscall(bool)`, `ret 4` (base `0x004B17F0`): writes the enabled byte `+0x41` that the
+/// event handlers test before dispatching, and on enabling asks `+0x28`. The scene switch
+/// between the scrollmap and the local map disables the one it hides and enables the one it
+/// shows (`0x0044A1D7`/`0x0044A1F4`).
+pub const SLOT_SET_ENABLED: usize = 0x34;
+
+pub unsafe fn set_enabled(widget: u32, enabled: bool) {
+    let set: extern "thiscall" fn(u32, u32) = std::mem::transmute(slot(widget, SLOT_SET_ENABLED));
+    set(widget, enabled as u32);
+}
+
 pub unsafe fn is_visible(widget: u32) -> bool {
     let visible: extern "thiscall" fn(u32) -> u8 = std::mem::transmute(slot(widget, SLOT_IS_VISIBLE));
     visible(widget) != 0
