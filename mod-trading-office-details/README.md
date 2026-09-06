@@ -11,10 +11,6 @@ modloader).
 
 Right-aligned lines, top to bottom:
 
-- The office administrator's **buying discount**: his trade skill makes him pay
-  `2 * (50 - level)` percent of every purchase price, i.e. 2% off per skill level up to
-  10% at level 5 - a real effect the game never shows anywhere. "No administrator
-  employed" when the office has none.
 - **Pirates**: how many bands roam (`2 * activity + 1`, fixed at world generation) and the
   home-town rank from which a free pirate robs a merchant (`rank + activity >= 2`), with the
   player's own rank and whether he qualifies.
@@ -37,6 +33,14 @@ Right-aligned lines, top to bottom:
   town's daily pass has already run) and how many builders are on it. A site the day's
   budget never reaches is "waiting": "starts soon" for the first one, "position n" after
   that, the panel's own wording. "Nothing under construction" when the chain is empty.
+
+## The Total page
+
+The game's own first page (page 0, "Total") gets one line just above its "Dismiss
+administrator" button, only while the office has an administrator: his **buying
+discount**. His trade skill makes him pay `2 * (50 - level)` percent of every purchase
+price, i.e. 2% off per skill level up to 10% at level 5 - a real effect the game never
+shows anywhere.
 
 ## How it works
 

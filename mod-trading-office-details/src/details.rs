@@ -1,5 +1,3 @@
-use std::ffi::CStr;
-
 use p3_api::{
     auto_trader::AutoTraderPtr,
     facility, game_setup,
@@ -14,11 +12,14 @@ use p3_api::{
 };
 use p3_ui::{Align, Cell, Column, Page, Table};
 
-pub static NO_ADMINISTRATOR: &CStr = c"No administrator employed";
-
 /// The page is one right-aligned column of lines ending at this edge.
 const VALUE_X: i32 = 345;
 const FIRST_ROW_Y: i32 = 12;
+/// The Total page (page 0): the game's own sentences start at this x, and its "Dismiss
+/// administrator" button sits at the bottom edge; the administrator line goes on the line
+/// just above the button.
+const TOTAL_TEXT_X: i32 = 52;
+const TOTAL_ADMINISTRATOR_Y: i32 = 456;
 /// The dwellings table: the class and its house count end left of the occupancy column,
 /// which starts a gutter later so the percentages line up.
 const OCCUPANCY_COLUMN_WIDTH: i32 = 36;
@@ -42,7 +43,6 @@ pub(crate) unsafe fn draw_page(window: UITradingOfficeWindowPtr) {
     let town_index = window.get_town_index() as u8;
 
     let mut y = page.top;
-    y = draw_administrator(&page, y, window);
     y = draw_pirates(&page, y);
     y = draw_winter(&page, y, town_index);
     y = draw_dwellings(&page, y + page.row_height, town_index);
@@ -221,21 +221,27 @@ unsafe fn draw_constructions(page: &Page, y: i32, town_index: u8) -> i32 {
     y
 }
 
-/// This office's administrator pays 2% less per trade skill level on everything he
-/// buys - an effect the game shows nowhere.
-unsafe fn draw_administrator(page: &Page, y: i32, window: UITradingOfficeWindowPtr) -> i32 {
+/// On the game's Total page (page 0), above its "Dismiss administrator" button: this
+/// office's administrator pays 2% less per trade skill level on everything he buys - an
+/// effect the game shows nowhere. Nothing is drawn without an administrator; the game's
+/// own page already says so.
+pub(crate) unsafe fn draw_total_page(window: UITradingOfficeWindowPtr) {
     let town_index = window.get_town_index() as u8;
     let player_merchant = OPERATIONS_PTR.get_player_merchant_index();
     let Some(office) = GAME_WORLD_PTR.get_office_in_of(town_index, player_merchant as _) else {
-        return y + page.row_height;
+        return;
     };
-
-    match ShipsPtr::new().get_auto_trader(office.get_administrator_index()) {
-        None => line(page, y, NO_ADMINISTRATOR.to_bytes()),
-        Some(administrator) => {
-            let level = AutoTraderPtr::skill_level(administrator.get_trade_skill());
-            let discount = 100 - administrator.get_buy_percent_paid();
-            line(page, y, format!("Administrator's buying discount: {discount}%, level {level}"))
-        }
-    }
+    let Some(administrator) = ShipsPtr::new().get_auto_trader(office.get_administrator_index()) else {
+        return;
+    };
+    let level = AutoTraderPtr::skill_level(administrator.get_trade_skill());
+    let discount = 100 - administrator.get_buy_percent_paid();
+    let page = page(&window);
+    page.reset_state();
+    page.line(
+        TOTAL_TEXT_X,
+        TOTAL_ADMINISTRATOR_Y,
+        Align::Left,
+        &Cell::owned(format!("He buys {discount}% cheaper (trade skill level {level}).").into_bytes()),
+    );
 }
