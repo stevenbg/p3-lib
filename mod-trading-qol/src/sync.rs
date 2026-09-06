@@ -34,7 +34,7 @@ const COLUMN_X: i32 = 6;
 const SYNC_CAPTION: &[u8] = b"Set";
 /// The explanation drawn to the right of the Sync button (latin1, NUL-terminated for the
 /// game's text renderer), and its gap from the button and offset down to the button's baseline.
-const SYNC_HINT: &[u8] = b"qty & price across offices\0";
+const SYNC_HINT: &[u8] = b"stock & price across offices for that order type\0";
 const SYNC_HINT_GAP: i32 = 6;
 const SYNC_HINT_Y_OFFSET: i32 = 2;
 const BLACK: u32 = 0xff00_0000;

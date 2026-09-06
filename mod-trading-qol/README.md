@@ -149,10 +149,7 @@ same, draws itself and takes the keyboard when clicked. It is shown with the adm
 page and hidden with it. The amounts are kept per town (a merchant has one office per
 town) in raw units, the office's own: the boxes are filled from that store when the window
 opens and written back when it closes, so they survive switching offices within a session.
-Ticking a row's lock checkbox while its locked amount is 0 starts the box at the row's stock
-amount - the whole minimum store, which is what the lock alone protects - so the common case
-needs no typing; a box already holding a number is left alone. They are not yet enforced
-against the auto-trade ships.
+They are not yet enforced against the auto-trade ships.
 
 ### Saved beside the game: the `.qol` sidecar
 

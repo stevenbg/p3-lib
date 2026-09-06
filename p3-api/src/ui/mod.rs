@@ -15,6 +15,7 @@ pub mod number_widget;
 pub mod page_window;
 pub mod rich_text;
 pub mod scroll_list;
+pub mod tooltip;
 pub mod ui_church_window;
 pub mod ui_event_window;
 pub mod ui_notifications;

@@ -21,15 +21,14 @@ use p3_api::{
     ui::{
         number_widget::{NumberWidget, OFFICE_BOX_ID, OFFICE_BOX_INI, OFFICE_BOX_MAX},
         ui_trading_office_window::{
-            UITradingOfficeWindowPtr, ADMINISTRATOR_PAGE, AMOUNT_PLUS_BUTTONS_OFFSET, AMOUNT_WIDGETS_OFFSET, BUTTON_SIZE, FIRST_ROW_Y, IMAGE_SIZE,
-            LOCK_CHECKMARKS_OFFSET, ROW_COUNT, ROW_PITCH, WARE_DISPLAY_ORDER,
+            UITradingOfficeWindowPtr, ADMINISTRATOR_PAGE, FIRST_ROW_Y, IMAGE_SIZE, LOCK_CHECKMARKS_OFFSET, ROW_COUNT, ROW_PITCH, WARE_DISPLAY_ORDER,
         },
         widget,
     },
 };
 
-/// From the amount `+` button's right edge to the box: the game's own spacing between
-/// neighbours in the row.
+/// From the box's right edge to the lock checkbox on its right: the game's own spacing
+/// between neighbours in the row.
 const GAP: i32 = 3;
 
 /// The locked amounts, raw units, indexed by ware id; one row per town index.
@@ -87,20 +86,8 @@ pub(crate) unsafe fn flush_open_window() {
 struct Widgets {
     boxes: Vec<NumberWidget>,
     shown: bool,
-    /// Each row's lock state as of the last frame, to catch the click that locks a ware.
-    locked: [bool; ROW_COUNT],
     /// The town of the window the boxes are attached to.
     town: u8,
-}
-
-/// Whether the game shows the row's lock checkmark - the ware is locked.
-unsafe fn is_locked(window: &UITradingOfficeWindowPtr, row: usize) -> bool {
-    widget::is_visible(window.address + LOCK_CHECKMARKS_OFFSET + row as u32 * IMAGE_SIZE)
-}
-
-/// The row's stock amount box, the game's own.
-fn amount_box(window: &UITradingOfficeWindowPtr, row: usize) -> NumberWidget {
-    NumberWidget::new(window.address + AMOUNT_WIDGETS_OFFSET + row as u32 * p3_api::ui::number_widget::OBJECT_SIZE)
 }
 
 static WIDGETS: Mutex<Option<Widgets>> = Mutex::new(None);
@@ -137,17 +124,19 @@ unsafe fn save(widgets: &Widgets, town: u8) {
 unsafe fn build() -> Widgets {
     let boxes = (0..ROW_COUNT).map(|_| NumberWidget::build(OFFICE_BOX_INI, OFFICE_BOX_ID, OFFICE_BOX_MAX)).collect();
     info!("locked amounts: built {ROW_COUNT} boxes");
-    Widgets { boxes, shown: false, locked: [false; ROW_COUNT], town: 0 }
+    Widgets { boxes, shown: false, town: 0 }
 }
 
-/// Place every box right of its row's amount `+` button, on the row's line.
+/// Place every box just left of its row's lock checkbox, on the row's line. The checkmark
+/// image is the checkbox's leftmost part (it hangs left of the round button), so the box's
+/// right edge sits [GAP] px left of it.
 unsafe fn place(widgets: &Widgets, window: &UITradingOfficeWindowPtr) {
     let y = window.get_y();
     for row in 0..ROW_COUNT {
-        let plus = window.address + AMOUNT_PLUS_BUTTONS_OFFSET + row as u32 * BUTTON_SIZE;
-        let (plus_x, _) = widget::position(plus);
-        let (plus_width, _) = widget::size(plus);
-        widgets.boxes[row].set_position(plus_x + plus_width + GAP, y + FIRST_ROW_Y + row as i32 * ROW_PITCH);
+        let checkmark = window.address + LOCK_CHECKMARKS_OFFSET + row as u32 * IMAGE_SIZE;
+        let (checkmark_x, _) = widget::position(checkmark);
+        let (box_width, _) = widgets.boxes[row].size();
+        widgets.boxes[row].set_position(checkmark_x - GAP - box_width, y + FIRST_ROW_Y + row as i32 * ROW_PITCH);
     }
 }
 
@@ -172,9 +161,8 @@ pub(crate) unsafe fn on_open(window: &UITradingOfficeWindowPtr) {
     load(widgets, widgets.town);
 }
 
-/// Each frame after the game's update: follow the page, and when a click has just locked a
-/// ware whose locked amount is 0, start it at the row's stock amount - the whole minimum
-/// store, what the lock alone would protect.
+/// Each frame after the game's update: show the boxes only on the administrator page with an
+/// administrator employed, hide them elsewhere.
 pub(crate) unsafe fn on_update(window: &UITradingOfficeWindowPtr) {
     let mut guard = WIDGETS.lock().unwrap();
     let Some(widgets) = guard.as_mut() else { return };
@@ -185,20 +173,6 @@ pub(crate) unsafe fn on_update(window: &UITradingOfficeWindowPtr) {
     if on_page != widgets.shown {
         widgets.shown = on_page;
         show_all(widgets, on_page);
-        // Entering the page: take the locks as they are, without copying.
-        for row in 0..ROW_COUNT {
-            widgets.locked[row] = is_locked(window, row);
-        }
-    }
-    if !on_page {
-        return;
-    }
-    for row in 0..ROW_COUNT {
-        let locked = is_locked(window, row);
-        if locked && !widgets.locked[row] && widgets.boxes[row].value() == 0 {
-            widgets.boxes[row].set_value(amount_box(window, row).value());
-        }
-        widgets.locked[row] = locked;
     }
 }
 
