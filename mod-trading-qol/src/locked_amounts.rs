@@ -7,7 +7,7 @@
 //! (the same units as the office's minimum store, `office + 0x354`: 200 per barrel, 2000
 //! per load), keyed by town because a merchant has at most one office per town. The boxes
 //! are filled from the store when the window opens and written back when it closes; the
-//! store is what a save sidecar will serialize. Nothing enforces the amounts yet
+//! store travels with the save in [crate::sidecar]. Nothing enforces the amounts yet
 //! (`.claude/notes/todo/office-locked-amounts.md`). The window's vtable open/update/close
 //! hooks in [crate::ffi] drive [on_open], [on_update] and [on_close], as they do the sync
 //! column.
@@ -53,11 +53,44 @@ pub(crate) fn set_amounts(town: u8, amounts: TownAmounts) {
     }
 }
 
+/// Every town with locked amounts, in town order - what the save sidecar writes.
+pub(crate) fn snapshot() -> Vec<(u8, TownAmounts)> {
+    let guard = STORE.lock().unwrap();
+    let mut entries: Vec<(u8, TownAmounts)> = guard
+        .as_ref()
+        .map(|store| store.iter().map(|(&town, &amounts)| (town, amounts)).collect())
+        .unwrap_or_default();
+    entries.sort_by_key(|&(town, _)| town);
+    entries
+}
+
+/// Forget every town: the world in memory has been replaced.
+pub(crate) fn clear() {
+    *STORE.lock().unwrap() = None;
+}
+
+/// The whole store at once - what the save sidecar read.
+pub(crate) fn replace(entries: HashMap<u8, TownAmounts>) {
+    *STORE.lock().unwrap() = Some(entries);
+}
+
+/// The open window's boxes into the store now, without waiting for the window to close -
+/// so a save carries what the boxes show. Nothing when no office window is open.
+pub(crate) unsafe fn flush_open_window() {
+    let guard = WIDGETS.lock().unwrap();
+    let Some(widgets) = guard.as_ref() else { return };
+    if widgets.boxes[0].is_attached() {
+        save(widgets, widgets.town);
+    }
+}
+
 struct Widgets {
     boxes: Vec<NumberWidget>,
     shown: bool,
     /// Each row's lock state as of the last frame, to catch the click that locks a ware.
     locked: [bool; ROW_COUNT],
+    /// The town of the window the boxes are attached to.
+    town: u8,
 }
 
 /// Whether the game shows the row's lock checkmark - the ware is locked.
@@ -104,7 +137,7 @@ unsafe fn save(widgets: &Widgets, town: u8) {
 unsafe fn build() -> Widgets {
     let boxes = (0..ROW_COUNT).map(|_| NumberWidget::build(OFFICE_BOX_INI, OFFICE_BOX_ID, OFFICE_BOX_MAX)).collect();
     info!("locked amounts: built {ROW_COUNT} boxes");
-    Widgets { boxes, shown: false, locked: [false; ROW_COUNT] }
+    Widgets { boxes, shown: false, locked: [false; ROW_COUNT], town: 0 }
 }
 
 /// Place every box right of its row's amount `+` button, on the row's line.
@@ -134,8 +167,9 @@ pub(crate) unsafe fn on_open(window: &UITradingOfficeWindowPtr) {
         widget.attach_to_root();
     }
     widgets.shown = false;
+    widgets.town = window.get_town_index() as u8;
     show_all(widgets, false);
-    load(widgets, window.get_town_index() as u8);
+    load(widgets, widgets.town);
 }
 
 /// Each frame after the game's update: follow the page, and when a click has just locked a

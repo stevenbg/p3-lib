@@ -18,6 +18,7 @@ pub mod names;
 pub mod mods;
 pub mod operation;
 pub mod operations;
+pub mod save_game;
 pub mod scheduled_tasks;
 pub mod ship;
 pub mod ships;

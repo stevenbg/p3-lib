@@ -7,6 +7,7 @@ pub(crate) mod office;
 pub(crate) mod office_layout;
 pub(crate) mod options_button;
 pub(crate) mod routes;
+pub(crate) mod sidecar;
 pub(crate) mod sync;
 pub(crate) mod thaw;
 pub(crate) mod prices;

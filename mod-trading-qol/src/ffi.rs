@@ -289,6 +289,11 @@ pub unsafe extern "C" fn start() -> u32 {
         error!("failed to re-lay the administrator page ({what})");
         return 10;
     }
+    // The locked amounts travel with the save, in a sidecar file beside it.
+    if let Err(what) = crate::sidecar::install() {
+        error!("failed to hook {what} - locked amounts would not survive a save");
+        return 11;
+    }
     // Plain Q..Y typed into a focused price box reprice that one ware.
     match hook_function_pointer(NUMBER_WIDGET_KEY_POINTER_OFFSET, number_widget_key_hook as usize as u32) {
         Ok(hook) => NUMBER_KEY_HOOK_PTR.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst),

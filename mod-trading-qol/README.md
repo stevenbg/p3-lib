@@ -151,8 +151,23 @@ town) in raw units, the office's own: the boxes are filled from that store when 
 opens and written back when it closes, so they survive switching offices within a session.
 Ticking a row's lock checkbox while its locked amount is 0 starts the box at the row's stock
 amount - the whole minimum store, which is what the lock alone protects - so the common case
-needs no typing; a box already holding a number is left alone. They are not yet saved with
-the game or enforced against the auto-trade ships.
+needs no typing; a box already holding a number is left alone. They are not yet enforced
+against the auto-trade ships.
+
+### Saved beside the game: the `.qol` sidecar
+
+The game's save record has no room for a second quantity per ware, so the locked amounts
+travel in a file of the mod's own next to the save: `Save\Ein\NAME.qol` beside
+`Save\Ein\NAME.pat` (the same for campaign saves under `Save\Kam\` and for the autosave,
+`AUTO`). It is written whenever the game saves - the Save button and the autosave both go
+through the same save operation, which the mod hooks - and read back whenever the game
+loads. A save with nothing locked removes the sidecar. An open office window's boxes are
+taken as they stand at save time.
+
+The file is plain text: a format line, then one `lock <town> <ware> <raw amount>` line per
+locked ware (raw units: 200 per barrel, 2000 per load). Its name is its identity - it sits
+next to the save it belongs to - so there is no check inside it. Loading a save without a
+sidecar, or starting a new game, leaves every locked amount at 0.
 
 ## Right-click on the Options button: the mod's window
 

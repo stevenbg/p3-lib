@@ -41,6 +41,10 @@ impl OperationsPtr {
         self.set(0x474 + 0x0e, &pos)
     }
 
+    /// `ops+0x924` (`0x006DFC14`). Written by the drain's opcode `0xC1` case
+    /// (`0x00546978`..`0x005469A1`): the last merchant whose control word is 0, a human. Not
+    /// yet valid when the load routine ([crate::save_game::LOAD_ADDRESS]) returns - that
+    /// operation runs later in the session start.
     pub unsafe fn get_player_merchant_index(&self) -> i32 {
         self.get(0x0924)
     }

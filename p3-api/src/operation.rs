@@ -170,6 +170,17 @@ pub enum Operation {
         /// The next name chunk: latin1, up to 12 bytes, NUL-padded.
         name: [u8; 12],
     },
+    /// Save the game. Opcode 0xC2, handled inline by the queue drain like
+    /// [Operation::SetGameSpeed] (jump table `0x00547290`, index 1 -> `0x005469D4`), which
+    /// calls the save handler - see [crate::save_game]. The save dialog enqueues it with the
+    /// local player's queue id `ops+0x2C` (`0x00433C1B`), the autosave with `-1` and the
+    /// name [crate::save_game::AUTOSAVE_NAME] (`0x005466EA`); the handler skips a save that
+    /// names another player.
+    SaveGame {
+        player: i32,
+        /// The file name without folder or extension: latin1, up to 12 bytes, NUL-padded.
+        name: [u8; 12],
+    },
     /// Sets the game speed. Opcode 0xC8 is handled inline by the operation queue's
     /// drain (handler `0x00546DCF`, jump table `0x00547290`), not by the operation
     /// switch: `+0x4` sets the ms-per-tick divisor of speed level 1 (`ops+0x8D4`),
@@ -576,6 +587,12 @@ impl Operation {
                 op[0..4].copy_from_slice(&opcode.to_le_bytes());
                 op[0x04..0x10].copy_from_slice(name);
                 op[0x10..0x14].copy_from_slice(&ship_index.to_le_bytes());
+            }
+            Operation::SaveGame { player, name } => {
+                let opcode: u32 = 0xc2;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[0x04..0x08].copy_from_slice(&player.to_le_bytes());
+                op[0x08..0x14].copy_from_slice(name);
             }
             Operation::SetGameSpeed {
                 speed1_ms_per_tick,
