@@ -14,7 +14,10 @@ everything that is our policy on top lives here. `mod-tavern-details`,
   first row's y, the row pitch (16 px on every details page) and the last y a row may start
   at; `reserve_bottom_rows(n)` keeps rows free for a hint line or a scrollbar. It draws
   single cells (`line`, `heading`, `prose`) and `reset_state` puts the renderer back to
-  black, right-aligned, body font.
+  black, right-aligned, body font. Every x and y a page takes or returns is relative to the
+  window's top-left corner, so a layout holds wherever the window opens (and an offset
+  outside the window draws outside it); `abs_x`/`abs_y` give the screen coordinates when a
+  game call needs them, and `rect` is the window's screen area.
 - `Table` lays `Cell`s out in `Column`s. A column names its window-relative x - the right
   edge of a right-aligned column, the left edge otherwise - and a width, which bounds
   rich-text wrapping, centres graphics and defines the header hit test. `header` draws the

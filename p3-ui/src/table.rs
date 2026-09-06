@@ -80,7 +80,7 @@ impl<'p> Table<'p> {
                     Align::Right => column.x,
                     Align::Left | Align::Center => column.x + column.width,
                 };
-                self.page.draw_text(self.page.abs_x(right + MARKER_GAP), y, Align::Left, marker);
+                self.page.draw_text(right + MARKER_GAP, y, Align::Left, marker);
             }
         }
         y + self.page.row_height
@@ -105,7 +105,7 @@ impl<'p> Table<'p> {
                 continue;
             }
             let colored = Cell::Colored(color, Box::new(cell.clone()));
-            self.page.draw_cell(self.page.abs_x(column.x), y, column.align, column.width, &colored);
+            self.page.draw_cell(column.x, y, column.align, column.width,&colored);
         }
         y + self.page.row_height
     }
@@ -115,13 +115,14 @@ impl<'p> Table<'p> {
             if cell.is_empty() {
                 continue;
             }
-            self.page.draw_cell(self.page.abs_x(column.x), y, column.align, column.width, cell);
+            self.page.draw_cell(column.x, y, column.align, column.width,cell);
         }
     }
 
-    /// The column whose header cell the screen point is on, for a click on the header row
-    /// at `header_y`.
+    /// The column whose header cell the screen point `x`, `y` is on, for a click on the
+    /// header row at the window-relative `header_y`.
     pub fn hit_test(&self, x: i32, y: i32, header_y: i32) -> Option<usize> {
+        let y = y - self.page.y;
         if y < header_y || y >= header_y + self.page.row_height {
             return None;
         }
@@ -139,15 +140,15 @@ impl<'p> Table<'p> {
         (left, right)
     }
 
-    /// The screen rectangle of the rows between two y's (the header excluded when `top` is
-    /// the first data row), spanning the columns; a scrollbar's wheel area.
+    /// The screen rectangle of the rows between two window-relative y's (the header excluded
+    /// when `top` is the first data row), spanning the columns; a scrollbar's wheel area.
     pub fn rows_area(&self, top: i32, bottom: i32) -> Rect {
         let (left, right) = self.extent();
         Rect {
             left: self.page.abs_x(left),
-            top,
+            top: self.page.abs_y(top),
             right: self.page.abs_x(right),
-            bottom,
+            bottom: self.page.abs_y(bottom),
         }
     }
 }

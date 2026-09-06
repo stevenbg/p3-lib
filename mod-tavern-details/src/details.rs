@@ -145,7 +145,7 @@ pub(crate) unsafe fn draw_page(window: UITavernWindowPtr) {
     }
 
     page.reset_state();
-    page.draw_text(page.abs_x(VALUE_X), page.bottom_row_y(), Align::Right, HINTS.to_bytes());
+    page.draw_text(VALUE_X, page.bottom_row_y(), Align::Right, HINTS.to_bytes());
 }
 
 /// One row per mission a tavern's side room offers, by town.

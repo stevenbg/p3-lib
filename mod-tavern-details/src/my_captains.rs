@@ -145,9 +145,9 @@ fn table_area(page: &Page) -> Rect {
     let (left, _) = table.extent();
     Rect {
         left: page.abs_x(left),
-        top: page.top + page.row_height,
+        top: page.abs_y(page.top + page.row_height),
         right: page.abs_x(bar_right),
-        bottom: table.last_y + page.row_height,
+        bottom: page.abs_y(table.last_y + page.row_height),
     }
 }
 

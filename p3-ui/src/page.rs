@@ -62,15 +62,21 @@ pub struct Page {
     /// plain text without it.
     pub layout: Option<u32>,
     pub row_height: i32,
-    /// The first row's y.
+    /// The first row's y, relative to the window's top edge.
     pub top: i32,
-    /// The last y a row may start at; rows asked for below it are not drawn.
+    /// The last window-relative y a row may start at; rows asked for below it are not drawn.
     pub last_y: i32,
 }
 
 impl Page {
     /// The page of `window`, its first row `first_row_y` below the window's top edge and its
     /// last row the one that still fits above the bottom edge.
+    ///
+    /// Every x and y the page takes or returns is **relative to the window's top-left
+    /// corner**, so a layout is written once and holds wherever the window opens; the page
+    /// adds the window's position when it draws. Nothing stops a caller from drawing outside
+    /// the window with a negative or oversized offset. `x`, `y` and [Page::rect] are the
+    /// window's own screen position and area.
     pub fn new<W: PageWindow>(window: &W, first_row_y: i32) -> Self {
         let (x, y, width, height) = (window.x(), window.y(), window.width(), window.height());
         Page {
@@ -80,8 +86,8 @@ impl Page {
             height,
             layout: window.layout(),
             row_height: ROW_HEIGHT,
-            top: y + first_row_y,
-            last_y: y + height - ROW_HEIGHT,
+            top: first_row_y,
+            last_y: height - ROW_HEIGHT,
         }
     }
 
@@ -99,7 +105,7 @@ impl Page {
 
     /// The window's last row, below anything [Page::reserve_bottom_rows] kept free.
     pub fn bottom_row_y(&self) -> i32 {
-        self.y + self.height - self.row_height
+        self.height - self.row_height
     }
 
     /// Half a row: the blank between blocks.
@@ -107,8 +113,14 @@ impl Page {
         self.row_height / 2
     }
 
+    /// Screen x of a window-relative x.
     pub fn abs_x(&self, x: i32) -> i32 {
         self.x + x
+    }
+
+    /// Screen y of a window-relative y.
+    pub fn abs_y(&self, y: i32) -> i32 {
+        self.y + y
     }
 
     pub fn rect(&self) -> Rect {
@@ -135,9 +147,9 @@ impl Page {
         font::ddraw_set_font(font::get_normal_font());
     }
 
-    /// Draw one cell at the absolute `x`, aligned by `align`; `width` is the cell's width,
-    /// which bounds rich-text wrapping and centres graphics. Leaves the state as
-    /// [Page::reset_state] does.
+    /// Draw one cell at the window-relative `x`, `y`, aligned by `align`; `width` is the
+    /// cell's width, which bounds rich-text wrapping and centres graphics. Leaves the state
+    /// as [Page::reset_state] does.
     pub unsafe fn draw_cell(&self, x: i32, y: i32, align: Align, width: i32, cell: &Cell) {
         self.draw_cell_colored(x, y, align, width, cell, BLACK);
     }
@@ -162,7 +174,7 @@ impl Page {
                     text.extend_from_slice(align.rich_escape().as_bytes());
                     text.extend_from_slice(markup);
                     text.push(0);
-                    draw_rich_text(layout, &text, x, y, width.max(1), self.row_height, color);
+                    draw_rich_text(layout, &text, self.abs_x(x), self.abs_y(y), width.max(1), self.row_height, color);
                     self.reset_state();
                 }
                 None => self.draw_cell_colored(x, y, align, width, &Cell::text(markup), color),
@@ -174,7 +186,7 @@ impl Page {
                     Align::Center => x + (width - graphic_width) / 2,
                     Align::Right => x - graphic_width,
                 };
-                draw_graphic_frame(*id, *frame, left, y);
+                draw_graphic_frame(*id, *frame, self.abs_x(left), self.abs_y(y));
                 // The blit leaves the constant colour white.
                 p3_api::data::ddraw_set_constant_color(BLACK);
             }
@@ -182,8 +194,8 @@ impl Page {
         }
     }
 
-    /// Plain text at the absolute `x`, in the current colour and font, leaving the text
-    /// mode right-aligned.
+    /// Plain text at the window-relative `x`, `y`, in the current colour and font, leaving
+    /// the text mode right-aligned.
     pub unsafe fn draw_text(&self, x: i32, y: i32, align: Align, text: &[u8]) {
         let mut buffer = Vec::with_capacity(text.len() + 1);
         buffer.extend_from_slice(text);
@@ -191,14 +203,14 @@ impl Page {
         if align != Align::Right {
             font::ddraw_set_text_mode(align.text_mode());
         }
-        ui_render_text_at(x, y, &buffer);
+        ui_render_text_at(self.abs_x(x), self.abs_y(y), &buffer);
         if align != Align::Right {
             font::ddraw_set_text_mode(TextMode::AlignRight);
         }
     }
 
-    /// One cell on a row of its own at the window-relative `x`; returns the next row's y,
-    /// or `y` unchanged when the row is below the page.
+    /// One cell on a row of its own at the window-relative `x`, `y`; returns the next row's
+    /// y, or `y` unchanged when the row is below the page.
     pub unsafe fn line(&self, x: i32, y: i32, align: Align, cell: &Cell) -> i32 {
         if !self.fits(y) {
             return y;
@@ -207,7 +219,7 @@ impl Page {
             Align::Left | Align::Center => self.width - x - PROSE_RIGHT_MARGIN,
             Align::Right => x,
         };
-        self.draw_cell(self.abs_x(x), y, align, width, cell);
+        self.draw_cell(x, y, align, width, cell);
         y + self.row_height
     }
 
@@ -217,7 +229,7 @@ impl Page {
             return y;
         }
         font::ddraw_set_font(font::get_header_font());
-        self.draw_text(self.abs_x(x), y, align, text);
+        self.draw_text(x, y, align, text);
         font::ddraw_set_font(font::get_normal_font());
         y + self.row_height
     }
