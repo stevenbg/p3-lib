@@ -196,8 +196,8 @@ pub enum Operation {
         merchant_index: u32,
         stands: bool,
     },
-    /// Opcode 0x46 (inline `0x00535FD6`, queued `0x0053AF00`): make `merchant_index` mayor of
-    /// `town_index`. Refused unless the seat is not held by a merchant (`town+0x6F1 >=
+    /// Opcode 0x46 (handler `0x00535FD6`, the dispatcher's switch case): make
+    /// `merchant_index` mayor of `town_index`. Refused unless the seat is not held by a merchant (`town+0x6F1 >=
     /// merchant count`) and the merchant is at least [crate::merchant::RANK_PATRICIAN] in
     /// his hometown - or `+0x10` carries `0xBADEAFFE`, which waives the rank check only;
     /// `cheat` sets it, as do the 14-day vacancy task 0x2F (`0x004EA1D9`) and the debug
@@ -206,6 +206,69 @@ pub enum Operation {
         merchant_index: u32,
         town_index: u32,
         cheat: bool,
+    },
+    /// The sea-battle orders, opcodes `0x93`..`0x9B`: each addresses the battle in pool slot
+    /// `battle_slot` ([crate::battle::BattlePoolPtr]) and a **set of its ships** - `group`
+    /// picks a bank of 64 battle-ship indices, `mask_lo` bits 0..31 the indices
+    /// `group*64 + 0..31`, `mask_hi` the indices `group*64 + 32..63`. Dispatched through
+    /// the operation switch's 9-byte inline stubs into `0x0054xxxx`.
+    ///
+    /// Opcode 0x93 (`0x00541050`): set each ship's target (`+0x128`) unless it is grappled,
+    /// and clear its flee flag.
+    BattleSetTarget {
+        battle_slot: u8,
+        group: u8,
+        target: u16,
+        mask_hi: u32,
+        mask_lo: u32,
+    },
+    /// Opcode 0x95 (`0x00541200`): move to a battle-map point (`0x006270C7` on the ship
+    /// object), drop the target and **clear the flee flag** - which is why steering by hand
+    /// cancels a flee order. `x`/`y` are in the range of the ship objects' `+0xA`/`+0xE`.
+    BattleMoveTo {
+        battle_slot: u8,
+        group: u8,
+        x: u16,
+        y: u16,
+        mask_hi: u32,
+        mask_lo: u32,
+    },
+    /// Opcode 0x97 (`0x00541380`): set the `+0x13E` order mode; `modifier` sets flag `0x80`;
+    /// a non-zero mode clears the flee flag. The two aggressive modes are not named.
+    BattleSetOrderMode {
+        battle_slot: u8,
+        mode: u8,
+        modifier: bool,
+        group: u8,
+        mask_hi: u32,
+        mask_lo: u32,
+    },
+    /// Opcode 0x98 (`0x005414E0`): set the sail setting (`+0x148`).
+    BattleSetSail {
+        battle_slot: u8,
+        value: u8,
+        group: u8,
+        mask_hi: u32,
+        mask_lo: u32,
+    },
+    /// Opcode 0x9A (`0x005415E0`): clear the order mode and mark the ship out of the fight
+    /// (`+0x12A = (f & 0x5E) | 0x20`). Not flee; surrender is the open candidate.
+    BattleDisengage {
+        battle_slot: u8,
+        group: u8,
+        mask_hi: u32,
+        mask_lo: u32,
+    },
+    /// Opcode 0x9B (`0x00541700`): **flee** - `flee` sets `+0x12A = (f & 0x7E) | 0x01` and
+    /// `+0x13E = 0`, cleared with `f & 0xFE`. What the battle window's flee button sends,
+    /// confirmed with the operation logger. The per-ship AI overwrites the flag on its next
+    /// step, so the order lasts one step unless something re-asserts it.
+    BattleFlee {
+        battle_slot: u8,
+        flee: bool,
+        group: u8,
+        mask_hi: u32,
+        mask_lo: u32,
     },
     SetGameSpeed {
         speed1_ms_per_tick: i32,
@@ -359,6 +422,98 @@ impl Operation {
                 op[4..8].copy_from_slice(&merchant_index.to_le_bytes());
                 op[8..0x0c].copy_from_slice(&town_index.to_le_bytes());
                 op[0x10..0x14].copy_from_slice(&token.to_le_bytes());
+            }
+            Operation::BattleSetTarget {
+                battle_slot,
+                group,
+                target,
+                mask_hi,
+                mask_lo,
+            } => {
+                let opcode: u32 = 0x93;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4] = *battle_slot;
+                op[5] = *group;
+                op[6..8].copy_from_slice(&target.to_le_bytes());
+                op[8..0x0c].copy_from_slice(&mask_hi.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mask_lo.to_le_bytes());
+            }
+            Operation::BattleMoveTo {
+                battle_slot,
+                group,
+                x,
+                y,
+                mask_hi,
+                mask_lo,
+            } => {
+                let opcode: u32 = 0x95;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4] = *battle_slot;
+                op[5] = *group;
+                op[6..8].copy_from_slice(&x.to_le_bytes());
+                op[8..0x0a].copy_from_slice(&y.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mask_hi.to_le_bytes());
+                op[0x10..0x14].copy_from_slice(&mask_lo.to_le_bytes());
+            }
+            Operation::BattleSetOrderMode {
+                battle_slot,
+                mode,
+                modifier,
+                group,
+                mask_hi,
+                mask_lo,
+            } => {
+                let opcode: u32 = 0x97;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4] = *battle_slot;
+                op[5] = *mode;
+                op[6] = *modifier as u8;
+                op[7] = *group;
+                op[8..0x0c].copy_from_slice(&mask_hi.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mask_lo.to_le_bytes());
+            }
+            Operation::BattleSetSail {
+                battle_slot,
+                value,
+                group,
+                mask_hi,
+                mask_lo,
+            } => {
+                let opcode: u32 = 0x98;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4] = *battle_slot;
+                op[5] = *value;
+                op[6] = *group;
+                op[8..0x0c].copy_from_slice(&mask_hi.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mask_lo.to_le_bytes());
+            }
+            Operation::BattleDisengage {
+                battle_slot,
+                group,
+                mask_hi,
+                mask_lo,
+            } => {
+                let opcode: u32 = 0x9a;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4] = *battle_slot;
+                op[5] = *group;
+                op[8..0x0c].copy_from_slice(&mask_hi.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mask_lo.to_le_bytes());
+            }
+            Operation::BattleFlee {
+                battle_slot,
+                flee,
+                group,
+                mask_hi,
+                mask_lo,
+            } => {
+                let opcode: u32 = 0x9b;
+                op[0..4].copy_from_slice(&opcode.to_le_bytes());
+                op[4] = *battle_slot;
+                op[5] = *flee as u8;
+                op[6] = *group;
+                op[8..0x0c].copy_from_slice(&mask_hi.to_le_bytes());
+                op[0x0c..0x10].copy_from_slice(&mask_lo.to_le_bytes());
             }
             Operation::HireAdministrator { merchant_index, town_index } | Operation::DismissAdministrator { merchant_index, town_index } => {
                 let opcode: u32 = 0x5e;

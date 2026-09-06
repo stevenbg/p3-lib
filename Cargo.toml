@@ -6,6 +6,7 @@ members = [
     "cprcli",
     "mod-trading-qol",
     "mod-ui-tweaks",
+    "mod-battle-always-flee",
     "mod-church-details",
     "mod-crash-reporter",
     "mod-debug-navpoint-matrix",
