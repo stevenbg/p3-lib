@@ -7,17 +7,36 @@
 //! (the same units as the office's minimum store, `office + 0x354`: 200 per barrel, 2000
 //! per load), keyed by town because a merchant has at most one office per town. The boxes
 //! are filled from the store when the window opens and written back when it closes; the
-//! store travels with the save in [crate::sidecar]. Nothing enforces the amounts yet
-//! (`.claude/notes/todo/office-locked-amounts.md`). The window's vtable open/update/close
+//! store travels with the save in [crate::sidecar]. The window's vtable open/update/close
 //! hooks in [crate::ffi] drive [on_open], [on_update] and [on_close], as they do the sync
 //! column.
+//!
+//! **What the amounts do** ([install], from [crate::ffi::start]): the game asks one function
+//! how much of a ware a route ship may take ([p3_api::data::office::TAKEABLE_ADDRESS]), from
+//! one place, the route-stop load executor. Unlocked, that is the whole stock; locked, the
+//! stock less the minimum store. The hook on that call answers, for a locked ware with an
+//! amount in the store, the stock less that amount instead. Everything the game requires
+//! for a lock to apply - an administrator, the lock bit - is read off the office the way the
+//! game reads it, so the checkbox stays the master switch: unchecked, or a box at 0, and the
+//! game's own answer stands.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    mem,
+    sync::{
+        atomic::{AtomicPtr, Ordering},
+        Mutex,
+    },
+};
 
-use log::{debug, info};
+use hooklet::windows::x86::{hook_call_rel32, CallRel32Hook};
+use log::{debug, error, info};
 use num_traits::FromPrimitive;
 use p3_api::{
-    data::enums::WareId,
+    data::{
+        enums::WareId,
+        office::{OfficePtr, TAKEABLE_CALL_ORIGINAL, TAKEABLE_CALL_SITE},
+    },
     ui::{
         number_widget::{NumberWidget, OFFICE_BOX_ID, OFFICE_BOX_INI, OFFICE_BOX_MAX},
         ui_trading_office_window::{
@@ -187,4 +206,44 @@ pub(crate) unsafe fn on_close(window: &UITradingOfficeWindowPtr) {
         widget.detach();
     }
     widgets.shown = false;
+}
+
+static TAKEABLE_HOOK: AtomicPtr<CallRel32Hook> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Hook the route-stop load executor's call to the game's `takeable`, after checking the
+/// call site still holds it.
+pub(crate) unsafe fn install() -> Result<(), &'static str> {
+    let found = std::slice::from_raw_parts(TAKEABLE_CALL_SITE as *const u8, TAKEABLE_CALL_ORIGINAL.len());
+    if found != TAKEABLE_CALL_ORIGINAL {
+        error!("unexpected bytes at {TAKEABLE_CALL_SITE:#010x}: {found:02x?}, expected {TAKEABLE_CALL_ORIGINAL:02x?} - not hooking");
+        return Err("unexpected bytes at the takeable call site");
+    }
+    match hook_call_rel32(TAKEABLE_CALL_SITE - 0x0040_0000, takeable_hook as *const () as u32) {
+        Ok(hook) => {
+            TAKEABLE_HOOK.store(Box::into_raw(Box::new(hook)), Ordering::SeqCst);
+            Ok(())
+        }
+        Err(_) => Err("failed to hook the route-stop takeable call"),
+    }
+}
+
+/// `thiscall(office, ware) -> units`, in the game's place. Our answer only for a ware the
+/// game would lock (administrator employed, lock bit set) that has a locked amount; the
+/// stock's own units, so `stock - amount` is direct.
+unsafe extern "thiscall" fn takeable_hook(office_address: u32, ware: u32) -> i32 {
+    let original: extern "thiscall" fn(u32, u32) -> i32 = mem::transmute((*TAKEABLE_HOOK.load(Ordering::SeqCst)).old_absolute);
+    let office = OfficePtr::new(office_address);
+    if (ware as usize) < ROW_COUNT && office.has_administrator() && office.is_ware_locked(ware) {
+        let amount = amounts_of(office.get_town_index())[ware as usize];
+        if amount > 0 {
+            let stock = match WareId::from_u32(ware) {
+                Some(ware_id) => office.get_storage().get_ware(ware_id),
+                None => return original(office_address, ware),
+            };
+            let takeable = (stock - amount).max(0);
+            debug!("locked amounts: town {} ware {ware}: stock {stock}, locked {amount} -> takeable {takeable}", office.get_town_index());
+            return takeable;
+        }
+    }
+    original(office_address, ware)
 }

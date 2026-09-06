@@ -5,7 +5,6 @@ pub(crate) mod goods_dialog;
 pub(crate) mod locked_amounts;
 pub(crate) mod office;
 pub(crate) mod office_layout;
-pub(crate) mod options_button;
 pub(crate) mod routes;
 pub(crate) mod sidecar;
 pub(crate) mod sync;

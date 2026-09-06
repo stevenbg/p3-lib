@@ -2,6 +2,18 @@ use super::{p3_ptr::P3Pointer, storage::StoragePtr};
 
 pub const OFFICE_SIZE: u32 = 0x44C;
 
+/// How much of a ware a route ship may take from the office: `thiscall(office, ware) ->
+/// units`, `ret 4`. The full stock (the storage's `+0x4` array), unless the office has an
+/// administrator ([OfficePtr::has_administrator]), the ware's lock bit is set
+/// ([OfficePtr::is_ware_locked]) and its minimum store (`+0x354`) is positive - then
+/// `max(0, stock - minimum store)`. Called from one place, the route-stop load executor at
+/// [TAKEABLE_CALL_SITE], which clamps the stop's order quantity to it and to the ship's
+/// remaining capacity (`0x004D5879`..`0x004D5887`).
+pub const TAKEABLE_ADDRESS: u32 = 0x0050_0EC0;
+pub const TAKEABLE_CALL_SITE: u32 = 0x004D_5874;
+/// The `call` at [TAKEABLE_CALL_SITE], for a hook to verify before it patches.
+pub const TAKEABLE_CALL_ORIGINAL: [u8; 5] = [0xe8, 0x47, 0xb6, 0x02, 0x00];
+
 #[derive(Debug, Clone, Copy)]
 pub struct OfficePtr {
     pub address: u32,
@@ -88,8 +100,27 @@ impl OfficePtr {
         self.get(0x2f2)
     }
 
+    /// Whether an administrator is employed: the index is in range of the auto-trader
+    /// array - the test [TAKEABLE_ADDRESS] makes at `0x00500EC9` against the count at
+    /// `[0x006DD892]` ([crate::ships::SHIPS_ADDRESS] `+0xF2`).
+    pub unsafe fn has_administrator(&self) -> bool {
+        self.get_administrator_index() < crate::ships::ShipsPtr::new().get_auto_traders_size()
+    }
+
     pub unsafe fn get_administrator_trade_lock_bitmap(&self) -> u32 {
         self.get(0x3b4)
+    }
+
+    /// Whether the ware's lock is set (bit `ware` of the bitmap at `+0x3B4`; operation
+    /// `0x66` toggles it, the window's checkmark shows it).
+    pub unsafe fn is_ware_locked(&self, ware: u32) -> bool {
+        ware < 32 && self.get_administrator_trade_lock_bitmap() & (1 << ware) != 0
+    }
+
+    /// The game's own answer to "how much may a route ship take" - see [TAKEABLE_ADDRESS].
+    pub unsafe fn takeable(&self, ware: u32) -> i32 {
+        let func: extern "thiscall" fn(u32, u32) -> i32 = std::mem::transmute(TAKEABLE_ADDRESS);
+        func(self.address, ware)
     }
 }
 

@@ -149,7 +149,16 @@ same, draws itself and takes the keyboard when clicked. It is shown with the adm
 page and hidden with it. The amounts are kept per town (a merchant has one office per
 town) in raw units, the office's own: the boxes are filled from that store when the window
 opens and written back when it closes, so they survive switching offices within a session.
-They are not yet enforced against the auto-trade ships.
+
+### What the amount does: route ships leave it behind
+
+With the lock checkbox ticked, the game lets a route ship take a ware only down to the
+office's whole minimum store. With an amount in the box, the ship leaves that amount instead
+and takes the rest - so an office can order 500 and keep 20. The checkbox stays the master
+switch: unticked, ships take everything as before; ticked with the box at 0, the vanilla
+rule holds and the whole minimum store stays. The office also needs an administrator, as it
+does for the vanilla lock. Only route ships are affected; manual trading and the
+administrator's own buying are untouched. Hover the lock checkbox for the one-line reminder.
 
 ### Saved beside the game: the `.qol` sidecar
 

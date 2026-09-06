@@ -280,7 +280,7 @@ pub unsafe extern "C" fn start() -> u32 {
         }
     }
     // A right-click on the Options button opens the mod's own window.
-    if let Err(step) = crate::options_button::install() {
+    if let Err(step) = crate::config_window::install() {
         error!("failed to hook the main scene's right-button-up slot (step {step})");
         return 9;
     }
@@ -293,6 +293,11 @@ pub unsafe extern "C" fn start() -> u32 {
     if let Err(what) = crate::sidecar::install() {
         error!("failed to hook {what} - locked amounts would not survive a save");
         return 11;
+    }
+    // Route ships leave the locked amount instead of the whole minimum store.
+    if let Err(what) = crate::locked_amounts::install() {
+        error!("{what} - locked amounts would not be enforced");
+        return 12;
     }
     // Plain Q..Y typed into a focused price box reprice that one ware.
     match hook_function_pointer(NUMBER_WIDGET_KEY_POINTER_OFFSET, number_widget_key_hook as usize as u32) {
