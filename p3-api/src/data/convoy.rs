@@ -14,7 +14,7 @@ impl ConvoyPtr {
     /// The convoy's LEAD ship - the one that carries the convoy's trade route at
     /// `ship+0x132`, and whose name the game shows as the convoy's own.
     ///
-    /// Measured (`.claude/notes/todo/convoy-route-keys.md`): for a four-ship convoy, the
+    /// Measured in game: for a four-ship convoy, the
     /// lead was the only member with a route head; the other three read `0xFFFF`. That
     /// makes this the hop anything route-related needs, because the ship panel reports the
     /// clicked member and reports a member even when the convoy is selected as a whole.

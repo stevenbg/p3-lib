@@ -36,8 +36,7 @@ impl ShipPtr {
     /// Also the link for the ships tick's two ship lists (`ships+0xE8` in port,
     /// `ships+0xEA` at sea): `0x00506720` walks them through this field, so the name
     /// is incomplete - a ship is spliced out of its list with
-    /// `[cursor] = ship->0x6; ship->0x6 = 0xFFFF`. See
-    /// `.claude/notes/done/port-freezing.md`.
+    /// `[cursor] = ship->0x6; ship->0x6 = 0xFFFF`.
     pub fn get_next_ship_in_convoy(&self) -> u16 {
         unsafe { self.get(0x06) }
     }
@@ -50,8 +49,7 @@ impl ShipPtr {
     /// chain from the per-merchant (`+0x4`) and per-convoy (`+0x6`) ones: it is
     /// ordered by [ShipPtr::get_docking_sort_key], inserted by `0x0050D0C0` and
     /// unlinked by `0x0050D040(ships, index)` - a plain doubly-linked unlink that
-    /// writes `0xFFFF` into both links and destroys nothing. See
-    /// `.claude/notes/done/port-freezing.md`.
+    /// writes `0xFFFF` into both links and destroys nothing.
     pub fn get_previous_ship_in_port(&self) -> u16 {
         unsafe { self.get(0x0a) }
     }

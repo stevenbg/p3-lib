@@ -38,7 +38,7 @@ impl UINotificationsPtr {
     /// like its right-ticker sibling 0x0042BB20. Until 30 Aug 2026 this method passed a
     /// bare Rust byte pointer here, so **every ticker post decremented a dword 12 bytes
     /// into whichever heap block preceded the buffer**: the process-wide heap corruption
-    /// hunted down in `.claude/notes/done/device-lost-crash.md` (d3d9 resource links and
+    /// behind the d3d9 lost-device crashes (d3d9 resource links and
     /// a CoreMessaging object were the observed victims, four fatal crashes). The text
     /// is now handed over as a real game string, constructed the way the game itself
     /// does it (nil data, then assign-from-chars), so the callee's release balances

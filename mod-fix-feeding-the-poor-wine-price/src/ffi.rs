@@ -19,8 +19,6 @@
 //! The handler (`0x004FE557`) prices the *delivered* goods itself through the ware
 //! table, so the reputation credit and the warehouse deduction were always correct;
 //! only the threshold total was wrong.
-//!
-//! Background: `.claude/notes/done/feeding-the-poor.md`.
 use std::{mem, sync::atomic::{AtomicPtr, Ordering}};
 
 use hooklet::windows::x86::{hook_call_rel32, CallRel32Hook};

@@ -50,8 +50,6 @@
 //! `0x005CD503`), so these guards are pure insurance against a missed path. The
 //! file logging is temporary, to collect evidence during normal play, and comes
 //! out once the fix has soaked.
-//!
-//! Background: `.claude/notes/todo/church-window-anim-crash.md`.
 #![allow(dead_code)]
 
 use std::{

@@ -94,5 +94,3 @@ line would mean the audit missed a path. Each site mutes after 25 lines per
 session; the guard keeps rejecting.
 
 The file logging comes out once the fix has soaked.
-
-Background: `.claude/notes/todo/church-window-anim-crash.md`.

@@ -61,8 +61,7 @@ impl MerchantPtr {
     }
 
     /// Total **crew** across the merchant's ships (`ship+0x40` summed at `0x004F7E27`).
-    /// This is the metric the quarterly task `0x2C` governor watches - see
-    /// `.claude/notes/todo/game-settings.md`.
+    /// This is the metric the quarterly task `0x2C` governor watches.
     pub fn get_fleet_crew(&self) -> i32 {
         unsafe { self.get(0x474) }
     }

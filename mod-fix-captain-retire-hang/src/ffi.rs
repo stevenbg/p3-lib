@@ -21,7 +21,7 @@
 //! **Reproduced 28 Aug 2026** by scheduling the task by hand with a mismatched pair: the
 //! game froze with one core at 100% (5.06s of CPU in 5.0s of wall clock), `Responding`
 //! false, and no crash report - nothing faults, so there is nothing for
-//! mod-crash-reporter to catch. See `.claude/notes/todo/captain-retire-hang.md`.
+//! mod-crash-reporter to catch.
 //!
 //! In normal play the mismatch needs the captain to leave the recorded ship inside the
 //! scheduling window: one tick for a human owner's captain (operation `0x13`,

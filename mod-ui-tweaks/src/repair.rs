@@ -9,7 +9,7 @@ use p3_api::{
 /// CTRL+R: order the repair the shipyard window's button orders - operation `0x03`,
 /// whose handler `0x0052ACD0` deducts the cost, books it to the merchant and puts the
 /// ship into status `4`, from where the next ships tick moves it into the yard's repair
-/// chain (see `.claude/notes/done/ship-repair.md`).
+/// chain.
 ///
 /// **A convoy repairs as a whole, and the order goes to its lead ship.** The handler
 /// sums the cost over every member of the convoy the ordered ship belongs to, so an

@@ -64,8 +64,7 @@ impl ShipyardPtr {
     /// Its work pass `0x00508AA0(town, work)` walks the WHOLE chain and adds the same
     /// `work` to every ship's health at `ship+0x18` - the amount is re-read from the
     /// stack each iteration and never divided or decremented. So repairs at one yard do
-    /// not compete: ten ships mend exactly as fast as one. See
-    /// `.claude/notes/done/ship-repair.md`.
+    /// not compete: ten ships mend exactly as fast as one.
     pub fn get_repair_queue_head(&self) -> u16 {
         unsafe { self.get(0x0e) }
     }

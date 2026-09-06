@@ -2,7 +2,7 @@
 //! lifecycle, to settle what quitting to the main menu and loading a save do to open
 //! windows.
 //!
-//! Why: the hotkey-registry design (`.claude/notes/todo/hotkey-registry.md`) makes
+//! Why: the hotkey-registry design makes
 //! scoping the consumer mod's job - register keys on window open, unregister on close.
 //! Its one failure mode is a close that never fires. The ordinary close paths are easy
 //! to try; the two suspects are **quit to main menu** and **loading a save with a

@@ -135,7 +135,7 @@ fn value_rank(ware: u8) -> u8 {
 /// recomputes the ship's free capacity (`0x004D5600`), and only then runs the buying and
 /// loading. A load can therefore never precede an unload however this array is arranged,
 /// and the swap stops in [six_stop_middle] rely on the executor for that, not on this
-/// function. See `.claude/notes/todo/route-stop-top-up.md`.
+/// function.
 pub fn cargo_order(amount: &[i32; 24]) -> [u8; 24] {
     ordered_by_key(|ware| {
         let i = ware as usize;

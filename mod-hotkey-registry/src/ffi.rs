@@ -5,8 +5,7 @@
 //! dispatcher and a log. Consumer mods register a key with a handler and get a
 //! handle; they unregister the handle when their scope closes. Scoping is entirely
 //! the consumer's job - register on window open / page enter, unregister on close /
-//! leave (every needed lifecycle hook was play-verified; see
-//! `.claude/notes/todo/hotkey-registry.md`). Dispatch is newest-first, so a key
+//! leave (every needed lifecycle hook was play-verified). Dispatch is newest-first, so a key
 //! registered by a window while it is open shadows a global registration of the
 //! same key, and the global resurfaces when the window's registration is removed.
 //! A handler returning nonzero swallows the keystroke (the game never sees it) and

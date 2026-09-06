@@ -16,8 +16,6 @@
 //! are logged with `warn!` and appended to `_harbor_fill_oob.log` in the game
 //! folder; the file logging is temporary, to collect evidence during normal play,
 //! and comes out again once the fix has soaked.
-//!
-//! Background: `.claude/notes/todo/town-view-harbor-fill-crash.md`.
 use std::{
     arch::global_asm,
     ffi::c_void,

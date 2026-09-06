@@ -55,7 +55,7 @@ pub const TOWN_FLAG_PIRATE_ATTACK: u32 = 0x800;
 pub const TOWN_FLAG_FAMINE: u32 = 0x1000;
 /// The port is iced in. Set by the daily ice pass (`0x004E48CA`, which posts "The
 /// port of %s is frozen.") and cleared by scheduled task `0x35` (`0x004E94A4`,
-/// "The port of %s is open again."). See `.claude/notes/done/port-freezing.md`.
+/// "The port of %s is open again.").
 pub const TOWN_FLAG_FROZEN: u32 = 0x0400_0000;
 
 /// Bits of the **built-structures mask** at `+0x76C` ([TownPtr::get_buildings]) - one
@@ -81,8 +81,7 @@ pub const TOWN_FLAG_FROZEN: u32 = 0x0400_0000;
 /// Public Bath, and part of the Church's `0x7F` - but **nothing in the executable sets
 /// it**: it arrives with the town, through the savegame/scenario read at `0x0051ECE0`.
 /// Bits `0x100` (set at `0x004EA3E4`/`0x004EA440`) and `0x8000` (set at
-/// `0x0041BDD8`/`0x0041BE3F`) are likewise unidentified. See
-/// `.claude/notes/done/town-building-mask.md`.
+/// `0x0041BDD8`/`0x0041BE3F`) are likewise unidentified.
 /// No prerequisite; the only test is its own bit (`0x00521EB1`).
 pub const TOWN_BUILDING_MARKET_HALL: u32 = 0x1;
 /// `(mask & 0x3) == 0x1` - needs [TOWN_BUILDING_MARKET_HALL].
@@ -115,7 +114,7 @@ pub const TOWN_BUILDING_LENDERS_HOUSE: u32 = 0x800;
 /// `0x0051C0E0` multiplies its *increase* step by 1.3 - `floor((13 * step + 9) / 10)`
 /// at `0x0051C1B1` - and nothing else in the executable reads this bit except the
 /// setter and the AI's "town already has one" test at `0x0051F893`. Requires
-/// [TOWN_BUILDING_CHURCH]. See `.claude/notes/done/town-school.md`.
+/// [TOWN_BUILDING_CHURCH].
 pub const TOWN_BUILDING_SCHOOL: u32 = 0x1000;
 /// `(mask & 0x2010) == 0x10`.
 pub const TOWN_BUILDING_GUILD_HALL: u32 = 0x2000;
@@ -273,7 +272,7 @@ impl TownPtr {
     /// (`0x004E45C4`, scheduled task `0x0D`, run only when the day of the year is
     /// `<= 58` or `>= 333`) grows this in winter and melts it otherwise, then derives
     /// [TownPtr::get_ice_level] from it. A town can only freeze once this reaches
-    /// `0x800`. See `.claude/notes/done/port-freezing.md`.
+    /// `0x800`.
     pub fn get_cold_accumulator(&self) -> u32 {
         unsafe { self.get(0x9b8) }
     }

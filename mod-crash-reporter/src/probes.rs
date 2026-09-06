@@ -317,8 +317,7 @@ unsafe fn dump_ship_routes() {
     }
 }
 
-/// F9 (THROWAWAY): the captain-experience census, for
-/// `.claude/notes/done/captain-experience.md`. Dumps to DebugView and to `_probe1.log`
+/// F9 (THROWAWAY): the captain-experience census. Dumps to DebugView and to `_probe1.log`
 /// in the game folder - always appended, never truncated, so presses days or years
 /// apart sit in one file and diff directly.
 ///
@@ -1263,8 +1262,7 @@ unsafe fn probe1_timeline_detail() -> String {
 }
 
 /// SHIFT+F10: the ice census - every town's cold accumulator, ice level and frozen
-/// flag, plus the pending thaw tasks. Written to validate the port-freeze model in
-/// `.claude/notes/done/port-freezing.md`, which was derived statically:
+/// flag, plus the pending thaw tasks. Written to validate the port-freeze model, which was derived statically:
 ///
 /// - the daily ice pass (`0x004E45C4`, scheduled task `0x0D`) runs only when the day
 ///   of the year is `<= 58` or `>= 333`;
@@ -1474,8 +1472,7 @@ static ICE_PRESSES: AtomicU32 = AtomicU32::new(0);
 static ICE_PREVIOUS: Mutex<[Option<(u32, u8)>; 40]> = Mutex::new([None; 40]);
 
 // ---------------------------------------------------------------------------
-// The captain-retirement hang (scheduled task 0x27). See
-// `.claude/notes/todo/captain-retire-hang.md`.
+// The captain-retirement hang (scheduled task 0x27).
 //
 // The handler `0x004DDC00` re-finds the ship when the (ship, captain) pair it was
 // scheduled with no longer matches, and that search contains a two-instruction
@@ -1685,7 +1682,7 @@ unsafe fn retire_probe_hang() {
 // with the probes.
 //
 // It names the opcode behind any UI action in seconds, which is why it is the one
-// probe worth keeping permanently. Write-up: `.claude/notes/tools/operation-queue.md`.
+// probe worth keeping permanently.
 // ---------------------------------------------------------------------------
 
 /// Module-relative offset of the operation queue's drain call into the operation switch
@@ -2304,8 +2301,7 @@ unsafe fn dump_dwords(g: &mut Guarded, addr: u32, count: u32) -> String {
     format!("{addr:#010x}: {}", parts.join(" "))
 }
 
-/// CTRL+ALT+F9: one-shot check of d3d9's resource list, for the crash in
-/// `.claude/notes/done/device-lost-crash.md`.
+/// CTRL+ALT+F9: one-shot check of d3d9's resource list, for the d3d9 lost-device crash.
 ///
 /// That crash is `d3d9+0x62df8` storing through a resource's `next` link while the GOG
 /// wrapper tears a surface down, and the resource is otherwise live and coherent - one

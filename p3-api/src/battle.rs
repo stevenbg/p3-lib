@@ -5,7 +5,7 @@
 //! enters - the same stepper, the same per-ship AI - so anything applied to a battle ship
 //! object during the fight is executed by the engine either way.
 //!
-//! Static analysis of `Patrician3.exe` (`.claude/notes/todo/battle-orders-force-flee.md`),
+//! Static analysis of `Patrician3.exe`,
 //! with the flee operation and the battle-map coordinates confirmed by the operation logger.
 
 use crate::data::p3_ptr::P3Pointer;

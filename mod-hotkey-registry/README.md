@@ -21,8 +21,7 @@ about the game.
   job: register on window open / page enter, unregister on close / leave. (Every
   lifecycle hook the current mods need was play-verified first - building-window
   closes fire on every path, the goods dialog's close resets its state on every
-  path, tavern page transitions are fully observable. See
-  `.claude/notes/todo/hotkey-registry.md`.)
+  path, tavern page transitions are fully observable.)
 - Dispatch is **newest-first**: a window's registration shadows a global one for
   the same key while the window is open, and the global resurfaces on unregister.
 - A handler returning nonzero **swallows** the keystroke (the game never sees it)

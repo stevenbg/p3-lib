@@ -30,8 +30,6 @@
 //! player's unguarded methods - is preserved whole in [crate::tick_patch] and is **not
 //! installed**. If the crash ever returns, call `tick_patch::install()` from [start]: the
 //! two are independent and can run together.
-//!
-//! Background: `.claude/notes/todo/church-window-anim-crash.md`.
 
 use std::{
     mem,
