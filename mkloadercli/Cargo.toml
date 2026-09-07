@@ -1,0 +1,8 @@
+[package]
+name = "mkloadercli"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+sha2 = "0.10"

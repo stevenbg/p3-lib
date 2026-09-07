@@ -10,6 +10,10 @@ Install: `p3_modloader.dll` next to `Patrician3_modloader.exe` in the game folde
 found through the executable's import table, so a copy inside `mods\` is never the one
 that runs.
 
+`Patrician3_modloader.exe` is the game's own executable and is not shipped; build it from
+the game folder's `Patrician3.exe` with [mkloadercli](../mkloadercli/README.md), which
+verifies the result against the known launcher's SHA-256.
+
 ## Loading
 
 Files in `mods\` are loaded in directory order. A mod is a DLL exporting

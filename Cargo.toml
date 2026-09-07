@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "aimcli",
     "cprcli",
+    "mkloadercli",
     "mod-trading-qol",
     "mod-ui-tweaks",
     "mod-battle-always-flee",
