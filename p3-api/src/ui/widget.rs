@@ -8,6 +8,29 @@
 //! Positions are screen coordinates for a direct child of the scene (its entry offsets are
 //! zero). Sizes come from the class's ini section and are copied along when a widget is
 //! cloned.
+//!
+//! # Drawing on a game widget: check the origin first
+//!
+//! A widget's draw slot ([SLOT_DRAW]) is called **more than once per frame**, and only one
+//! of those passes may be drawn into. The pass to use has its two origin arguments at
+//! `0,0`, so the widget's own `+0x14`/`+0x18` are already the screen position. Another pass
+//! passes the **negative** of those fields, rendering the widget at `(0,0)` in a local
+//! space of its own.
+//!
+//! This matters because the drawing helpers - `ui_render_text_at`,
+//! `ddraw_fill_solid_rect` and friends - take screen coordinates and are **not clipped to
+//! the widget**. Drawn during the local pass they follow it into whatever surface it
+//! targets and land somewhere unrelated on screen, and because only the widget's own area
+//! is repainted each frame, the result stays visible until something else happens to redraw
+//! that region. Measured on the scrollmap's ship panel, whose `+0x14`/`+0x18` are
+//! `1404,353`: the good pass gave origin `0,0`, the other `-1404,-353`, and drawing in the
+//! second put text over the minimap.
+//!
+//! So a hook that paints on a widget must return early unless both origin arguments are
+//! zero. Two further traps in the same place: the slot belongs to the **class**, so the
+//! hook fires for every instance and has to compare the `this` it is given against the
+//! object it means to decorate; and a panel may be drawn repeatedly with different
+//! internal state, so anything read out of it can differ between calls of the same frame.
 
 use super::custom_window::{root_container, CONTAINER_ADD, CONTAINER_REMOVE};
 
