@@ -68,7 +68,6 @@ jobs:
         $release = 'target/i686-pc-windows-msvc/release'
         Copy-Item -Path "$release/mkloadercli.exe", "$release/p3_modloader.dll" -Destination ./dist/
         $bundled = @(
-          'battle_always_flee',
           'church_details',
           'crash_reporter',
           'fix_bath_house_bribe_blunders',
