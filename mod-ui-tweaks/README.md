@@ -158,8 +158,7 @@ map.
 
 When a notorious pirate robs someone else's ship the game announces
 `<pirate name> has struck again` - a video, or a ticker message if event videos are off -
-and **drops you back to normal speed**. It happens often enough to make fast forward
-unusable.
+and **drops you back to normal speed**. It happens often enough to be annoying.
 
 While the game is **in fast forward**, this mod suppresses that one event entirely: no
 video, no message, no speed change. At every other speed it is left completely alone, so
