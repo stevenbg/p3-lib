@@ -104,11 +104,14 @@ ship by hand takes it out of that.
 
 ## Copying orders to your other offices: the Set column
 
+![The administrator page: the Set column left of the ware names, the locked-amount boxes between the stock and the lock checkboxes, and the lock's tooltip](administrator.jpg)
+
 The administrator view gets a column of checkboxes left of the ware names, and a **Set**
-button in the bottom-left corner with the hint "qty & price across offices". Tick the wares
-whose orders you want everywhere, press Set, and for each ticked ware the **amount and the
-price** are copied from this office to every other trading office of yours **whose order for
-that ware runs the same way** - a buy stays a buy, a sell a sell. An office with no order for
+button in the bottom-left corner with the hint "stock & price across offices for that order
+type". Tick the wares whose orders you want everywhere, press Set, and for each ticked ware
+the **amount and the price** are copied from this office to every other trading office of
+yours **whose order for that ware runs the same way** - a buy stays a buy, a sell a sell. An
+office with no order for
 the ware, or one the other way round, is left alone, and so is a ticked ware that has no
 order here; the lock checkbox is not copied. The popup reports how many orders were set in
 how many offices and how many were skipped.
