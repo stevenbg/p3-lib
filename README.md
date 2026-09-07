@@ -1,6 +1,6 @@
 # p3-lib
 
-Mods for Patrician 3 (v1.1), the reverse-engineered game API they are built on, and the
+Mods and bug fixes for Patrician 3 (v1.1), the reverse-engineered game API they are built on, and the
 tools around them.
 
 ## Usage
@@ -12,13 +12,10 @@ tools around them.
    file over the copy inside `p2arch0_eng.cpr`, so nothing is overwritten).
 2. Double-click `mkloadercli.exe`. It reads the `Patrician3.exe` beside it and writes
    `Patrician3_modloader.exe`, the same executable with `p3_modloader.dll` added to its
-   imports. Do this once - only a reinstall or a patched game needs it again.
-3. Start `Patrician3_modloader.exe` instead of `Patrician3.exe`. Every DLL in `mods\` is
-   loaded before the game runs, and its `start()` is called.
+   imports. Do this once - only a reinstall needs it again.
+3. Start `Patrician3_modloader.exe` instead of `Patrician3.exe`.
 
-The game's executable is not something this project ships, which is why the launcher is
-built locally from your own copy; `mkloadercli` expects the v1.1 GOG executable and
-verifies what it produces. Drop a DLL into `mods\` to add a mod, remove it to remove one.
+`mkloadercli` expects the v1.1 GOG executable and verifies the hashes. Drop a DLL into `mods\` to add a mod, remove it to remove one. You can browse the repo to see what each of them does.
 
 ## p3-aim
 
