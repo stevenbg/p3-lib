@@ -2,7 +2,7 @@ name: Release Build
 
 on:
   release:
-    types: [created]
+    types: [published]
 
 jobs:
   build:
@@ -46,13 +46,53 @@ jobs:
         mv target/i686-pc-windows-msvc/release/trading_office_prices_synchronization.dll ./mods/
         mv target/i686-pc-windows-msvc/release/trading_qol.dll ./mods/
         mv target/i686-pc-windows-msvc/release/ui_tweaks.dll ./mods/
-        mkdir files
-        mv target/i686-pc-windows-msvc/release/aimcli.exe ./files
-        mv target/i686-pc-windows-msvc/release/cprcli.exe ./files
-        mv target/i686-pc-windows-msvc/release/navpointmatrixcli.exe ./files
-        mv target/i686-pc-windows-msvc/release/roucli.exe ./files
-        mv target/i686-pc-windows-msvc/release/p3_modloader.dll ./files
         Compress-Archive -Path ./mods/* -DestinationPath ./mods.zip
-        gh release upload ${{ github.ref_name }} ./mods.zip ./files/aimcli.exe ./files/cprcli.exe ./files/navpointmatrixcli.exe ./files/roucli.exe ./files/p3_modloader.dll
+        $release = 'target/i686-pc-windows-msvc/release'
+        gh release upload ${{ github.ref_name }} ./mods.zip "$release/aimcli.exe" "$release/cprcli.exe" "$release/mkloadercli.exe" "$release/navpointmatrixcli.exe" "$release/roucli.exe" "$release/p3_modloader.dll"
+      env:
+        GITHUB_TOKEN: ${{ github.TOKEN }}
+
+    # Ready to extract into the game folder: the loader tool and its DLL in the root, the
+    # mods in mods\, the fixed patrol mission script in missions_addon\. The mods come from
+    # the .\mods the previous step gathered for mods.zip.
+    - name: Bundle dist.zip
+      run: |
+        mkdir dist
+        mkdir dist/mods
+        mkdir dist/missions_addon
+        $release = 'target/i686-pc-windows-msvc/release'
+        Copy-Item -Path "$release/mkloadercli.exe", "$release/p3_modloader.dll" -Destination ./dist/
+        $bundled = @(
+          'battle_always_flee',
+          'church_details',
+          'crash_reporter',
+          'fix_bath_house_bribe_blunders',
+          'fix_captain_retire_hang',
+          'fix_captain_skill_cap_gate',
+          'fix_church_anim_crash',
+          'fix_damage_to_offside_ship_artillery',
+          'fix_feeding_the_poor_wine_price',
+          'fix_harbor_fill_oob',
+          'fix_invulnerable_ship_artillery_slots',
+          'fix_market_hall_production_town',
+          'fix_new_settlement_ware_production',
+          'fix_patrol_letter_crash',
+          'fix_siege_beggar_satisfaction_bonus',
+          'fix_texture_cache_thrash',
+          'fix_uncompressed_trade_route_loading',
+          'high_res_1664x936',
+          'hotkey_registry',
+          'shipyard_details',
+          'tavern_details',
+          'tavern_show_all_sailors',
+          'town_hall_details',
+          'trading_office_details',
+          'trading_qol',
+          'ui_tweaks'
+        )
+        foreach ($mod in $bundled) { Copy-Item "./mods/$mod.dll" -Destination ./dist/mods/ }
+        Copy-Item ./mod-fix-patrol-letter-crash/missions_addon/patrouille.p2m -Destination ./dist/missions_addon/
+        Compress-Archive -Path ./dist/* -DestinationPath ./dist.zip
+        gh release upload ${{ github.ref_name }} ./dist.zip
       env:
         GITHUB_TOKEN: ${{ github.TOKEN }}
