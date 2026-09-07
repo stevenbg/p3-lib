@@ -23,6 +23,11 @@ pub const BATTLE_COUNT_ADDRESS: u32 = 0x006E59D4;
 /// slot at `0x0060FEFE`..`0x0060FF1E`; the battle-over paths reset it to `0xFF`.
 pub const PLAYER_BATTLE_SLOT_ADDRESS: u32 = 0x006E59CC;
 pub const NO_BATTLE_SLOT: u8 = 0xFF;
+/// What [BattlePtr::get_side_owner] holds for a side with no ship to own it - a town's
+/// side. The battle code also compares those fields against `0xFE` in a handful of places
+/// (`0x006053EB`, `0x00605E78`, `0x0060D446`, `0x0060D52A`), a second sentinel whose
+/// meaning is not decoded.
+pub const NO_SIDE_OWNER: u16 = 0xFF;
 
 /// The pool of running battles.
 #[derive(Debug, Clone, Copy, Default)]
@@ -80,6 +85,12 @@ impl BattlePtr {
         (address != 0).then_some(BattleShipPtr::new(address))
     }
 
+    /// How many entries of the `+0x4` array are populated (`+0x14`). Reading past it finds
+    /// whatever follows the allocation, so every walk of the array is bounded by this.
+    pub unsafe fn get_ship_count(&self) -> u32 {
+        self.get(0x14)
+    }
+
     /// Head of a side's ship chain: side 0 at `+0x10`, side 1 at `+0x65C`, linked through
     /// the word array at `+0xC`.
     pub unsafe fn get_side_head(&self, side: u8) -> u16 {
@@ -96,6 +107,34 @@ impl BattlePtr {
     /// The countdown / status word at `+0x15C`; [Self::STATUS_OVER] ends the battle.
     pub unsafe fn get_status(&self) -> u16 {
         self.get(0x15C)
+    }
+
+    /// The **owning merchant of a side**: `+0x35A` for side 0, `+0x35C` for side 1. Battle
+    /// setup reads it straight off the side's ship (`ships+0x4` array, stride
+    /// [crate::ship::SHIP_SIZE], the merchant index at the ship's `+0x0`) at `0x005FC582`
+    /// and `0x005FC5A9`, and writes [NO_SIDE_OWNER] instead when the side has no ship in
+    /// range (`0x005FC5B7`); `0x00605491` / `0x006054AE` do the same on the other setup
+    /// path. Written once at setup and not touched afterwards, unlike
+    /// [Self::get_side_head], which empties as ships leave.
+    ///
+    /// **Side 0 is the attacker and side 1 the defender**: a town assault puts the
+    /// attacking convoy on side 0 with the town on side 1, and a pirate attack puts the
+    /// pirate on side 0 with its prey on side 1 - both play-verified.
+    pub unsafe fn get_side_owner(&self, side: u8) -> u16 {
+        self.get(if side == 0 { 0x35A } else { 0x35C })
+    }
+
+    /// Whether side 1 has no owning merchant, which is what an assault on a **town** looks
+    /// like: the shore batteries are not ships, so the side has none to take an owner from.
+    /// Steadier than testing [Self::get_side_head] for emptiness, which also goes empty
+    /// once every enemy ship has sunk or fled.
+    pub unsafe fn is_town_battle(&self) -> bool {
+        self.get_side_owner(1) == NO_SIDE_OWNER
+    }
+
+    /// Whether `merchant_index` is the side that started this battle, side 0.
+    pub unsafe fn is_attacker(&self, merchant_index: u16) -> bool {
+        self.get_side_owner(0) == merchant_index
     }
 
     /// This battle's own pool slot (`+0x662`, written by the constructor).
@@ -146,9 +185,20 @@ impl BattlePtr {
         self.get(0xAA8 + side as u32 * 4)
     }
 
-    /// The per-side scale factor of the flee tests (`+0xAB0`), written 1 at battle start.
+    /// The per-side **courage scale** of the flee tests (`+0xAB0`), written 1 at battle
+    /// start and not seen changing afterwards. It multiplies the side's own strength in
+    /// each of the three strength comparisons the per-ship fight-or-flee evaluation makes
+    /// (`0x00622866`, `0x0062291E`, `0x00622994`), the middle one being
+    /// `own_gunnery * scale * 4 >= enemy_gunnery`. Zero therefore makes every comparison
+    /// fail against any armed opponent, and the ship takes the AI's **own** flee branch -
+    /// which sets the flee flag and the panic latch and is never undone, unlike a flag
+    /// written from outside the step.
     pub unsafe fn get_side_scale(&self, side: u8) -> u8 {
         self.get(0xAB0 + side as u32)
+    }
+
+    pub unsafe fn set_side_scale(&self, side: u8, scale: u8) {
+        self.set(0xAB0 + side as u32, &scale)
     }
 
     /// Mean battle-map position of the side's live ships; `0x1100` / `0xF02` (record) or
@@ -161,7 +211,9 @@ impl BattlePtr {
         self.get(0xABC + side as u32 * 4)
     }
 
-    /// Pending outcome: `0xFF` none, `0` sunk or taken, `2` plundered; `1` and `3` not decoded.
+    /// Pending outcome: `0xFF` none, `0` a ship withdrew ([BattleShipPtr::FLAG_WITHDRAWN]),
+    /// `1` a ship sank (written beside [BattleShipPtr::FLAG_SUNK] at `0x0061FCBF`), `2`
+    /// plundered; `3` not decoded.
     pub unsafe fn get_outcome_kind(&self) -> u8 {
         self.get(0xAC4)
     }
@@ -213,10 +265,19 @@ impl BattleShipPtr {
     /// `+0x12A` state flags.
     /// Fleeing - written by the AI's own decision every step and by operation `0x9B`.
     pub const FLAG_FLEEING: u8 = 0x01;
-    /// Sunk / out (`0x006219F0`, `0x006077BD`, `0x00607855`).
-    pub const FLAG_SUNK: u8 = 0x02;
-    /// Captured (`0x0060CA7F`..`0x0060CD55`).
-    pub const FLAG_CAPTURED: u8 = 0x04;
+    /// **Withdrawn from the battle**, having sailed off the battle map. Set by `or al,0x2`
+    /// at `0x006219F0`, `0x006077BD`, `0x00607855` and `0x006116F7`, each guarded by
+    /// `test al,0xE` (not already out) and each also writing the battle's outcome kind
+    /// `+0xAC4 = 0`. Play-verified: three ships took it at the moment they reached the map
+    /// edge after fleeing, at `y < 10`, with the enemy side untouched.
+    pub const FLAG_WITHDRAWN: u8 = 0x02;
+    /// **Sunk.** `0x0061FCA5` zeroes the world ship's hull (`ship+0x18`) and `0x0061FCAF`
+    /// then stores this value outright - `mov byte [x+0x12A],0x4`, replacing the flags
+    /// rather than or-ing into them, which is why it is the only setter and easy to miss -
+    /// before writing the battle's outcome kind `+0xAC4 = 1`. Play-verified: a cog logged
+    /// `flags=0x04` alone at `hull=0/170800` on the tick the game's own report called it
+    /// sunk.
+    pub const FLAG_SUNK: u8 = 0x04;
     /// Grappled / boarding, on both ships (`0x00609CDA`, `0x00609CEE`).
     pub const FLAG_GRAPPLED: u8 = 0x08;
     /// Firing / aim state (`0x00623EEA` set, `0x00624403` cleared).
@@ -227,8 +288,14 @@ impl BattleShipPtr {
     pub const FLAG_PLUNDER_WORTHY: u8 = 0x40;
     /// Modifier on the `+0x13E` order mode (operation `0x97`).
     pub const FLAG_ORDER_MODIFIER: u8 = 0x80;
-    /// A ship carrying any of these no longer takes part in the fight.
-    pub const OUT_OF_FIGHT_MASK: u8 = Self::FLAG_SUNK | Self::FLAG_CAPTURED | Self::FLAG_DISENGAGED;
+    /// A ship carrying any of these no longer takes part in the fight. A superset of the
+    /// engine's most frequent test, `0x6` ([FLAG_WITHDRAWN] and [FLAG_SUNK]); the two
+    /// sites that read `0x26` and the two that read `0x2E` add the disengaged bit as this
+    /// does.
+    pub const OUT_OF_FIGHT_MASK: u8 = Self::FLAG_WITHDRAWN | Self::FLAG_SUNK | Self::FLAG_DISENGAGED;
+    /// What the engine itself tests at fourteen sites to mean "out of the fight": withdrawn
+    /// or sunk.
+    pub const ENGINE_OUT_MASK: u8 = Self::FLAG_WITHDRAWN | Self::FLAG_SUNK;
     /// What operation `0x9B` keeps of the flags when it orders a flee.
     pub const FLEE_KEEP_MASK: u8 = 0x7E;
 
@@ -311,6 +378,29 @@ impl BattleShipPtr {
     pub unsafe fn get_boarding_role(&self) -> u8 {
         self.get(0x14A)
     }
+
+    /// The **AI grace counter** at `+0x161`: `0xC` when the object is built
+    /// (`0x0061A6B7`), decremented once per step while positive (`0x00621B44`), and while
+    /// it is nonzero the per-ship step skips two things -
+    ///
+    /// - the **fight-or-flee evaluation**, at `0x00622706`: `test cl,cl` / `jne 0x00622C32`
+    ///   jumps past the whole decision, whose fall-through would otherwise clear the flee
+    ///   flag (`and eax,0xFE` at `0x00622AF3`);
+    /// - **target acquisition**, vtable slot 1 (`0x006247B0`, `0x0067AAD4`), which bails on
+    ///   its first instruction (`test al,al` / `ja`) - so a ship with the counter up picks
+    ///   no target and therefore does not fire.
+    ///
+    /// This is why nothing shoots for the opening steps of a battle.
+    pub unsafe fn get_grace_counter(&self) -> u8 {
+        self.get(0x161)
+    }
+
+    pub unsafe fn set_grace_counter(&self, value: u8) {
+        self.set(0x161, &value)
+    }
+
+    /// What the constructor puts in [Self::get_grace_counter].
+    pub const GRACE_COUNTER_INITIAL: u8 = 0xC;
 
     /// Whether the ship is still part of the fight.
     pub unsafe fn is_in_fight(&self) -> bool {
